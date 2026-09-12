@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>dev.hearth</groupId>
+    <artifactId>hearth</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>Hearth</name>
+    <description>AI-assisted villager collective: builds walls, digs mines, lights up, gathers, and sleeps.</description>
+
+    <properties>
+        <!-- Folia 26.x (latest) is built against Java 25 bytecode; a Java 25 JDK is required. -->
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <repositories>
+        <repository>
+            <id>papermc</id>
+            <url>https://repo.papermc.io/repository/maven-public/</url>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <!--
+            Hearth targets the LATEST Folia API (26.2, per PaperMC maven
+            metadata: 26.2.build.7-beta is the <release>/<latest>). The Folia
+            API extends the Paper API, so this plugin also runs on Paper, but
+            it is built and tested against Folia as the user requested.
+
+            Fallback: if your server still runs the latest stable-suffixed
+            line, set the version to 26.1.2.build.8-stable and change
+            api-version in plugin.yml to '26.1' (verified to compile as well).
+        -->
+        <dependency>
+            <groupId>dev.folia</groupId>
+            <artifactId>folia-api</artifactId>
+            <version>26.2.build.7-beta</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>Hearth-${project.version}</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.1</version>
+            </plugin>
+        </plugins>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
+    </build>
+</project>
