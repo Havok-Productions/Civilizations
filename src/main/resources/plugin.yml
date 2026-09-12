@@ -1,7 +1,7 @@
 name: Hearth
 version: '${project.version}'
 main: dev.hearth.HearthPlugin
-api-version: '26.2'
+api-version: '26.1'
 folia-supported: true
 author: yomamaeatstoes
 description: AI-assisted villager collective - builds walls, digs dry mines, lights, gathers, and sleeps at night.

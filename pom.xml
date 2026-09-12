@@ -27,19 +27,19 @@
 
     <dependencies>
         <!--
-            Hearth targets the LATEST Folia API (26.2, per PaperMC maven
-            metadata: 26.2.build.7-beta is the <release>/<latest>). The Folia
-            API extends the Paper API, so this plugin also runs on Paper, but
-            it is built and tested against Folia as the user requested.
+            Hearth targets the LATEST stable Folia API (26.1.2, the
+            stable-suffixed <release> in PaperMC maven metadata). A jar built
+            against 26.1 with api-version '26.1' loads on BOTH the 26.1 stable
+            line and the newer 26.2 beta line (newer servers accept plugins
+            whose api-version is at or below their own).
 
-            Fallback: if your server still runs the latest stable-suffixed
-            line, set the version to 26.1.2.build.8-stable and change
-            api-version in plugin.yml to '26.1' (verified to compile as well).
+            To build against the 26.2 beta API instead, set the version to
+            26.2.build.7-beta and api-version in plugin.yml to '26.2'.
         -->
         <dependency>
             <groupId>dev.folia</groupId>
             <artifactId>folia-api</artifactId>
-            <version>26.2.build.7-beta</version>
+            <version>26.1.2.build.8-stable</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>

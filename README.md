@@ -1,6 +1,6 @@
 # Hearth
 
-**AI-assisted villager collective for Minecraft (Folia / Paper, Java 25, Folia API 26.2 — latest).**
+**AI-assisted villager collective for Minecraft (Folia / Paper, Java 25 — built against the latest stable Folia API 26.1.2, loads on 26.1 *and* 26.2 servers).**
 
 Hearth turns a group of villagers into a small self-sufficient collective:
 
@@ -212,20 +212,20 @@ mvn package
 
 Output: `target/Hearth-1.2.0.jar` → drop into your Folia/Paper `plugins/` folder.
 
-> **Version note:** this project is built against the **latest Folia API**,
-> `dev.folia:folia-api:26.2.build.7-beta` (the `<release>`/`<latest>` in
-> PaperMC's maven metadata as of this writing), and ships
-> `api-version: '26.2'`. It loads on a **Folia 26.2** server running **Java 25**.
-> Because the Folia API extends the Paper API, the jar should also load on a
-> Paper server of the same `api-version` (`folia-supported: true` is simply
-> ignored by Paper).
+> **Version note:** this project is built against the **latest stable Folia
+> API**, `dev.folia:folia-api:26.1.2.build.8-stable`, and ships
+> `api-version: '26.1'` — so the jar loads on **Folia 26.1.2** (the current
+> stable-suffixed line) *and* on the newer **26.2** beta line (newer servers
+> accept plugins whose api-version is at or below their own). It runs on
+> **Java 25**. Because the Folia API extends the Paper API, the jar should
+> also load on a Paper server of the same `api-version` (`folia-supported: true`
+> is simply ignored by Paper).
 >
-> - Still running the latest **stable-suffixed** line (26.1.x)? Set the
->   dependency in `pom.xml` to `dev.folia:folia-api:26.1.2.build.8-stable`
->   and `api-version: '26.1'` in `plugin.yml`, then rebuild — the project
->   compiles cleanly against both.
-> - Verified with `mvn clean package` (BUILD SUCCESS) on both 26.1.2 and
->   26.2, `release 25`.
+> - Want to build against the **26.2 beta** API instead? Set the dependency
+>   in `pom.xml` to `dev.folia:folia-api:26.2.build.7-beta` and
+>   `api-version: '26.2'` in `plugin.yml`, then rebuild.
+> - Verified with `mvn clean package` (BUILD SUCCESS) against 26.1.2
+>   (`release 25`); it also compiles cleanly against 26.2.
 
 ## Setup
 
