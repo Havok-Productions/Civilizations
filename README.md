@@ -110,7 +110,7 @@ the ceiling holds.
 
 The AI is part of the plugin, not an external dependency:
 
-- **`ai.enabled: true`** turns it on. `ai.backend` chooses the brain:
+- **On by default** (`ai.enabled: true`). `ai.backend` chooses the brain:
   - **`local` (default)** — Hearth bootstraps a self-contained runtime into its
     own folder on first enable:
     1. fetches the latest llama.cpp release and installs `llama-server`
@@ -182,10 +182,11 @@ Output: `target/Hearth-1.0.0.jar` → drop into your Folia/Paper `plugins/` fold
 ## Setup
 
 1. Spawn (or find) some villagers in one area.
-2. Put `Hearth-1.1.0.jar` in `plugins/`, start the server.
-3. (Optional) set `ai.enabled: true` in `config.yml` to switch on the Quen AI core;
-   with `backend: local` the first run downloads the runtime + model (~1.1 GB) into
-   the plugin folder — after that it works fully offline.
+2. Put `Hearth-1.1.1.jar` in `plugins/`, start the server.
+3. The Quen AI core is **on by default** (`ai.enabled: true`, `backend: local`):
+   the first run downloads the runtime + model (~1.1 GB) into the plugin folder,
+   then the agents run the villagers — fully offline afterwards. Set
+   `ai.enabled: false` in `config.yml` to run on local rules only.
 4. Watch them:
    - place the community chest,
    - build the wall + gate,
@@ -220,7 +221,7 @@ Permissions: `hearth.admin` (default: op), `hearth.player` (default: everyone).
 | `mining.length` | 64 | Tunnel length in columns |
 | `lighting.material` | GLOWSTONE | Light source (TORCH works too — they gather sticks+coal) |
 | `sleep.sleep-from` / `sleep-until` | 17000 / 7000 | Sleep window (Minecraft time) |
-| `ai.enabled` | false | Turn on the Quen AI core (agents run the villagers) |
+| `ai.enabled` | true | Quen AI core on/off (agents run the villagers) |
 | `ai.backend` | local | `local` = bundled llama.cpp + Qwen in `local-ai/`; `external` = remote API |
 | `ai.agents-count` | 3 | Number of Quen mini-agents (each keeps its own memory) |
 | `ai.local.model-repo` / `model-file` | Qwen2.5-1.5B | The local Quen model (swap for Qwen3-4B = bigger brain) |

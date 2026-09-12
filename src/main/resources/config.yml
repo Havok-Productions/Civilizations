@@ -118,7 +118,10 @@ defense:
 # flee mobs) no matter what the model says. If the AI is down or still
 # booting, local rules keep the village running.
 ai:
-  enabled: false
+  # ON by default: the Quen agents run the villagers' priorities, and with the
+  # local backend the first start downloads the runtime + model (~1.1 GB) into
+  # local-ai/. Set to false to run on local rules only.
+  enabled: true
   # backend:
   #   - "local"    -> Hearth downloads a llama.cpp server + Qwen model into
   #                   its own local-ai/ folder on first enable and runs the AI

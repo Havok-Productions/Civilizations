@@ -127,7 +127,7 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
     private long sleepFrom = 17000L;
     private long sleepUntil = 7000L;
     private int fleeRadius = 8;
-    private volatile boolean aiEnabled = false;
+    private volatile boolean aiEnabled = true; // ON by default (config: ai.enabled)
     /** local = self-hosted Quen runtime (downloaded into local-ai/); external = remote OpenAI-compatible API. */
     private String aiBackend = "local";
     private int aiAgentsCount = 3;
@@ -500,7 +500,7 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         sleepFrom = c.getLong("sleep.sleep-from", 17000L);
         sleepUntil = c.getLong("sleep.sleep-until", 7000L);
         fleeRadius = c.getInt("defense.flee-radius", 8);
-        aiEnabled = c.getBoolean("ai.enabled", false);
+        aiEnabled = c.getBoolean("ai.enabled", true);
         aiBackend = c.getString("ai.backend", "local").toLowerCase(Locale.ROOT);
         aiAgentsCount = Math.max(1, c.getInt("ai.agents-count", 3));
         aiCharter = c.getString("ai.charter", "Hearth is a peaceful collective.");
