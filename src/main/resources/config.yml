@@ -103,28 +103,68 @@ defense:
   # Safe spot is the chest location (or village center if no chest).
   safe-spot: chest
 
-# ---- AI advisor (optional, makes the village smarter) ----------
-# Hearth sends the village a JSON "report" and asks the model to pick the
-# single most important next task. Local rules always win for safety
-# (e.g. villagers ALWAYS sleep at night no matter what the model says).
+# ---- Quen AI core (optional, makes the village smarter) --------
+# The AI lives INSIDE the plugin: a pool of "Quen" mini-agents, one per
+# subset of villages, each with its own persistent memory file.
+#
+#   plugins/Civilizations/
+#     memory/agent-1/<villageId>.json   <- what agent 1 learned (human-readable)
+#     memory/agent-2/<villageId>.json
+#     memory/agent-3/<villageId>.json
+#     local-ai/bin/llama-server(.exe)   <- local runtime (backend: local only)
+#     local-ai/models/<model>.gguf
+#
+# Local rules ALWAYS win for safety (villagers always sleep at night, always
+# flee mobs) no matter what the model says. If the AI is down or still
+# booting, local rules keep the village running.
 ai:
   enabled: false
-  # provider:
-  #   - "openai"   -> ChatGPT (base-url below, model e.g. gpt-4o-mini)
-  #   - "deepseek" -> DeepSeek (base-url below, model e.g. deepseek-chat)
-  # Both speak the OpenAI-compatible /chat/completions API.
-  provider: deepseek
-  base-url: "https://api.deepseek.com/v1"
-  # base-url: "https://api.openai.com/v1"
-  model: "deepseek-chat"
-  # model: "gpt-4o-mini"
-  api-key: "sk-put-your-key-here"
+  # backend:
+  #   - "local"    -> Hearth downloads a llama.cpp server + Qwen model into
+  #                   its own local-ai/ folder on first enable and runs the AI
+  #                   on this machine (no internet needed after first run).
+  #   - "external" -> call a remote OpenAI-compatible API (DeepSeek, ChatGPT,
+  #                   LM Studio, ...). No downloads, no local CPU/GPU load.
+  backend: local
+  # How many mini-agents run the villagers (each owns a stable subset of
+  # villages and keeps its own memory). 1 is fine for a few villages.
+  agents-count: 3
+  # How often (minutes) to re-ask an agent per village.
+  interval-minutes: 4
+  # Chat parameters (both backends).
   temperature: 0.2
   max-tokens: 220
   timeout-seconds: 25
-  # How often (minutes) to re-ask the advisor per village.
-  interval-minutes: 4
-  # Extra context the model sees (villagers will also see this as the "village charter").
+
+  # ---- local Quen runtime (backend: local) ------------------------
+  local:
+    # Port for the bundled llama-server (127.0.0.1 only). If busy, +1..+9 are
+    # tried automatically.
+    port: 8642
+    # Context size for the model (tokens). 4096 is plenty for these reports.
+    context-size: 4096
+    # CPU threads for inference. Set to your physical cores (4-8 is a good
+    # default for a 1.5B model).
+    threads: 4
+    # The Qwen ("Quen") model, downloaded from Hugging Face on first run.
+    # Default: Qwen2.5 1.5B Instruct Q4_K_M (~950 MB) - fast on CPU, plenty for
+    # picking the next village task.
+    model-repo: "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+    model-file: "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    # Bigger brain (needs ~2.5 GB RAM + more CPU time):
+    #   model-repo: "Qwen/Qwen3-4B-GGUF"
+    #   model-file: "Qwen3-4B-Q4_K_M.gguf"
+
+  # ---- external API (backend: external) ----------------------------
+  # Both DeepSeek and OpenAI speak the OpenAI-compatible /chat/completions API.
+  external:
+    base-url: "https://api.deepseek.com/v1"
+    # base-url: "https://api.openai.com/v1"
+    model: "deepseek-chat"
+    # model: "gpt-4o-mini"
+    api-key: "sk-put-your-key-here"
+
+  # The village charter every agent sees (and remembers per village).
   charter: |
     Hearth is a peaceful collective. Priorities when choosing one task:
       1. SURVIVAL - repair or build walls if integrity is below 80%, especially at night.

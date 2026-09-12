@@ -11,7 +11,7 @@ Hearth turns a group of villagers into a small self-sufficient collective:
 - 📦 **Places a community chest automatically** if the village doesn't have one, and villagers deposit everything they gather there
 - 🌙 **Goes to bed at night** (sleep window matches vanilla: ~5:20 PM → 7:00 AM) and wakes in the morning
 - 🏃 **Moves at normal villager speed** — small velocity nudges + occasional natural "step", never 100 mph teleport-zoomies
-- 🤖 **Optional AI advisor** (ChatGPT **or** DeepSeek): each village sends the model a JSON report (wall integrity, chest stockpile, mine progress, nearby monsters, time of day) and the model picks the next priority task. Local safety rules always override the AI (villagers always sleep at night, always flee mobs).
+- 🤖 **Quen AI core, built into the plugin**: a pool of "Quen" mini-agents (default 3) runs the villagers' priorities. Each agent owns a stable subset of villages and keeps a **persistent, human-readable memory file** per village — it remembers progress and its own decisions across restarts. The brain can be **self-hosted**: on first enable Hearth downloads a llama.cpp server + a Qwen model into its own folder and runs the AI locally (no API, no internet after the first run) — or you can point it at an external API (DeepSeek, ChatGPT, LM Studio). Local safety rules always override the AI (villagers always sleep at night, always flee mobs).
 
 Hearth is an **original implementation**. It borrows *ideas* from two well-known projects (Baritone's budgeted A* pathfinding and behavior concepts; Civilizations' villager task-management approach) but contains no copied code.
 
@@ -41,7 +41,9 @@ Hearth is an **original implementation**. It borrows *ideas* from two well-known
 │                      stuck-detection with one small "step"         │
 │                                                              │     │
 │  Planners         WallPlanner · MinePlanner · LightPlanner         │
-│  AIAdvisor        LLMAdvisor (OpenAI-compatible: OpenAI/DeepSeek)  │
+│  Quen AI core     AgentPool of mini-agents (own threads + memory)  │
+│                       ├─ LocalAIManager: bundles llama.cpp + Qwen  │
+│                       └─ ChatCompletions: OpenAI-compatible calls  │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -64,9 +66,10 @@ Hearth is written for Folia's region-threaded runtime, not just its API:
   the world state is re-validated before the write. Chest→villager transfers
   are split: the chest write lands on the chest's region, the inventory write
   is queued onto the villager's own region.
-- **Async AI** — the only off-thread work is the LLM HTTP call; its callback
-  is marshalled back to the village center's region before it touches village
-  state.
+- **Async AI** — the only off-thread work is the LLM call (and the local
+  runtime's downloads/process), which happens on the agents' own daemon
+  threads; the advice callback is marshalled back to the village center's
+  region before it touches village state.
 
 No world/entity access is ever scheduled on the legacy global
 `BukkitScheduler` (the classic reason Folia plugins break at runtime), shared
@@ -103,17 +106,50 @@ doors, chests, beds, furniture, …). Only a fully clean route is dug.
 Room-and-pillar: one full pillar is left every `mining.pillar-every` columns so
 the ceiling holds.
 
-### AI advisor
+### Quen AI core (multi-agent, self-hostable)
 
-- Enabled with `ai.enabled: true` + an API key.
-- `provider` is just a label — what matters is `base-url` + `model`:
-  - **DeepSeek**: `https://api.deepseek.com/v1` + `deepseek-chat` (default)
-  - **OpenAI/ChatGPT**: `https://api.openai.com/v1` + `gpt-4o-mini` (or any model)
-- The model receives a compact JSON report + the "village charter" (editable in
-  `config.yml`) and must answer `{"task": "...", "reason": "..."}`.
-- Advice is cached per village for `ai.interval-minutes`; if the model is down,
-  local rules keep the village running.
-- Test with `/hearth ai test`.
+The AI is part of the plugin, not an external dependency:
+
+- **`ai.enabled: true`** turns it on. `ai.backend` chooses the brain:
+  - **`local` (default)** — Hearth bootstraps a self-contained runtime into its
+    own folder on first enable:
+    1. fetches the latest llama.cpp release and installs `llama-server`
+       into `local-ai/bin/`,
+    2. downloads the Qwen ("Quen") model into `local-ai/models/`
+       (default `Qwen2.5-1.5B-Instruct` Q4_K_M, ~950 MB — one time),
+    3. starts `llama-server` on `127.0.0.1` (port 8642, auto-scans if busy)
+       and waits until `/v1/models` answers.
+    After the first run it needs **no internet at all**. Swap in the bigger
+    brain with `ai.local.model-repo` / `ai.local.model-file` (e.g.
+    `Qwen/Qwen3-4B-GGUF` → `Qwen3-4B-Q4_K_M.gguf`).
+  - **`external`** — skip the download entirely and call any OpenAI-compatible
+    API (DeepSeek, OpenAI/ChatGPT, LM Studio, ...) via `ai.external.base-url` /
+    `model` / `api-key`. The v1.0.0 `ai.base-url`/`ai.model`/`ai.api-key` keys
+    still work as a fallback.
+- **Multiple mini-agents** — `ai.agents-count` (default 3) agents run in
+  parallel, each on its own daemon thread. A village's UUID hash decides which
+  agent owns it, so the *same* agent always advises the *same* village.
+- **Persistent memory** — each agent stores what it has learned per village in
+  plain JSON at `memory/agent-<N>/<villageId>.json`: advice counts, the last
+  snapshot (wall integrity / mine progress / chest stock) it diffed for
+  progress, and a capped list of learnings ("mine progress 40% → 45%", "chose
+  lighting: village is dark at night"). The agent feeds its own recent
+  learnings back into the prompt, and you can read or edit the file directly.
+- Each agent sends the model the village JSON report + the "village charter"
+  (editable in `config.yml`) and its memory, and expects
+  `{"task": "...", "reason": "..."}`.
+- Advice is cached per village for `ai.interval-minutes`; while the local
+  runtime is still booting, or the AI is down, local rules keep the village
+  running — villagers never stall waiting on the model.
+- Status: `/hearth ai status` (backend, local runtime state, per-agent
+  stats); test one round with `/hearth ai test`.
+
+**Honest caveats:** a 1.5B model on CPU is modest — it's good at picking the
+right *task* from a factual report, not at deep planning (and each answer
+still takes a second or two on CPU). Runtime untested in the dev environment
+(compile + reasoning only); the first local run needs internet and ~1.1 GB of
+download. If the local runtime misbehaves on your platform, `backend: external`
+with any OpenAI-compatible endpoint (or LM Studio) is the escape hatch.
 
 ---
 
@@ -146,8 +182,11 @@ Output: `target/Hearth-1.0.0.jar` → drop into your Folia/Paper `plugins/` fold
 ## Setup
 
 1. Spawn (or find) some villagers in one area.
-2. Put `Hearth-1.0.0.jar` in `plugins/`, start the server.
-3. Watch them:
+2. Put `Hearth-1.1.0.jar` in `plugins/`, start the server.
+3. (Optional) set `ai.enabled: true` in `config.yml` to switch on the Quen AI core;
+   with `backend: local` the first run downloads the runtime + model (~1.1 GB) into
+   the plugin folder — after that it works fully offline.
+4. Watch them:
    - place the community chest,
    - build the wall + gate,
    - dig the mine, light everything,
@@ -162,7 +201,7 @@ Output: `target/Hearth-1.0.0.jar` → drop into your Folia/Paper `plugins/` fold
 | `/hearth status [villager]` | Village + per-villager brain status |
 | `/hearth wall` / `mine` / `light` | Force the village to focus on that task (5 min) |
 | `/hearth chest` | Show community chest info |
-| `/hearth ai on\|off\|test` | Control/test the AI advisor |
+| `/hearth ai on\|off\|test\|status` | Control/test/status the Quen AI core (agents + local runtime) |
 | `/hearth reload` | Reload `config.yml` |
 | `/hearth stop` | Pause the plugin |
 
@@ -181,7 +220,10 @@ Permissions: `hearth.admin` (default: op), `hearth.player` (default: everyone).
 | `mining.length` | 64 | Tunnel length in columns |
 | `lighting.material` | GLOWSTONE | Light source (TORCH works too — they gather sticks+coal) |
 | `sleep.sleep-from` / `sleep-until` | 17000 / 7000 | Sleep window (Minecraft time) |
-| `ai.enabled` | false | Turn on the ChatGPT/DeepSeek advisor |
+| `ai.enabled` | false | Turn on the Quen AI core (agents run the villagers) |
+| `ai.backend` | local | `local` = bundled llama.cpp + Qwen in `local-ai/`; `external` = remote API |
+| `ai.agents-count` | 3 | Number of Quen mini-agents (each keeps its own memory) |
+| `ai.local.model-repo` / `model-file` | Qwen2.5-1.5B | The local Quen model (swap for Qwen3-4B = bigger brain) |
 
 ## Honest limitations (v1)
 

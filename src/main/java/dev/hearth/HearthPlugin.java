@@ -2,7 +2,9 @@ package dev.hearth;
 
 import dev.hearth.ai.AIAdvisor;
 import dev.hearth.ai.AIAdvice;
-import dev.hearth.ai.LLMAdvisor;
+import dev.hearth.ai.AgentPool;
+import dev.hearth.ai.LocalAIManager;
+import dev.hearth.ai.VillagerAgent;
 import dev.hearth.brain.PriorityPolicy;
 import dev.hearth.brain.TaskType;
 import dev.hearth.brain.VillagerBrain;
@@ -53,8 +55,10 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>{@link PathStore} runs budgeted, resumable A* pathfinding (Baritone-style ideas, original implementation).</li>
  *   <li>{@link MovementController} moves villagers at normal walking speed.</li>
  *   <li>Planners ({@link WallPlanner}, {@link MinePlanner}, {@link LightPlanner}) produce concrete build jobs.</li>
- *   <li>{@link AIAdvisor} (optional) asks ChatGPT/DeepSeek which task the village should do next;
- *       local rules in {@link PriorityPolicy} keep it safe when AI is off or fails.</li>
+ *   <li>The Quen AI core (optional): a pool of mini-agents ({@code dev.hearth.ai})
+ *       that run on their own threads against either a bundled local Qwen/llama.cpp
+ *       runtime or a remote OpenAI-compatible API; local rules in
+ *       {@link PriorityPolicy} keep it safe when AI is off or fails.</li>
  * </ul>
  *
  * <p><b>Folia threading model (genuinely region-safe):</b>
@@ -124,15 +128,24 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
     private long sleepUntil = 7000L;
     private int fleeRadius = 8;
     private volatile boolean aiEnabled = false;
-    private String aiProvider = "deepseek";
-    private String aiBaseUrl = "https://api.deepseek.com/v1";
-    private String aiModel = "deepseek-chat";
-    private String aiApiKey = "";
+    /** local = self-hosted Quen runtime (downloaded into local-ai/); external = remote OpenAI-compatible API. */
+    private String aiBackend = "local";
+    private int aiAgentsCount = 3;
+    private String aiCharter = "Hearth is a peaceful collective.";
     private double aiTemperature = 0.2;
     private int aiMaxTokens = 220;
     private int aiTimeoutSeconds = 25;
     private int aiIntervalMinutes = 4;
-    private String aiCharter = "Hearth is a peaceful collective.";
+    // External (remote) OpenAI-compatible endpoint.
+    private String aiExternalBaseUrl = "https://api.deepseek.com/v1";
+    private String aiExternalModel = "deepseek-chat";
+    private String aiExternalApiKey = "";
+    // Local Quen runtime (llama.cpp + Qwen GGUF).
+    private int aiLocalPort = 8642;
+    private int aiLocalContext = 4096;
+    private int aiLocalThreads = 4;
+    private String aiLocalModelRepo = "Qwen/Qwen2.5-1.5B-Instruct-GGUF";
+    private String aiLocalModelFile = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
 
     // Runtime
     private VillageManager villageManager;
@@ -144,6 +157,8 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
     private LightPlanner lightPlanner;
     private PriorityPolicy priorityPolicy;
     private AIAdvisor aiAdvisor;
+    private LocalAIManager localAI;
+    private AgentPool agentPool;
     private final Map<UUID, VillagerBrain> brains = new ConcurrentHashMap<>();
     /** Villagers whose brain task is currently running (one entity task each). */
     private final Set<UUID> startedBrains = ConcurrentHashMap.newKeySet();
@@ -163,7 +178,10 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         wallPlanner = new WallPlanner(this);
         minePlanner = new MinePlanner(this);
         lightPlanner = new LightPlanner(this);
-        aiAdvisor = new LLMAdvisor(this);
+        localAI = new LocalAIManager(this);
+        agentPool = new AgentPool(this);
+        agentPool.refresh();
+        aiAdvisor = agentPool;
         priorityPolicy = new PriorityPolicy(this);
 
         getServer().getPluginManager().registerEvents(this, this);
@@ -180,12 +198,24 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
 
         getLogger().info("Hearth enabled (Folia region-threaded). Villagers will build walls, dig dry mines, light up, gather, and sleep at night.");
         if (aiEnabled) {
-            getLogger().info("AI advisor enabled: " + aiProvider + " / " + aiModel);
+            if ("local".equalsIgnoreCase(aiBackend)) {
+                getLogger().info("Quen local AI: bootstrapping into local-ai/ (first run downloads the llama.cpp runtime + Qwen model, ~1.1 GB).");
+                localAI.start();
+            } else {
+                getLogger().info("Quen AI advisor: external endpoint " + aiExternalBaseUrl + " / " + aiExternalModel);
+            }
         }
     }
 
     @Override
     public void onDisable() {
+        // Stop the Quen agents first (no more LLM calls), then the local runtime.
+        if (agentPool != null) {
+            agentPool.shutdown();
+        }
+        if (localAI != null) {
+            localAI.shutdown();
+        }
         // Folia cancels all of the plugin's region/entity tasks on disable.
         // Best-effort: wake anyone asleep so they are not stuck in the bed pose on
         // restart (a short teleport breaks the sleep animation). During shutdown the
@@ -471,15 +501,32 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         sleepUntil = c.getLong("sleep.sleep-until", 7000L);
         fleeRadius = c.getInt("defense.flee-radius", 8);
         aiEnabled = c.getBoolean("ai.enabled", false);
-        aiProvider = c.getString("ai.provider", "deepseek").toLowerCase(Locale.ROOT);
-        aiBaseUrl = c.getString("ai.base-url", "https://api.deepseek.com/v1");
-        aiModel = c.getString("ai.model", "deepseek-chat");
-        aiApiKey = c.getString("ai.api-key", "");
+        aiBackend = c.getString("ai.backend", "local").toLowerCase(Locale.ROOT);
+        aiAgentsCount = Math.max(1, c.getInt("ai.agents-count", 3));
+        aiCharter = c.getString("ai.charter", "Hearth is a peaceful collective.");
         aiTemperature = c.getDouble("ai.temperature", 0.2);
         aiMaxTokens = c.getInt("ai.max-tokens", 220);
         aiTimeoutSeconds = c.getInt("ai.timeout-seconds", 25);
         aiIntervalMinutes = c.getInt("ai.interval-minutes", 4);
-        aiCharter = c.getString("ai.charter", "Hearth is a peaceful collective.");
+        // External endpoint; the v1.0.0 top-level keys (ai.base-url/ai.model/ai.api-key)
+        // still work, so an existing config keeps functioning after the upgrade.
+        aiExternalBaseUrl = firstNonBlank(c.getString("ai.external.base-url"), c.getString("ai.base-url"), "https://api.deepseek.com/v1");
+        aiExternalModel = firstNonBlank(c.getString("ai.external.model"), c.getString("ai.model"), "deepseek-chat");
+        aiExternalApiKey = firstNonBlank(c.getString("ai.external.api-key"), c.getString("ai.api-key"), "");
+        aiLocalPort = c.getInt("ai.local.port", 8642);
+        aiLocalContext = c.getInt("ai.local.context-size", 4096);
+        aiLocalThreads = c.getInt("ai.local.threads", 4);
+        aiLocalModelRepo = c.getString("ai.local.model-repo", "Qwen/Qwen2.5-1.5B-Instruct-GGUF");
+        aiLocalModelFile = c.getString("ai.local.model-file", "qwen2.5-1.5b-instruct-q4_k_m.gguf");
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String v : values) {
+            if (v != null && !v.isBlank()) {
+                return v;
+            }
+        }
+        return null;
     }
 
     private Material parseMaterial(String name, Material fallback) {
@@ -493,8 +540,11 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
     public void reloadPlugin() {
         reloadConfig();
         loadConfig();
-        if (aiAdvisor instanceof LLMAdvisor llm) {
-            llm.refresh();
+        if (agentPool != null) {
+            agentPool.refresh();
+        }
+        if (localAI != null && aiEnabled && "local".equalsIgnoreCase(aiBackend) && !localAI.ready()) {
+            localAI.start();
         }
         getLogger().info("Hearth config reloaded.");
     }
@@ -547,7 +597,7 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         s.sendMessage("/hearth status [villager] - village/brain status");
         s.sendMessage("/hearth wall|mine|light - force a task now");
         s.sendMessage("/hearth chest - show community chest info");
-        s.sendMessage("/hearth ai on|off|test - control the AI advisor");
+        s.sendMessage("/hearth ai on|off|test|status - Quen AI advisor (local Quen runtime or external API)");
         s.sendMessage("/hearth reload - reload config");
         s.sendMessage("/hearth stop - pause the plugin");
     }
@@ -621,14 +671,19 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
 
     private void aiCommand(CommandSender s, String[] args) {
         if (args.length < 2) {
-            s.sendMessage("§6AI advisor§7: " + (aiEnabled ? "ON" : "OFF") + " (" + aiProvider + " / " + aiModel + ")");
-            s.sendMessage("Usage: /hearth ai on|off|test");
+            aiStatus(s);
+            s.sendMessage("Usage: /hearth ai on|off|test|status");
             return;
         }
         switch (args[1].toLowerCase(Locale.ROOT)) {
             case "on" -> {
                 aiEnabled = true;
-                s.sendMessage("§aAI advisor enabled.");
+                if ("local".equalsIgnoreCase(aiBackend) && localAI != null && !localAI.ready()) {
+                    localAI.start();
+                    s.sendMessage("§aAI advisor enabled. §7Local Quen runtime is starting (see console); local rules decide until it reports READY.");
+                } else {
+                    s.sendMessage("§aAI advisor enabled.");
+                }
             }
             case "off" -> {
                 aiEnabled = false;
@@ -640,12 +695,26 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
                     s.sendMessage("§eNo village to test with.");
                     return;
                 }
-                s.sendMessage("§7Asking " + aiProvider + " for advice...");
+                s.sendMessage("§7Asking Quen for advice about §6" + v.getName() + "§7...");
                 aiAdvisor.advise(this, v, advice -> {
-                    s.sendMessage("§7AI says: §f" + (advice != null ? advice.task + " - " + advice.reason : "null"));
+                    s.sendMessage("§7Quen says: §f" + (advice != null ? advice.task + " - " + advice.reason : "null (local rules apply)"));
                 });
             }
-            default -> s.sendMessage("§cUsage: /hearth ai on|off|test");
+            case "status" -> aiStatus(s);
+            default -> s.sendMessage("§cUsage: /hearth ai on|off|test|status");
+        }
+    }
+
+    private void aiStatus(CommandSender s) {
+        s.sendMessage("§6Quen AI advisor§7: " + (aiEnabled ? "§aON" : "§cOFF")
+                + " | backend: " + aiBackend
+                + ("local".equalsIgnoreCase(aiBackend)
+                        ? (localAI != null ? " | local runtime: " + localAI.status() : "")
+                        : " | endpoint: " + aiExternalBaseUrl + " / " + aiExternalModel));
+        if (agentPool != null) {
+            for (VillagerAgent agent : agentPool.agents()) {
+                s.sendMessage("  §7" + agent.status());
+            }
         }
     }
 
@@ -659,7 +728,7 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
             return filter(Arrays.asList("help", "list", "status", "wall", "mine", "light", "chest", "ai", "reload", "stop"), args[0]);
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("ai")) {
-            return filter(Arrays.asList("on", "off", "test"), args[1]);
+            return filter(Arrays.asList("on", "off", "test", "status"), args[1]);
         }
         return List.of();
     }
@@ -917,20 +986,78 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         this.aiEnabled = b;
     }
 
-    public String aiProvider() {
-        return aiProvider;
+    public String aiBackend() {
+        return aiBackend;
     }
 
-    public String aiBaseUrl() {
-        return aiBaseUrl;
+    public int aiAgentsCount() {
+        return aiAgentsCount;
     }
 
-    public String aiModel() {
-        return aiModel;
+    public String aiExternalBaseUrl() {
+        return aiExternalBaseUrl;
     }
 
-    public String aiApiKey() {
-        return aiApiKey;
+    public String aiExternalModel() {
+        return aiExternalModel;
+    }
+
+    public String aiExternalApiKey() {
+        return aiExternalApiKey;
+    }
+
+    public int aiLocalPort() {
+        return aiLocalPort;
+    }
+
+    public int aiLocalContext() {
+        return aiLocalContext;
+    }
+
+    public int aiLocalThreads() {
+        return aiLocalThreads;
+    }
+
+    public String aiLocalModelRepo() {
+        return aiLocalModelRepo;
+    }
+
+    public String aiLocalModelFile() {
+        return aiLocalModelFile;
+    }
+
+    public LocalAIManager localAI() {
+        return localAI;
+    }
+
+    public AgentPool agentPool() {
+        return agentPool;
+    }
+
+    /**
+     * Resolve the endpoint the Quen agents talk to, for the current backend.
+     * Local backend -> the bundled llama-server (only valid while READY);
+     * external backend -> the configured remote API.
+     */
+    public String aiEndpointBaseUrl() {
+        if ("local".equalsIgnoreCase(aiBackend)) {
+            return localAI != null && localAI.ready() ? localAI.baseUrl() : "";
+        }
+        return aiExternalBaseUrl;
+    }
+
+    public String aiEndpointModel() {
+        if ("local".equalsIgnoreCase(aiBackend)) {
+            return aiLocalModelFile;
+        }
+        return aiExternalModel;
+    }
+
+    public String aiEndpointApiKey() {
+        if ("local".equalsIgnoreCase(aiBackend)) {
+            return "quen"; // ignored by llama-server, but keeps the client simple
+        }
+        return aiExternalApiKey;
     }
 
     public double aiTemperature() {
