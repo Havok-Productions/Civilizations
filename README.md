@@ -205,12 +205,25 @@ Everything is off with one key: `society.enabled: false`.
 
 Requires **Java 25** and **Maven 3.9+** (the Folia 26.x API is Java-25 bytecode).
 
+### Changelog
+
+- **v1.2.1** — Folia runtime fixes: village discovery now runs on a real
+  region thread (the global region thread may not load chunks, which crashed
+  the bed scan), and brain/village tasks use a 1-tick initial delay (Folia
+  rejects `delay <= 0`, so brains were never starting). Local AI bootstrap now
+  resolves the actual llama.cpp release asset name from the GitHub API
+  (previous names 404'd), falling back to known-correct names.
+- **v1.2.0** — village society: gossip, shared book + auto-placed bookshelf,
+  job claims, "we need X" requests, stuck-consult to Quen; GPU (CUDA)
+  inference support (`ai.local.gpu`).
+
+
 ```bash
 cd hearth
 mvn package
 ```
 
-Output: `target/Hearth-1.2.0.jar` → drop into your Folia/Paper `plugins/` folder.
+Output: `target/Hearth-1.2.1.jar` → drop into your Folia/Paper `plugins/` folder.
 
 > **Version note:** this project is built against the **latest stable Folia
 > API**, `dev.folia:folia-api:26.1.2.build.8-stable`, and ships
@@ -230,7 +243,7 @@ Output: `target/Hearth-1.2.0.jar` → drop into your Folia/Paper `plugins/` fold
 ## Setup
 
 1. Spawn (or find) some villagers in one area.
-2. Put `Hearth-1.2.0.jar` in `plugins/`, start the server.
+2. Put `Hearth-1.2.1.jar` in `plugins/`, start the server.
 3. The Quen AI core is **on by default** (`ai.enabled: true`, `backend: local`):
    the first run downloads the runtime + model (~1.1 GB) into the plugin folder,
    then the agents run the villagers — fully offline afterwards. Set

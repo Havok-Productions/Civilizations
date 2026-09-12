@@ -1,6 +1,7 @@
 package dev.hearth.ai;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.hearth.HearthPlugin;
@@ -219,14 +220,7 @@ public class LocalAIManager {
             if (!binPresent) {
                 setState(State.DOWNLOADING_RUNTIME, "resolving latest llama.cpp release");
                 String tag = fetchLatestLlamaTag();
-                List<String> candidates = new ArrayList<>();
-                if (wantCuda) {
-                    String cuda = cudaAssetName(os, arch, tag);
-                    if (cuda != null) {
-                        candidates.add(cuda);
-                    }
-                }
-                candidates.add(cpuAssetName(os, arch, tag));
+                List<String> candidates = runtimeAssetCandidates(os, arch, tag, wantCuda);
 
                 String chosenAsset = null;
                 for (String asset : candidates) {
@@ -252,7 +246,7 @@ public class LocalAIManager {
                     throw new IllegalStateException("no llama.cpp runtime asset could be downloaded for this platform");
                 }
                 makeExecutable(serverBin);
-                useCuda = chosenAsset.contains("-cuda-");
+                useCuda = isCudaAsset(chosenAsset);
                 variant = useCuda ? "cuda" : "cpu";
                 writeMarker(marker, variant);
                 log("runtime installed: " + chosenAsset + (useCuda ? " (CUDA build - inference will use the GPU)" : " (CPU build)"));
@@ -362,37 +356,116 @@ public class LocalAIManager {
         return tag;
     }
 
-    private static String cpuAssetName(String os, String arch, String tag) {
-        if ("win".equals(os)) {
-            // The x64 zip runs on Windows ARM via emulation.
-            return "llama-" + tag + "-bin-win-cpu-x64.zip";
+    /**
+     * Ordered candidate asset names for this platform (CUDA first when wanted).
+     *
+     * <p>Asset names change between llama.cpp releases (e.g. {@code win-cpu-x64}
+     * became {@code win-x64}, {@code win-cuda-x64} became {@code win-cuda12-x64}),
+     * so pure guessing 404s. We therefore prefer the release's real asset list
+     * from the GitHub API and fall back to the known current names when the API
+     * is unreachable.
+     */
+    private List<String> runtimeAssetCandidates(String os, String arch, String tag, boolean wantCuda) {
+        List<String> out = new ArrayList<>();
+        List<String> listed = listedAssetNames();
+        if (listed != null) {
+            if (wantCuda) {
+                out.addAll(matchAssets(listed, os, arch, true));
+            }
+            out.addAll(matchAssets(listed, os, arch, false));
         }
-        if ("mac".equals(os)) {
-            // The macOS prebuilds use Apple Metal (no separate CUDA build exists).
-            return "llama-" + tag + "-bin-macos-" + arch + ".tar.gz";
+        for (String known : knownAssets(os, arch, tag, wantCuda)) {
+            if (!out.contains(known)) {
+                out.add(known);
+            }
         }
-        if ("x64".equals(arch)) {
-            return "llama-" + tag + "-bin-ubuntu-x64.tar.gz";
+        if (out.isEmpty()) {
+            throw new IllegalStateException("no llama.cpp runtime asset is known for " + os + "/" + arch);
         }
-        throw new IllegalStateException("No prebuilt llama.cpp asset for this platform (linux/" + arch + ")");
+        return out;
     }
 
     /**
-     * The CUDA prebuild for this platform, or null when none exists
-     * (macOS uses Metal; linux arm64 has no CUDA prebuild). Callers fall
-     * back to the CPU asset automatically.
+     * Names of the latest release's assets, or null when the API is unreachable.
      */
-    private static String cudaAssetName(String os, String arch, String tag) {
-        if (!"x64".equals(arch)) {
+    private List<String> listedAssetNames() {
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"))
+                    .timeout(Duration.ofSeconds(30))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", "Hearth-Minecraft-Plugin")
+                    .GET()
+                    .build();
+            HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() / 100 != 2) {
+                log("release asset list unavailable (HTTP " + resp.statusCode() + ") - using known asset names");
+                return null;
+            }
+            List<String> names = new ArrayList<>();
+            for (JsonElement el : JsonParser.parseString(resp.body()).getAsJsonObject().getAsJsonArray("assets")) {
+                names.add(el.getAsJsonObject().get("name").getAsString());
+            }
+            return names;
+        } catch (Exception e) {
+            log("could not list release assets (" + e.getMessage() + ") - using known asset names");
             return null;
         }
+    }
+
+    /**
+     * Assets of the release matching this platform (+/- CUDA), in API order.
+     * macOS has no CUDA prebuild (it uses Apple Metal); linux arm64 has none
+     * either, so only the CPU asset matches there.
+     */
+    private static List<String> matchAssets(List<String> names, String os, String arch, boolean cuda) {
+        List<String> out = new ArrayList<>();
+        for (String n : names) {
+            boolean ok;
+            if ("win".equals(os)) {
+                ok = cuda ? n.matches(".*-bin-win-cuda\\d*-x64\\.zip")
+                          : n.matches(".*-bin-win-(x64|arm64)\\.zip");
+            } else if ("mac".equals(os)) {
+                ok = !cuda && n.matches(".*-bin-macos-" + ("arm64".equals(arch) ? "arm64" : "x64") + "\\.tar\\.gz");
+            } else {
+                ok = cuda ? n.matches(".*-bin-ubuntu-cuda\\d*-x64\\.tar\\.gz")
+                          : n.matches(".*-bin-ubuntu-x64\\.tar\\.gz");
+            }
+            if (ok) {
+                out.add(n);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Known-correct asset names, used when the GitHub API is unreachable.
+     */
+    private static List<String> knownAssets(String os, String arch, String tag, boolean wantCuda) {
+        List<String> out = new ArrayList<>();
+        if (wantCuda && "x64".equals(arch)) {
+            if ("win".equals(os)) {
+                out.add("llama-" + tag + "-bin-win-cuda12-x64.zip");
+            } else if ("linux".equals(os)) {
+                out.add("llama-" + tag + "-bin-ubuntu-cuda12-x64.tar.gz");
+            }
+        }
         if ("win".equals(os)) {
-            return "llama-" + tag + "-bin-win-cuda-x64.zip";
+            // The x64 zip runs on Windows ARM via emulation.
+            out.add("llama-" + tag + "-bin-win-x64.zip");
+        } else if ("mac".equals(os)) {
+            out.add("llama-" + tag + "-bin-macos-" + arch + ".tar.gz");
+        } else if ("linux".equals(os) && "x64".equals(arch)) {
+            out.add("llama-" + tag + "-bin-ubuntu-x64.tar.gz");
         }
-        if ("linux".equals(os)) {
-            return "llama-" + tag + "-bin-ubuntu-cuda-x64.tar.gz";
-        }
-        return null;
+        return out;
+    }
+
+    /**
+     * Whether a llama.cpp asset name is a CUDA build (cuda12, cuda13, ...).
+     */
+    private static boolean isCudaAsset(String name) {
+        return name != null && name.matches(".*-cuda\\d*-.*");
     }
 
     private static String readMarker(File f) {

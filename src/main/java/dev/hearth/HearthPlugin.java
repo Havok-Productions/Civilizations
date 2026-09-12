@@ -71,8 +71,11 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>Each village's coordination (stats + task resolution) runs on a
  *       <em>region task bound to the village center</em> — the single writer of
  *       village-level state.</li>
- *   <li>Discovery (rescan + starting tasks) runs on the <em>global region</em> thread
- *       and only <em>reads</em> the world; it never writes blocks.</li>
+ *   <li>Discovery (rescan + starting tasks) runs on a <em>real region</em> thread
+ *       (the one owning the anchor world's spawn) — Folia's <em>global</em> thread
+ *       may not load chunks, and village detection (bed scan, chest probes)
+ *       needs chunk access. It never writes blocks itself; the one chest
+ *       placement it can trigger is region-routed by {@link ChestManager}.</li>
  *   <li>Block writes that are not guaranteed to be in the current region (community
  *       chest placement, chest inventory transfers, block placement/breaking) are
  *       routed via {@link #runInRegion} to the owning region thread, with the state
@@ -280,16 +283,26 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
     }
 
     /**
-     * Global-region discovery: finds villages + villagers (reads only) and starts
-     * the region-bound tasks for them. Runs once shortly after enable, then on a
-     * slow interval — it also picks up villagers that spawn between rescans
-     * (spawn events start their brain immediately, see
-     * {@link #onVillagerSpawn(EntitySpawnEvent)}).
+     * Discovery: finds villages + villagers and starts the region-bound tasks
+     * for them. Runs once shortly after enable, then on a slow interval — it
+     * also picks up villagers that spawn between rescans (spawn events start
+     * their brain immediately, see {@link #onVillagerSpawn(EntitySpawnEvent)}).
+     *
+     * <p><b>Folia:</b> this must run on a <em>real region</em> thread, not the
+     * global one — the global thread cannot load chunks, while village
+     * detection ({@code VillageManager#collectBeds}, chest probes) needs chunk
+     * access. Region threads may load chunks; only the global thread may not.
      */
     private void scheduleDiscovery() {
         long period = Math.max(20L, rescanInterval);
-        Bukkit.getGlobalRegionScheduler().runDelayed(this, t -> discoverAndStart(), 20L);
-        Bukkit.getGlobalRegionScheduler().runAtFixedRate(this, t -> discoverAndStart(), period, period);
+        List<World> worlds = Bukkit.getWorlds();
+        if (worlds.isEmpty()) {
+            getLogger().warning("No worlds loaded yet; discovery will start after the first /hearth reload.");
+            return;
+        }
+        Location anchor = worlds.get(0).getSpawnLocation();
+        Bukkit.getRegionScheduler().runDelayed(this, anchor, t -> discoverAndStart(), 20L);
+        Bukkit.getRegionScheduler().runAtFixedRate(this, anchor, t -> discoverAndStart(), period, period);
     }
 
     private void discoverAndStart() {
@@ -335,7 +348,9 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         VillagerBrain brain = brainFor(v);
         try {
             // EntityScheduler.runAtFixedRate(plugin, onScheduled, body, delay, period)
-            ScheduledTask task = v.getScheduler().runAtFixedRate(this, t -> { }, () -> tickVillager(v, brain), 0L, 1L);
+            // Folia rejects an initial delay of <= 0 ("Initial delay ticks may
+            // not be <= 0"), so the first tick happens one tick later.
+            ScheduledTask task = v.getScheduler().runAtFixedRate(this, t -> { }, () -> tickVillager(v, brain), 1L, 1L);
             brain.setTask(task);
         } catch (Throwable t) {
             startedBrains.remove(id);
@@ -396,6 +411,8 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         Location center = village.getCenter();
         try {
             // RegionScheduler.runAtFixedRate(plugin, location, task, delay, period)
+            // Folia rejects an initial delay of <= 0 ("Initial delay ticks may
+            // not be <= 0"), so the first tick happens one tick later.
             ScheduledTask task = Bukkit.getRegionScheduler().runAtFixedRate(this, center, t -> {
                 if (isEnabled() && enabled) {
                     try {
@@ -404,7 +421,7 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
                         getLogger().warning("Village tick failed for " + village.getName() + ": " + ex);
                     }
                 }
-            }, 0L, 1L);
+            }, 1L, 1L);
             village.setVillageTask(task);
             village.setTaskScheduled(true);
         } catch (Throwable t) {
