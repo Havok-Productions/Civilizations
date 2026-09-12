@@ -10,6 +10,7 @@ import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.entity.Villager;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -38,6 +39,8 @@ public class Village {
     private final Set<UUID> villagerIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private volatile List<Location> beds = java.util.List.of();
     private volatile Location chestLocation;
+    private volatile Location bookshelfLocation; // v1.2: the village's shared book (on the shelf)
+    private volatile dev.hearth.social.VillageBook book; // v1.2: lazy, one per village
 
     private volatile List<dev.hearth.build.BuildJob> wallJobs = new ArrayList<>();
     private int wallBuilt = 0; // guarded by wallBuiltLock
@@ -137,10 +140,44 @@ public class Village {
         this.beds = java.util.List.copyOf(beds);
     }
 
-    // ---- chest ----
+    // ---- chest / bookshelf / book (v1.2 "society") ----
 
     public Location getChestLocation() {
         return chestLocation;
+    }
+
+    public Location getBookshelfLocation() {
+        return bookshelfLocation;
+    }
+
+    public void setBookshelfLocation(Location bookshelfLocation) {
+        this.bookshelfLocation = bookshelfLocation;
+    }
+
+    /**
+     * The village's shared ledger (the book on the bookshelf). Lazily created
+     * on first access; creation is plain file I/O (no world/entity access),
+     * which is Folia-safe from any thread. Returns null only if the plugin
+     * instance is gone (shutdown).
+     */
+    public dev.hearth.social.VillageBook getBook() {
+        dev.hearth.social.VillageBook b = book;
+        if (b == null) {
+            synchronized (this) {
+                b = book;
+                if (b == null) {
+                    HearthPlugin p = HearthPlugin.get();
+                    if (p == null) {
+                        return null;
+                    }
+                    b = new dev.hearth.social.VillageBook(
+                            new File(p.getDataFolder(), "books"), id, p.societyBookMaxEntries());
+                    b.setVillageName(name);
+                    book = b;
+                }
+            }
+        }
+        return b;
     }
 
     public void setChestLocation(Location chestLocation) {
@@ -347,13 +384,40 @@ public class Village {
         setWallIntegrityCache((int) (integrity * 100));
 
         // 4. Resolve the current top-priority task (local rules + optional AI).
+        TaskType resolved = null;
         if (!isTaskForced()) {
-            TaskType task = plugin.priorityPolicy().resolve(this, plugin);
-            if (task != null) {
-                setCurrentTask(task);
+            resolved = plugin.priorityPolicy().resolve(this, plugin);
+            if (resolved != null) {
+                TaskType previous = currentTask;
+                setCurrentTask(resolved);
+                // v1.2: record the plan in the village book when it changes.
+                if (plugin.societyEnabled() && previous != resolved) {
+                    dev.hearth.social.VillageBook b = getBook();
+                    if (b != null) {
+                        b.append(dev.hearth.social.VillageBook.Kind.PLAN, "village",
+                                "the village is now focused on " + resolved.name().toLowerCase(java.util.Locale.ROOT));
+                    }
+                }
+            }
+        }
+
+        // 5. v1.2: society upkeep — bookshelf next to the chest, stale-need cleanup.
+        if (plugin.societyEnabled()) {
+            if (plugin.societyBookshelf() && chestLocation != null && bookshelfLocation == null) {
+                plugin.bookshelfManager().ensureBookshelf(this);
+            }
+            long nowMs = System.currentTimeMillis();
+            if (nowMs - lastStaleReleaseAt > 60_000L) {
+                lastStaleReleaseAt = nowMs;
+                dev.hearth.social.VillageBook b = getBook();
+                if (b != null) {
+                    b.releaseStale(nowMs, plugin.societyNeedStaleMs());
+                }
             }
         }
     }
+
+    private volatile long lastStaleReleaseAt;
 
     @Override
     public String toString() {

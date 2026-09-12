@@ -138,6 +138,70 @@ public class VillagerAgent {
         });
     }
 
+    /**
+     * v1.2: answer one villager-specific question ("I'm stuck, what now?").
+     * Uses the same JSON contract as {@link #advise}, so the reply is always
+     * an actionable task the local rules can execute.
+     *
+     * <p>Folia-safety: same contract as {@link #advise} — the callback runs
+     * on the village center's region (or inline when not owned / not ready),
+     * and must not touch the world.
+     */
+    public void consultStuck(HearthPlugin plugin, Village village, String question, Consumer<AIAdvice> callback) {
+        if (!plugin.aiEnabled() || !owns(village, total) || !endpointReady(plugin)) {
+            callback.accept(null);
+            return;
+        }
+        final String report;
+        final String learnings;
+        final String q;
+        try {
+            report = ReportBuilder.build(village, village.getWorld().getTime());
+            learnings = memory.recentLearnings(village, 5);
+            q = question == null ? "A villager is stuck. What should it do next?" : question;
+        } catch (Throwable t) {
+            plugin.getLogger().warning("Quen agent " + id + "/" + total + " could not snapshot village: " + t);
+            callback.accept(null);
+            return;
+        }
+
+        executor.submit(() -> {
+            AIAdvice result;
+            try {
+                String content = ChatCompletions.call(
+                                client,
+                                plugin.aiEndpointBaseUrl(),
+                                plugin.aiEndpointApiKey(),
+                                plugin.aiEndpointModel(),
+                                plugin.aiTemperature(),
+                                Math.min(plugin.aiMaxTokens(), 120),
+                                Math.max(8, plugin.aiTimeoutSeconds() / 2),
+                                systemPrompt(plugin) + "\n\n"
+                                        + "Sometimes a villager asks one specific question when it is stuck or lost."
+                                        + " In that case, answer the question by choosing the single best next task.\n",
+                                userPrompt(learnings, report) + "\n\nA villager is stuck and asks: " + q + "\n")
+                        .get(Math.max(10, plugin.aiTimeoutSeconds() / 2 + 10), TimeUnit.SECONDS);
+                result = AdviceParser.parse(content);
+            } catch (Exception ex) {
+                result = null;
+                lastError = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+                errorCount++;
+                plugin.getLogger().warning("Quen agent " + id + "/" + total + " stuck-consult failed: " + lastError);
+            }
+            final AIAdvice advice = result;
+            if (advice != null) {
+                try {
+                    memory.record(plugin, village, advice);
+                } catch (Exception ex) {
+                    plugin.getLogger().warning("Quen agent " + id + " memory write failed: " + ex.getMessage());
+                }
+                lastAdviceAt = System.currentTimeMillis();
+                lastVillager = village.getName() + " (stuck consult)";
+            }
+            plugin.runInRegion(village.getCenter(), () -> callback.accept(advice));
+        });
+    }
+
     private boolean endpointReady(HearthPlugin plugin) {
         String base = plugin.aiEndpointBaseUrl();
         if (base == null || base.isBlank()) {

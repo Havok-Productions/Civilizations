@@ -14,6 +14,7 @@ import dev.hearth.build.MinePlanner;
 import dev.hearth.build.WallPlanner;
 import dev.hearth.move.MovementController;
 import dev.hearth.path.PathStore;
+import dev.hearth.village.BookshelfManager;
 import dev.hearth.village.ChestManager;
 import dev.hearth.village.Village;
 import dev.hearth.village.VillageManager;
@@ -146,6 +147,22 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
     private int aiLocalThreads = 4;
     private String aiLocalModelRepo = "Qwen/Qwen2.5-1.5B-Instruct-GGUF";
     private String aiLocalModelFile = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
+    /** auto = GPU (CUDA) build when available, cpu = always CPU, cuda = force GPU. */
+    private String aiLocalGpu = "auto";
+    // ---- v1.2 "village society": gossip, shared book, needs, job claims, AI consult ----
+    private boolean societyEnabled = true;
+    private int societyGossipRadius = 6;
+    private int societyGossipIntervalTicks = 120;
+    private int societyGossipPauseTicks = 40;
+    private boolean societyBookshelf = true;
+    private int societyBookshelfMaxDistance = 8;
+    private int societyBookMaxEntries = 200;
+    private boolean societyNeeds = true;
+    private long societyNeedStaleMs = 5 * 60_000L;
+    private boolean societyJobClaims = true;
+    private long jobClaimTtlMs = 60_000L;
+    private boolean societyAiConsult = true;
+    private long societyAiConsultCooldownMs = 10 * 60_000L;
 
     // Runtime
     private VillageManager villageManager;
@@ -163,6 +180,8 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
     /** Villagers whose brain task is currently running (one entity task each). */
     private final Set<UUID> startedBrains = ConcurrentHashMap.newKeySet();
     private NamespacedKey chestKey;
+    private NamespacedKey bookshelfKey;
+    private BookshelfManager bookshelfManager;
 
     @Override
     public void onEnable() {
@@ -170,11 +189,13 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         saveDefaultConfig();
         loadConfig();
         chestKey = new NamespacedKey(this, "chest_village");
+        bookshelfKey = new NamespacedKey(this, "bookshelf_village");
 
         villageManager = new VillageManager(this);
         pathStore = new PathStore(this);
         movement = new MovementController(this);
         chestManager = new ChestManager(this);
+        bookshelfManager = new BookshelfManager(this);
         wallPlanner = new WallPlanner(this);
         minePlanner = new MinePlanner(this);
         lightPlanner = new LightPlanner(this);
@@ -518,6 +539,21 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         aiLocalThreads = c.getInt("ai.local.threads", 4);
         aiLocalModelRepo = c.getString("ai.local.model-repo", "Qwen/Qwen2.5-1.5B-Instruct-GGUF");
         aiLocalModelFile = c.getString("ai.local.model-file", "qwen2.5-1.5b-instruct-q4_k_m.gguf");
+        aiLocalGpu = c.getString("ai.local.gpu", "auto").toLowerCase(Locale.ROOT);
+        // v1.2 village society.
+        societyEnabled = c.getBoolean("society.enabled", true);
+        societyGossipRadius = Math.max(2, c.getInt("society.gossip-radius", 6));
+        societyGossipIntervalTicks = Math.max(10, c.getInt("society.gossip-interval-ticks", 120));
+        societyGossipPauseTicks = Math.max(0, c.getInt("society.gossip-pause-ticks", 40));
+        societyBookshelf = c.getBoolean("society.bookshelf", true);
+        societyBookshelfMaxDistance = Math.max(2, c.getInt("society.bookshelf-max-distance", 8));
+        societyBookMaxEntries = Math.max(10, c.getInt("society.book-max-entries", 200));
+        societyNeeds = c.getBoolean("society.needs", true);
+        societyNeedStaleMs = Math.max(10_000L, c.getLong("society.need-stale-ms", 5 * 60_000L));
+        societyJobClaims = c.getBoolean("society.job-claims", true);
+        jobClaimTtlMs = Math.max(5_000L, c.getLong("society.job-claim-ttl-ms", 60_000L));
+        societyAiConsult = c.getBoolean("society.ai-consult", true);
+        societyAiConsultCooldownMs = Math.max(30_000L, c.getLong("society.ai-consult-cooldown-ms", 10 * 60_000L));
     }
 
     private static String firstNonBlank(String... values) {
@@ -567,6 +603,7 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
             case "mine" -> forceTask(sender, args, TaskType.MINE, "mine");
             case "light" -> forceTask(sender, args, TaskType.LIGHT, "light");
             case "chest" -> chestCommand(sender);
+            case "book" -> bookCommand(sender);
             case "ai" -> aiCommand(sender, args);
             case "reload" -> {
                 if (!sender.hasPermission("hearth.admin")) {
@@ -597,6 +634,7 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         s.sendMessage("/hearth status [villager] - village/brain status");
         s.sendMessage("/hearth wall|mine|light - force a task now");
         s.sendMessage("/hearth chest - show community chest info");
+        s.sendMessage("/hearth book - read the village book (plans, needs, observations)");
         s.sendMessage("/hearth ai on|off|test|status - Quen AI advisor (local Quen runtime or external API)");
         s.sendMessage("/hearth reload - reload config");
         s.sendMessage("/hearth stop - pause the plugin");
@@ -669,6 +707,23 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         s.sendMessage("  Items stored: " + total);
     }
 
+    private void bookCommand(CommandSender s) {
+        Village v = villageManager.getVillages().isEmpty() ? null : villageManager.getVillages().get(0);
+        if (v == null) {
+            s.sendMessage("§eNo village found.");
+            return;
+        }
+        dev.hearth.social.VillageBook book = v.getBook();
+        if (book == null) {
+            s.sendMessage("§eThe village book is disabled (society.enabled: false).");
+            return;
+        }
+        s.sendMessage("§6" + v.getName() + "§7's book — §f" + book.size() + "§7 entries (latest 10): §8" + book.file().getName());
+        for (String line : book.recentText(10).split("\n")) {
+            s.sendMessage("  §8" + line);
+        }
+    }
+
     private void aiCommand(CommandSender s, String[] args) {
         if (args.length < 2) {
             aiStatus(s);
@@ -725,7 +780,7 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            return filter(Arrays.asList("help", "list", "status", "wall", "mine", "light", "chest", "ai", "reload", "stop"), args[0]);
+            return filter(Arrays.asList("help", "list", "status", "wall", "mine", "light", "chest", "book", "ai", "reload", "stop"), args[0]);
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("ai")) {
             return filter(Arrays.asList("on", "off", "test", "status"), args[1]);
@@ -818,6 +873,14 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
 
     public NamespacedKey chestKey() {
         return chestKey;
+    }
+
+    public NamespacedKey bookshelfKey() {
+        return bookshelfKey;
+    }
+
+    public BookshelfManager bookshelfManager() {
+        return bookshelfManager;
     }
 
     // ---- config getters (used by brains/planners) ----
@@ -1024,6 +1087,64 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
 
     public String aiLocalModelFile() {
         return aiLocalModelFile;
+    }
+
+    public String aiLocalGpu() {
+        return aiLocalGpu;
+    }
+
+    // ---- v1.2 "village society" getters ----
+
+    public boolean societyEnabled() {
+        return societyEnabled;
+    }
+
+    public int societyGossipRadius() {
+        return societyGossipRadius;
+    }
+
+    public int societyGossipIntervalTicks() {
+        return societyGossipIntervalTicks;
+    }
+
+    public int societyGossipPauseTicks() {
+        return societyGossipPauseTicks;
+    }
+
+    public boolean societyBookshelf() {
+        return societyBookshelf;
+    }
+
+    public int societyBookshelfMaxDistance() {
+        return societyBookshelfMaxDistance;
+    }
+
+    public int societyBookMaxEntries() {
+        return societyBookMaxEntries;
+    }
+
+    public boolean societyNeeds() {
+        return societyNeeds;
+    }
+
+    public long societyNeedStaleMs() {
+        return societyNeedStaleMs;
+    }
+
+    public boolean societyJobClaims() {
+        return societyJobClaims;
+    }
+
+    public long jobClaimTtlMs() {
+        return jobClaimTtlMs;
+    }
+
+    public boolean societyAiConsult() {
+        return societyAiConsult;
+    }
+
+    public long societyAiConsultCooldownMs() {
+        return societyAiConsultCooldownMs;
     }
 
     public LocalAIManager localAI() {

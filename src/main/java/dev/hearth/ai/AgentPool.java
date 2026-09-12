@@ -56,6 +56,22 @@ public class AgentPool implements AIAdvisor {
         snapshot.get(idx).advise(plugin, village, callback);
     }
 
+    /**
+     * v1.2: route a villager's stuck-question to the agent that owns its village.
+     */
+    public void consultStuck(HearthPlugin plugin, Village village, String question, java.util.function.Consumer<AIAdvice> callback) {
+        List<VillagerAgent> snapshot;
+        synchronized (this) {
+            if (agents.isEmpty()) {
+                callback.accept(null);
+                return;
+            }
+            snapshot = List.copyOf(agents);
+        }
+        int idx = Math.floorMod(village.getId().hashCode(), snapshot.size());
+        snapshot.get(idx).consultStuck(plugin, village, question, callback);
+    }
+
     public synchronized int count() {
         return agents.size();
     }

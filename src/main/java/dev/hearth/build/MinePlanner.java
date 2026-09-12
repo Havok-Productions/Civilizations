@@ -7,8 +7,11 @@ import org.bukkit.Material;
 import org.bukkit.World;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * Plans a wall ring around the village plus a gated entrance, and a mine
@@ -30,17 +33,24 @@ public class MinePlanner {
      * A planned mine: staircase + tunnel.
      *
      * <p>Thread-safety: several villager brains (each on its own region
-     * thread) may advance the same mine concurrently, so all progress access
-     * is synchronized on a private lock. {@code completed} is volatile so
-     * plain field reads (status command, AI report) always observe the final
-     * state.
+     * thread) may pick and advance the same mine concurrently, so all
+     * progress access is synchronized on a private lock.
+     *
+     * <p>Claims (v1.2 "society"): {@link #nextJob(UUID, long, long)} hands
+     * each villager a <em>different</em> block — the earliest job that is not
+     * yet dug and not claimed by a live neighbor — so two villagers never
+     * walk to the same block. {@link #markDug(BuildJob, UUID)} is
+     * idempotent and order-independent: whichever villager finishes a block
+     * first counts it exactly once.
      */
     public static class Mine {
         public final List<BuildJob> jobs = new ArrayList<>();
         public final Location entrance;
         public volatile boolean completed = false;
         private final Object progressLock = new Object();
-        private int dug = 0; // guarded by progressLock
+        private int dug = 0; // guarded by progressLock, kept == counted.size()
+        /** Jobs already counted as dug (identity set, guarded by progressLock). */
+        private final Set<BuildJob> counted = new HashSet<>();
 
         public Mine(Location entrance) {
             this.entrance = entrance;
@@ -65,37 +75,75 @@ public class MinePlanner {
             }
         }
 
-        public BuildJob nextJob() {
+        /**
+         * Pick the next job available to {@code me}: the earliest job that is
+         * not yet dug and either unclaimed, claimed by me, or whose claim has
+         * gone stale. The job is claimed for {@code me} on the spot, so two
+         * villagers never walk to the same block (the work splits naturally).
+         *
+         * @return the claimed job, or null when the mine is complete (or
+         *         every remaining job is claimed by others for now)
+         */
+        public BuildJob nextJob(UUID me, long now, long claimTtlMs) {
             synchronized (progressLock) {
-                if (dug >= jobs.size()) {
+                if (counted.size() >= jobs.size()) {
                     return null;
                 }
-                return jobs.get(dug);
+                for (BuildJob job : jobs) {
+                    if (counted.contains(job)) {
+                        continue;
+                    }
+                    if (job.isAvailableTo(me, now, claimTtlMs)) {
+                        job.claim(me, now);
+                        return job;
+                    }
+                }
+                return null;
+            }
+        }
+
+        public boolean isDug(BuildJob job) {
+            synchronized (progressLock) {
+                return counted.contains(job);
             }
         }
 
         /**
-         * Claim the next job as dug.
+         * Count a job as dug. Idempotent and order-independent.
          *
-         * @return true if this call advanced the mine, false if another
-         *         villager already claimed that job (the caller should simply
-         *         pick the next job on its next tick).
+         * @return true if this call advanced the mine
          */
-        public boolean markDug(BuildJob job) {
+        public boolean markDug(BuildJob job, UUID who) {
             synchronized (progressLock) {
-                if (job != null && dug < jobs.size() && jobs.get(dug) == job) {
-                    dug++;
-                    if (dug >= jobs.size()) {
-                        completed = true;
-                    }
-                    return true;
+                if (job == null || counted.contains(job) || !jobs.contains(job)) {
+                    return false;
                 }
-                return false;
+                // A foreign claim only counts if the block is actually gone
+                // (the claimant dug it). Otherwise the claimant may still be
+                // walking there and we must not double-count.
+                if (job.claimedBy != null && !job.claimedBy.equals(who)) {
+                    Material t;
+                    try {
+                        t = job.location.getBlock().getType();
+                    } catch (Throwable ex) {
+                        return false;
+                    }
+                    if (t != Material.AIR) {
+                        return false;
+                    }
+                }
+                counted.add(job);
+                dug = counted.size();
+                if (dug >= jobs.size()) {
+                    completed = true;
+                }
+                return true;
             }
         }
 
         public void reset() {
             synchronized (progressLock) {
+                counted.clear();
                 dug = 0;
                 completed = false;
             }

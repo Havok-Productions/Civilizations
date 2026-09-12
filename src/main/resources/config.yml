@@ -103,6 +103,43 @@ defense:
   # Safe spot is the chest location (or village center if no chest).
   safe-spot: chest
 
+# ---- Village society (v1.2) ----------------------------------------
+# The village acts like a small society: villagers talk with their neighbors,
+# keep a shared book on a bookshelf, claim jobs so nobody does the same work
+# twice, post "needs" anyone can pick up, and (optionally) ask their Quen
+# agent for advice when they are stuck.
+society:
+  # Master on/off for all society features.
+  enabled: true
+  # How close a villager must be (blocks) to "hear" what a neighbor is doing.
+  gossip-radius: 6
+  # How often (ticks) a villager re-checks its neighbors. 120 = every 6 s.
+  gossip-interval-ticks: 120
+  # When a neighbor is right next to them, how long (ticks) the villager pauses
+  # and faces them while "talking". 40 = 2 s of conversation.
+  gossip-pause-ticks: 40
+  # Auto-place a BOOKSHELF next to the community chest (the village library).
+  bookshelf: true
+  # How far from the chest the bookshelf may be.
+  bookshelf-max-distance: 8
+  # Max lines kept in the village book (oldest drop off).
+  book-max-entries: 200
+  # Villagers write "we need <material>" lines to the book; idle or redundant
+  # villagers pick them up and deliver the material to the chest.
+  needs: true
+  # How long (ms) a need stays claimed before it can be re-claimed. 5 minutes.
+  need-stale-ms: 300000
+  # Job claims: each build/mine job can be claimed by exactly one villager so
+  # two villagers never dig the same block or build the same wall section.
+  job-claims: true
+  # How long (ms) a job claim stays valid before it expires.
+  job-claim-ttl-ms: 60000
+  # A stuck villager may ask its Quen agent for advice (applied as village
+  # advice, with the local safety rules still winning).
+  ai-consult: true
+  # Minimum time (ms) between two stuck-consults per villager. 10 minutes.
+  ai-consult-cooldown-ms: 600000
+
 # ---- Quen AI core (optional, makes the village smarter) --------
 # The AI lives INSIDE the plugin: a pool of "Quen" mini-agents, one per
 # subset of villages, each with its own persistent memory file.
@@ -157,6 +194,14 @@ ai:
     # Bigger brain (needs ~2.5 GB RAM + more CPU time):
     #   model-repo: "Qwen/Qwen3-4B-GGUF"
     #   model-file: "Qwen3-4B-Q4_K_M.gguf"
+    # GPU (CUDA) inference:
+    #   - "auto" (default) -> use the CUDA build of llama.cpp when this machine
+    #     has an NVIDIA GPU (e.g. RTX 5070); fall back to the CPU build.
+    #   - "cuda"           -> force the CUDA build (needs an NVIDIA GPU).
+    #   - "cpu"            -> always use the CPU build.
+    # Windows: the CUDA .zip bundles the runtime, only the NVIDIA driver is
+    # needed. Linux: needs a CUDA-capable driver (12.x+).
+    gpu: auto
 
   # ---- external API (backend: external) ----------------------------
   # Both DeepSeek and OpenAI speak the OpenAI-compatible /chat/completions API.

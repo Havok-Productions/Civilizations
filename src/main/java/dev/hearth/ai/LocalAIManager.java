@@ -22,6 +22,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
@@ -77,6 +79,7 @@ public class LocalAIManager {
     private volatile String detail = "not started";
     private volatile int port;
     private volatile Process serverProcess;
+    private volatile String variant = "cpu"; // "cpu" or "cuda" (v1.2 GPU support)
     private Thread bootstrapThread;
 
     public LocalAIManager(HearthPlugin plugin) {
@@ -133,8 +136,15 @@ public class LocalAIManager {
         }
         if (state == State.READY) {
             sb.append(" at ").append(baseUrl());
+            if ("cuda".equals(variant)) {
+                sb.append(" [gpu]");
+            }
         }
         return sb.toString();
+    }
+
+    public String variant() {
+        return variant;
     }
 
     /**
@@ -169,27 +179,83 @@ public class LocalAIManager {
             String serverExe = "llama-server" + ("win".equals(os) ? ".exe" : "");
             File serverBin = new File(binDir, serverExe);
 
-            // --- 1. llama.cpp runtime -----------------------------------
-            if (serverBin.exists() && serverBin.length() > 0) {
-                log("llama-server binary already present - skipping runtime download.");
-            } else {
+            // --- 1. llama.cpp runtime (CPU or CUDA build) ----------------
+            // v1.2 GPU support: when ai.local.gpu is "auto" (default) or
+            // "true", the CUDA prebuild is downloaded first and falls back to
+            // the CPU prebuild if the CUDA asset is unavailable (404) for
+            // this platform. The chosen build is recorded in variant.txt so a
+            // restart never re-downloads.
+            String gpuMode = plugin.aiLocalGpu();
+            File marker = new File(binDir, "variant.txt");
+            boolean wantCuda = !"false".equalsIgnoreCase(gpuMode);
+            boolean requireCuda = "true".equalsIgnoreCase(gpuMode);
+            String markerVariant = readMarker(marker);
+            boolean binPresent = serverBin.exists() && serverBin.length() > 0;
+            boolean useCuda = false;
+
+            if (binPresent && markerVariant != null) {
+                if ("cuda".equals(markerVariant) && wantCuda) {
+                    useCuda = true;
+                    variant = "cuda";
+                    log("llama-server binary already present (cuda build) - skipping runtime download.");
+                } else if ("cpu".equals(markerVariant) && !requireCuda) {
+                    variant = "cpu";
+                    log("llama-server binary already present (cpu build) - skipping runtime download.");
+                } else {
+                    // Config wants a different build than what is installed.
+                    binPresent = false;
+                }
+            } else if (binPresent) {
+                // Legacy binary from an older Hearth release: it is the CPU build.
+                if (requireCuda) {
+                    binPresent = false; // explicitly requested CUDA: re-download
+                } else {
+                    writeMarker(marker, "cpu");
+                    variant = "cpu";
+                    log("llama-server binary already present (cpu build) - skipping runtime download.");
+                }
+            }
+
+            if (!binPresent) {
                 setState(State.DOWNLOADING_RUNTIME, "resolving latest llama.cpp release");
                 String tag = fetchLatestLlamaTag();
-                String asset = assetName(os, arch, tag);
-                String url = "https://github.com/ggml-org/llama.cpp/releases/download/" + tag + "/" + asset;
-                log("Downloading runtime: " + url);
-                File archive = new File(baseDir, "download-" + asset);
-                try {
-                    downloadToFile(url, archive, false);
-                    if (asset.endsWith(".zip")) {
-                        extractZip(archive, binDir);
-                    } else {
-                        extractTarGz(archive, binDir);
+                List<String> candidates = new ArrayList<>();
+                if (wantCuda) {
+                    String cuda = cudaAssetName(os, arch, tag);
+                    if (cuda != null) {
+                        candidates.add(cuda);
                     }
-                } finally {
-                    deleteQuietly(archive);
+                }
+                candidates.add(cpuAssetName(os, arch, tag));
+
+                String chosenAsset = null;
+                for (String asset : candidates) {
+                    String url = "https://github.com/ggml-org/llama.cpp/releases/download/" + tag + "/" + asset;
+                    log("Downloading runtime: " + url);
+                    File archive = new File(baseDir, "download-" + asset);
+                    try {
+                        downloadToFile(url, archive, false);
+                        if (asset.endsWith(".zip")) {
+                            extractZip(archive, binDir);
+                        } else {
+                            extractTarGz(archive, binDir);
+                        }
+                        chosenAsset = asset;
+                        break;
+                    } catch (Exception ex) {
+                        log("runtime download failed (" + ex.getMessage() + ") - trying next variant");
+                    } finally {
+                        deleteQuietly(archive);
+                    }
+                }
+                if (chosenAsset == null) {
+                    throw new IllegalStateException("no llama.cpp runtime asset could be downloaded for this platform");
                 }
                 makeExecutable(serverBin);
+                useCuda = chosenAsset.contains("-cuda-");
+                variant = useCuda ? "cuda" : "cpu";
+                writeMarker(marker, variant);
+                log("runtime installed: " + chosenAsset + (useCuda ? " (CUDA build - inference will use the GPU)" : " (CPU build)"));
             }
 
             // --- 2. Model -------------------------------------------------
@@ -214,7 +280,7 @@ public class LocalAIManager {
             }
             port = chosen;
             File logFile = new File(baseDir, "server.log");
-            ProcessBuilder pb = new ProcessBuilder(
+            List<String> cmd = new ArrayList<>(List.of(
                     serverBin.getAbsolutePath(),
                     "-m", model.getAbsolutePath(),
                     "--host", "127.0.0.1",
@@ -222,7 +288,14 @@ public class LocalAIManager {
                     "-c", String.valueOf(plugin.aiLocalContext()),
                     "-t", String.valueOf(plugin.aiLocalThreads()),
                     "--jinja",
-                    "--parallel", "1")
+                    "--parallel", "1"));
+            if (useCuda) {
+                // Offload every layer to the GPU (RTX 5070 etc.);
+                // llama.cpp keeps what doesn't fit in VRAM on the CPU.
+                cmd.add("--n-gpu-layers");
+                cmd.add("99");
+            }
+            ProcessBuilder pb = new ProcessBuilder(cmd)
                     .directory(baseDir)
                     .redirectOutput(logFile)
                     .redirectErrorStream(true);
@@ -289,18 +362,59 @@ public class LocalAIManager {
         return tag;
     }
 
-    private static String assetName(String os, String arch, String tag) {
+    private static String cpuAssetName(String os, String arch, String tag) {
         if ("win".equals(os)) {
             // The x64 zip runs on Windows ARM via emulation.
             return "llama-" + tag + "-bin-win-cpu-x64.zip";
         }
         if ("mac".equals(os)) {
+            // The macOS prebuilds use Apple Metal (no separate CUDA build exists).
             return "llama-" + tag + "-bin-macos-" + arch + ".tar.gz";
         }
         if ("x64".equals(arch)) {
             return "llama-" + tag + "-bin-ubuntu-x64.tar.gz";
         }
         throw new IllegalStateException("No prebuilt llama.cpp asset for this platform (linux/" + arch + ")");
+    }
+
+    /**
+     * The CUDA prebuild for this platform, or null when none exists
+     * (macOS uses Metal; linux arm64 has no CUDA prebuild). Callers fall
+     * back to the CPU asset automatically.
+     */
+    private static String cudaAssetName(String os, String arch, String tag) {
+        if (!"x64".equals(arch)) {
+            return null;
+        }
+        if ("win".equals(os)) {
+            return "llama-" + tag + "-bin-win-cuda-x64.zip";
+        }
+        if ("linux".equals(os)) {
+            return "llama-" + tag + "-bin-ubuntu-cuda-x64.tar.gz";
+        }
+        return null;
+    }
+
+    private static String readMarker(File f) {
+        try {
+            if (f.exists()) {
+                String s = Files.readString(f.toPath()).trim().toLowerCase(Locale.ROOT);
+                if (!s.isEmpty()) {
+                    return s;
+                }
+            }
+        } catch (Exception ignored) {
+            // unreadable marker: treat as absent
+        }
+        return null;
+    }
+
+    private static void writeMarker(File f, String v) {
+        try {
+            Files.writeString(f.toPath(), v);
+        } catch (Exception ignored) {
+            // best-effort; a missing marker just means a re-download next run
+        }
     }
 
     private static String osName() {

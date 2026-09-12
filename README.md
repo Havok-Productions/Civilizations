@@ -11,7 +11,8 @@ Hearth turns a group of villagers into a small self-sufficient collective:
 - 📦 **Places a community chest automatically** if the village doesn't have one, and villagers deposit everything they gather there
 - 🌙 **Goes to bed at night** (sleep window matches vanilla: ~5:20 PM → 7:00 AM) and wakes in the morning
 - 🏃 **Moves at normal villager speed** — small velocity nudges + occasional natural "step", never 100 mph teleport-zoomies
-- 🤖 **Quen AI core, built into the plugin**: a pool of "Quen" mini-agents (default 3) runs the villagers' priorities. Each agent owns a stable subset of villages and keeps a **persistent, human-readable memory file** per village — it remembers progress and its own decisions across restarts. The brain can be **self-hosted**: on first enable Hearth downloads a llama.cpp server + a Qwen model into its own folder and runs the AI locally (no API, no internet after the first run) — or you can point it at an external API (DeepSeek, ChatGPT, LM Studio). Local safety rules always override the AI (villagers always sleep at night, always flee mobs).
+- 🤖 **Quen AI core, built into the plugin**: a pool of "Quen" mini-agents (default 3) runs the villagers' priorities. Each agent owns a stable subset of villages and keeps a **persistent, human-readable memory file** per village — it remembers progress and its own decisions across restarts. The brain can be **self-hosted**: on first enable Hearth downloads a llama.cpp server + a Qwen model into its own folder and runs the AI locally (no API, no internet after the first run) — or you can point it at an external API (DeepSeek, ChatGPT, LM Studio). Local safety rules always override the AI (villagers always sleep at night, always flee mobs). The local runtime can run on your **GPU** (CUDA build of llama.cpp, `ai.local.gpu: auto` by default).
+- 👥 **Village society (v1.2)**: villagers *talk* with their neighbors (they face each other and pause), keep a **shared book** on an auto-placed **bookshelf** next to the chest (`books/<villageId>.json` — plans, needs, observations), **claim jobs** so nobody digs the same block twice, post **"we need X"** requests that idle or redundant villagers pick up, and can **ask their Quen agent for advice when stuck** (cooldown-gated, local safety rules still win).
 
 Hearth is an **original implementation**. It borrows *ideas* from two well-known projects (Baritone's budgeted A* pathfinding and behavior concepts; Civilizations' villager task-management approach) but contains no copied code.
 
@@ -122,6 +123,14 @@ The AI is part of the plugin, not an external dependency:
     After the first run it needs **no internet at all**. Swap in the bigger
     brain with `ai.local.model-repo` / `ai.local.model-file` (e.g.
     `Qwen/Qwen3-4B-GGUF` → `Qwen3-4B-Q4_K_M.gguf`).
+    - **GPU (v1.2)** — `ai.local.gpu` (default `auto`) picks the **CUDA build**
+      of llama.cpp when the machine has an NVIDIA GPU (e.g. an RTX 5070) and
+      runs it with `--n-gpu-layers 99`; it falls back to the CPU build when the
+      CUDA asset is unavailable, and `gpu: cpu` forces CPU. The downloaded
+      binary is tagged (`local-ai/bin/variant.txt`), so switching `auto`↔`cpu`
+      re-downloads the right build. On a 48 GB DDR5 / 7950X / RTX 5070 rig the
+      recommended setup is `Qwen/Qwen3-4B-GGUF` → `Qwen3-4B-Q4_K_M.gguf`
+      (the "bigger brain") on the GPU — comfortably in the 12 GB VRAM.
   - **`external`** — skip the download entirely and call any OpenAI-compatible
     API (DeepSeek, OpenAI/ChatGPT, LM Studio, ...) via `ai.external.base-url` /
     `model` / `api-key`. The v1.0.0 `ai.base-url`/`ai.model`/`ai.api-key` keys
@@ -153,6 +162,45 @@ with any OpenAI-compatible endpoint (or LM Studio) is the escape hatch.
 
 ---
 
+## Village society (v1.2)
+
+The village behaves like a small society, on top of the AI core:
+
+- **Gossip (proximity communication)** — every `society.gossip-interval-ticks`
+  a villager snapshots what its neighbors (within `society.gossip-radius`
+  blocks) are doing, carrying, and how they are progressing. If a neighbor is
+  right next to it, it **faces them and pauses** for
+  `society.gossip-pause-ticks` — the way villagers actually talk. The brain
+  only reads peers' volatile fields and writes its own cache (Folia-safe).
+- **The shared book** — each village has one persistent, human-readable JSON
+  ledger at `plugins/Civilizations/books/<villageId>.json` with three kinds of
+  entries:
+  - `plan` — what the village decided to focus on (written when the task changes);
+  - `need` — a claimable request, formatted `material:STONE` — the first
+    villager to claim it gathers and delivers that material to the chest;
+  - `obs` — observations ("deposited 12 stone", "first block of the mine dug").
+  Entries are capped (`society.book-max-entries`), writes are atomic.
+  Read it live with `/hearth book`.
+- **The bookshelf** — Hearth auto-places a `BOOKSHELF` next to the community
+  chest (tagged via PDC, found again on rescan; `society.bookshelf-max-distance`).
+- **Job claims (no duplicated work)** — every wall/mine/light job can be
+  *claimed* by exactly one villager for `society.job-claim-ttl-ms`; claims
+  expire, so a villager that dies or wanders off never blocks the job forever.
+  The mine planner hands each villager a *different* block and counts a block
+  as dug only once, no matter who finished it.
+- **Cooperation via needs** — if the village is idle, or two or more neighbors
+  are already working the same task, a villager checks the book for an
+  unclaimed `need` and picks it up instead of standing around.
+- **Stuck-consult** — a villager that is stuck (repeated re-path failures or a
+  timed-out travel) may ask its own Quen agent what to do
+  (`society.ai-consult`, cooldown `society.ai-consult-cooldown-ms`). The reply
+  is applied exactly like regular village advice — on the village center's
+  region — and local safety rules still override it.
+
+Everything is off with one key: `society.enabled: false`.
+
+---
+
 ## Building
 
 Requires **Java 25** and **Maven 3.9+** (the Folia 26.x API is Java-25 bytecode).
@@ -162,7 +210,7 @@ cd hearth
 mvn package
 ```
 
-Output: `target/Hearth-1.0.0.jar` → drop into your Folia/Paper `plugins/` folder.
+Output: `target/Hearth-1.2.0.jar` → drop into your Folia/Paper `plugins/` folder.
 
 > **Version note:** this project is built against the **latest Folia API**,
 > `dev.folia:folia-api:26.2.build.7-beta` (the `<release>`/`<latest>` in
@@ -182,7 +230,7 @@ Output: `target/Hearth-1.0.0.jar` → drop into your Folia/Paper `plugins/` fold
 ## Setup
 
 1. Spawn (or find) some villagers in one area.
-2. Put `Hearth-1.1.1.jar` in `plugins/`, start the server.
+2. Put `Hearth-1.2.0.jar` in `plugins/`, start the server.
 3. The Quen AI core is **on by default** (`ai.enabled: true`, `backend: local`):
    the first run downloads the runtime + model (~1.1 GB) into the plugin folder,
    then the agents run the villagers — fully offline afterwards. Set
@@ -202,6 +250,7 @@ Output: `target/Hearth-1.0.0.jar` → drop into your Folia/Paper `plugins/` fold
 | `/hearth status [villager]` | Village + per-villager brain status |
 | `/hearth wall` / `mine` / `light` | Force the village to focus on that task (5 min) |
 | `/hearth chest` | Show community chest info |
+| `/hearth book` | Read the village book (plans, needs, observations) |
 | `/hearth ai on\|off\|test\|status` | Control/test/status the Quen AI core (agents + local runtime) |
 | `/hearth reload` | Reload `config.yml` |
 | `/hearth stop` | Pause the plugin |
@@ -225,6 +274,12 @@ Permissions: `hearth.admin` (default: op), `hearth.player` (default: everyone).
 | `ai.backend` | local | `local` = bundled llama.cpp + Qwen in `local-ai/`; `external` = remote API |
 | `ai.agents-count` | 3 | Number of Quen mini-agents (each keeps its own memory) |
 | `ai.local.model-repo` / `model-file` | Qwen2.5-1.5B | The local Quen model (swap for Qwen3-4B = bigger brain) |
+| `ai.local.gpu` | auto | `auto` = CUDA build on NVIDIA GPUs (falls back to CPU), `cpu` = always CPU, `cuda` = force GPU |
+| `society.enabled` | true | Master on/off for gossip, book, needs, job claims, stuck-consult |
+| `society.gossip-radius` / `gossip-interval-ticks` | 6 / 120 | Neighbor "hearing" radius and gossip cadence |
+| `society.needs` | true | Villagers post/pick up `material:X` requests in the book |
+| `society.job-claims` / `job-claim-ttl-ms` | true / 60000 | One villager per job; claim expiry |
+| `society.ai-consult` / `ai-consult-cooldown-ms` | true / 600000 | Stuck villagers ask their Quen agent (rate-limited) |
 
 ## Honest limitations (v1)
 

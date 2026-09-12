@@ -1,10 +1,13 @@
 package dev.hearth.brain;
 
 import dev.hearth.HearthPlugin;
+import dev.hearth.ai.AIAdvice;
 import dev.hearth.build.BuildJob;
 import dev.hearth.build.MinePlanner;
 import dev.hearth.path.PathResult;
 import dev.hearth.path.PathStore;
+import dev.hearth.social.Thought;
+import dev.hearth.social.VillageBook;
 import dev.hearth.util.BlockUtils;
 import dev.hearth.util.Drops;
 import dev.hearth.village.Village;
@@ -20,8 +23,12 @@ import org.bukkit.entity.Villager;
 import org.bukkit.inventory.ItemStack;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Random;
+import java.util.UUID;
 
 /**
  * The per-villager state machine.
@@ -45,16 +52,19 @@ public class VillagerBrain {
     private final Villager villager;
     private final Random rng;
 
-    private VillagerState state = VillagerState.IDLE;
+    /** Volatile: peers read these cross-thread during gossip (read-only). */
+    private volatile VillagerState state = VillagerState.IDLE;
     private Village village;
 
-    private TaskType currentTask = TaskType.IDLE;
+    /** Volatile: peers read these cross-thread during gossip (read-only). */
+    private volatile TaskType currentTask = TaskType.IDLE;
     private Location target;              // final destination of the current travel
     private OnArrive onArrive = OnArrive.IDLE;
     private Location pendingBed;          // bed to enter on arrival (sleep), if any
     private BuildJob currentJob;          // the build/mine job being worked
-    private Material carryMaterial;       // what is being carried
-    private int carryCount;               // units carried this trip
+    /** Volatile: peers read these cross-thread during gossip (read-only). */
+    private volatile Material carryMaterial;       // what is being carried
+    private volatile int carryCount;                // units carried this trip
 
     private PathStore.Request pathRequest;
     private List<int[]> path;
@@ -77,6 +87,21 @@ public class VillagerBrain {
     private int writesLeft;
 
     private long lastIdleWander;
+
+    // ---- v1.2 "society": gossip, shared book, claims, AI consult ----
+
+    /** What I last saw of my neighbors (villager -> their thought). Own state only. */
+    private final Map<UUID, Thought> peerCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private long lastGossipAt;
+    private long gossipPauseUntil;
+    /** Throttle my observation writes into the village book. */
+    private long lastBookObsAt;
+    /** Per-material throttle for the "needs" I write (material name -> last written ms). */
+    private final Map<String, Long> lastNeedWritten = new HashMap<>();
+    private boolean firstMineBlockNoted;
+    /** Stuck-consult state (written by the consult callback, read on my own thread). */
+    private volatile boolean consultInFlight;
+    private long lastConsultAt;
 
     public VillagerBrain(Villager villager) {
         this.villager = villager;
@@ -264,9 +289,244 @@ public class VillagerBrain {
             return;
         }
 
-        // 3. Pick the village's current task.
+        // 3. Gossip with any neighbor in earshot (v1.2 "society"): refresh my
+        //    view of what they are doing, then briefly face them — the way
+        //    villagers actually talk.
+        if (plugin.societyEnabled()) {
+            gossip(plugin, v, now);
+            if (now < gossipPauseUntil) {
+                return; // "talking"; pick the task back up next tick
+            }
+        }
+
+        // 4. The village's current task.
         TaskType task = v.getCurrentTask() != null ? v.getCurrentTask() : TaskType.IDLE;
+
+        // 5. v1.2: if the village is idle — or if two or more neighbors are
+        //    already working the same task — check the shared book for a need
+        //    I can pick up instead (splitting the work, helping each other).
+        if (plugin.societyNeeds()
+                && (task == TaskType.IDLE || redundantOn(plugin, task, now))) {
+            if (tryPickNeed(plugin, v, now)) {
+                return;
+            }
+        }
+
         executeTask(plugin, v, task);
+    }
+
+    // ---- v1.2 society: gossip / book / needs / consult ----
+
+    /**
+     * Scan for other Hearth villagers within gossip radius, snapshot what each
+     * is doing into my own peer cache, and (if someone is right next to me)
+     * face them and pause briefly.
+     *
+     * <p>Folia contract: I only READ the peers' (volatile) brain fields and
+     * WRITE my own cache — I never touch a neighbor's state or region.
+     */
+    private void gossip(HearthPlugin plugin, Village v, long now) {
+        long intervalMs = Math.max(500L, plugin.societyGossipIntervalTicks() * 50L);
+        if (now - lastGossipAt < intervalMs) {
+            return;
+        }
+        lastGossipAt = now;
+
+        double radius = plugin.societyGossipRadius();
+        double radiusSq = radius * radius;
+        Location me = villager.getLocation();
+        Thought nearest = null;
+        Location nearestLoc = null;
+        double nearestD = Double.MAX_VALUE;
+
+        for (Villager other : v.getVillagers()) {
+            UUID oid = other.getUniqueId();
+            if (oid.equals(villager.getUniqueId()) || other.isDead()) {
+                continue;
+            }
+            if (!other.getWorld().equals(villager.getWorld())) {
+                continue;
+            }
+            Location there = other.getLocation();
+            double d = there.distanceSquared(me);
+            if (d > radiusSq) {
+                continue;
+            }
+            VillagerBrain p = plugin.brainsOf(oid);
+            if (p == null || p == this) {
+                continue;
+            }
+            String task = (p.getCurrentTask() == null || p.getCurrentTask() == TaskType.IDLE)
+                    ? "" : p.getCurrentTask().name().toLowerCase(Locale.ROOT);
+            String carrying = (p.carryCount > 0 && p.carryMaterial != null)
+                    ? p.carryMaterial.name().toLowerCase(Locale.ROOT) + ":" + p.carryCount : "";
+            Thought t = new Thought(oid, task, p.getState().name().toLowerCase(Locale.ROOT), carrying, "", now);
+            peerCache.put(oid, t);
+            if (d < nearestD) {
+                nearestD = d;
+                nearest = t;
+                nearestLoc = there;
+            }
+        }
+
+        // Forget neighbors I haven't seen in a while.
+        long ttl = Math.max(30_000L, intervalMs * 4L);
+        peerCache.values().removeIf(t -> t.isStale(now, ttl));
+
+        if (nearest != null && nearestLoc != null) {
+            double dx = nearestLoc.getX() - me.getX();
+            double dz = nearestLoc.getZ() - me.getZ();
+            if (dx * dx + dz * dz > 0.001) {
+                // Minecraft yaw: 0 = south (+Z), -90 = east (+X).
+                float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+                villager.setRotation(yaw, 0);
+                gossipPauseUntil = now + Math.max(1L, plugin.societyGossipPauseTicks() * 50L);
+            }
+        }
+    }
+
+    /**
+     * True if two or more fresh neighbors are already engaged (traveling or
+     * working) on the same task — i.e. I am redundant and should help elsewhere.
+     */
+    private boolean redundantOn(HearthPlugin plugin, TaskType task, long now) {
+        if (task == null || task == TaskType.IDLE || task == TaskType.SLEEP || task == TaskType.CHEST) {
+            return false;
+        }
+        String t = task.name().toLowerCase(Locale.ROOT);
+        long ttl = Math.max(30_000L, plugin.societyGossipIntervalTicks() * 50L * 4L);
+        int engaged = 0;
+        for (Thought p : peerCache.values()) {
+            if (p.isStale(now, ttl) || !t.equals(p.task)) {
+                continue;
+            }
+            if (p.state.equals("work") || p.state.equals("travel")) {
+                engaged++;
+            }
+        }
+        return engaged >= 2;
+    }
+
+    /**
+     * Try to claim an unclaimed need from the village book and start working
+     * it (gather the material and deliver it to the chest).
+     *
+     * @return true if I claimed a need and left to work on it
+     */
+    private boolean tryPickNeed(HearthPlugin plugin, Village v, long now) {
+        if (v.getChestLocation() == null) {
+            return false;
+        }
+        VillageBook book = v.getBook();
+        if (book == null) {
+            return false;
+        }
+        UUID me = villager.getUniqueId();
+        VillageBook.Entry need = book.firstUnclaimedNeed(now, plugin.societyNeedStaleMs());
+        if (need == null) {
+            return false;
+        }
+        String matName = VillageBook.parseNeedMaterial(need.text);
+        Material mat = matName == null ? null : Material.matchMaterial(matName);
+        if (mat == null || !mat.isItem()) {
+            book.release(need, me);
+            return false;
+        }
+        // If the chest already has plenty, the need is satisfied — release it.
+        if (HearthPlugin.chestCount(mat, v.getChestLocation()) >= 8) {
+            book.release(need, me);
+            return false;
+        }
+        if (!book.claim(need, me, now)) {
+            return false; // a neighbor got there first
+        }
+        Material source = Drops.sourceBlock(mat);
+        Location src = findNearestSourceBlock(v, source, 48);
+        if (src == null) {
+            book.release(need, me);
+            return false;
+        }
+        carryMaterial = mat;
+        currentJob = new BuildJob(src.clone(), source, BuildJob.Kind.MINE);
+        currentTask = TaskType.GATHER;
+        startTravel(plugin, adjacentStandable(src), OnArrive.WORK);
+        return true;
+    }
+
+    /**
+     * Write a "we need this material" line into the village book (throttled
+     * per material so the book isn't spammed).
+     */
+    private void writeNeed(HearthPlugin plugin, Village v, Material material) {
+        if (!plugin.societyNeeds() || material == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        Long last = lastNeedWritten.get(material.name());
+        if (last != null && now - last < 5 * 60_000L) {
+            return;
+        }
+        lastNeedWritten.put(material.name(), now);
+        VillageBook book = v.getBook();
+        if (book != null) {
+            book.append(VillageBook.Kind.NEED, myName(), VillageBook.formatMaterialNeed(material.name()));
+        }
+    }
+
+    /**
+     * Append an observation line to the village book (throttled to one per
+     * minute per villager).
+     */
+    private void noteObs(Village v, String text) {
+        if (v == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastBookObsAt < 60_000L) {
+            return;
+        }
+        lastBookObsAt = now;
+        VillageBook book = v.getBook();
+        if (book != null) {
+            book.append(VillageBook.Kind.OBS, myName(), text);
+        }
+    }
+
+    private String myName() {
+        String n = villager.getName();
+        return n == null || n.isBlank() ? "villager" : n;
+    }
+
+    /**
+     * Ask my village's Quen agent what to do when I'm stuck (v1.2). The reply
+     * is applied as village advice on the village center's region — exactly
+     * the same way the regular advise callback is applied — so no cross-region
+     * state is written from the brain.
+     */
+    private void tryConsultStuck(HearthPlugin plugin, Village v, String question) {
+        if (!plugin.societyAiConsult() || consultInFlight) {
+            return;
+        }
+        if (plugin.agentPool() == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastConsultAt < plugin.societyAiConsultCooldownMs()) {
+            return;
+        }
+        lastConsultAt = now;
+        consultInFlight = true;
+        try {
+            plugin.agentPool().consultStuck(plugin, v, question, advice -> {
+                consultInFlight = false;
+                if (advice != null) {
+                    v.setLastAdvice(advice);
+                }
+            });
+        } catch (Throwable t) {
+            consultInFlight = false;
+            plugin.getLogger().warning("Stuck-consult failed: " + t);
+        }
     }
 
     private void executeTask(HearthPlugin plugin, Village v, TaskType task) {
@@ -278,7 +538,7 @@ public class VillagerBrain {
                 idleWander(plugin, System.currentTimeMillis());
             }
             case WALL, REPAIR -> {
-                BuildJob job = nextMissingWallJob(v);
+                BuildJob job = nextMissingWallJob(plugin, v);
                 if (job == null) {
                     idleWander(plugin, System.currentTimeMillis());
                     return;
@@ -292,7 +552,7 @@ public class VillagerBrain {
                 if (v.getLightJobs().isEmpty() && now - v.getLightPlannedAt() > 30_000L) {
                     v.setLightJobs(plugin.lightPlanner().plan(v));
                 }
-                BuildJob job = nextMissingLightJob(v);
+                BuildJob job = nextMissingLightJob(plugin, v);
                 if (job == null) {
                     idleWander(plugin, System.currentTimeMillis());
                     return;
@@ -321,7 +581,7 @@ public class VillagerBrain {
                     }
                     v.setMine(mine);
                 }
-                BuildJob job = mine.nextJob();
+                BuildJob job = mine.nextJob(villager.getUniqueId(), System.currentTimeMillis(), plugin.jobClaimTtlMs());
                 if (job == null) {
                     // Tunnel complete: mine ores near it.
                     Location ore = findOreNearTunnel(plugin, v);
@@ -388,6 +648,11 @@ public class VillagerBrain {
                             villager.teleport(target.clone().add(0, 0.01, 0));
                             onArrived();
                         } else {
+                            tryConsultStuck(plugin, v,
+                                    "I cannot find a path to my target at " + target.getBlockX() + ","
+                                            + target.getBlockY() + "," + target.getBlockZ() + " while doing "
+                                            + (currentTask == null ? "idle" : currentTask.name().toLowerCase(Locale.ROOT))
+                                            + ". What should I do next?");
                             setState(VillagerState.IDLE);
                         }
                     } else {
@@ -403,8 +668,12 @@ public class VillagerBrain {
             // Cancelled or expired.
             pathRequest = null;
         }
-        // Timed out? Abort.
+        // Timed out? Ask the Quen agent (once per cooldown), then fall back to idle.
         if (now - stateSince > 30_000L) {
+            tryConsultStuck(plugin, v,
+                    "I have been traveling to "
+                            + (target == null ? "my target" : target.getBlockX() + "," + target.getBlockY() + "," + target.getBlockZ())
+                            + " for over 30 seconds without arriving. What should I do next?");
             setState(VillagerState.IDLE);
         }
     }
@@ -415,7 +684,13 @@ public class VillagerBrain {
                 setState(VillagerState.WORK);
             }
             case DEPOSIT -> {
+                int deposited = carryCount;
+                Material depositedMat = carryMaterial;
                 depositToChest();
+                if (deposited >= 4 && depositedMat != null) {
+                    noteObs(village, "deposited " + deposited + " "
+                            + depositedMat.name().toLowerCase(Locale.ROOT) + " into the community chest");
+                }
                 setState(VillagerState.IDLE);
             }
             case SLEEP -> {
@@ -447,7 +722,7 @@ public class VillagerBrain {
     }
 
     private void workWallJob(HearthPlugin plugin, Village v) {
-        BuildJob job = nextMissingWallJob(v);
+        BuildJob job = nextMissingWallJob(plugin, v);
         if (job == null) {
             // Wall complete.
             v.setWallBuilt(v.getWallJobs().size());
@@ -485,6 +760,9 @@ public class VillagerBrain {
             Material source = Drops.sourceBlock(need);
             Location src = findNearestSourceBlock(v, source, 48);
             if (src == null) {
+                // Nothing in reach and the chest is empty: write the need into
+                // the village book so a neighbor (or the agents) can see it.
+                writeNeed(plugin, v, need);
                 setState(VillagerState.IDLE); // nothing in reach; rest
                 return;
             }
@@ -558,6 +836,7 @@ public class VillagerBrain {
                 }
                 Location src = findNearestSourceBlock(v, light, 48);
                 if (src == null) {
+                    writeNeed(plugin, v, light);
                     setState(VillagerState.IDLE);
                     return;
                 }
@@ -679,8 +958,14 @@ public class VillagerBrain {
     }
 
     private void advanceMine(Village v) {
-        if (v.getMine() != null && currentJob != null && v.getMine().nextJob() == currentJob) {
-            v.getMine().markDug(currentJob);
+        if (v.getMine() != null && currentJob != null) {
+            v.getMine().markDug(currentJob, villager.getUniqueId());
+        }
+        // A little milestone for the village book (throttled per villager).
+        if (v.getMine() != null && v.getMine().getDug() > 0) {
+            if (v.getMine().getDug() == 1) {
+                noteObs(v, "dug the first block of the mine tunnel");
+            }
         }
     }
 
@@ -751,22 +1036,42 @@ public class VillagerBrain {
 
     // ---- Helpers ----
 
-    private BuildJob nextMissingLightJob(Village v) {
+    /**
+     * Next light job that still needs a block, claimed for me on the spot so
+     * two villagers don't place the same light.
+     */
+    private BuildJob nextMissingLightJob(HearthPlugin plugin, Village v) {
+        long now = System.currentTimeMillis();
+        UUID me = villager.getUniqueId();
+        long ttl = plugin.jobClaimTtlMs();
         for (BuildJob job : v.getLightJobs()) {
             Material t = job.location.getBlock().getType();
             if (t == Material.AIR || BlockUtils.isReplaceable(t)) {
-                return job;
+                if (job.isAvailableTo(me, now, ttl)) {
+                    job.claim(me, now);
+                    return job;
+                }
             }
         }
         return null;
     }
 
-    private BuildJob nextMissingWallJob(Village v) {
+    /**
+     * Next wall job that still needs a block, claimed for me on the spot so
+     * two villagers don't walk to the same block (the work splits naturally).
+     */
+    private BuildJob nextMissingWallJob(HearthPlugin plugin, Village v) {
+        long now = System.currentTimeMillis();
+        UUID me = villager.getUniqueId();
+        long ttl = plugin.jobClaimTtlMs();
         List<BuildJob> jobs = v.getWallJobs();
         for (BuildJob job : jobs) {
             Material t = job.location.getBlock().getType();
             if (t == Material.AIR || BlockUtils.isReplaceable(t)) {
-                return job;
+                if (job.isAvailableTo(me, now, ttl)) {
+                    job.claim(me, now);
+                    return job;
+                }
             }
         }
         return null;
@@ -975,6 +1280,19 @@ public class VillagerBrain {
         }
         if (target != null) {
             sb.append(" target=").append(target.getBlockX()).append(',').append(target.getBlockY()).append(',').append(target.getBlockZ());
+        }
+        // v1.2: what I last saw of my neighbors (gossip).
+        List<String> peerTasks = new ArrayList<>();
+        for (Thought t : peerCache.values()) {
+            if (!t.task.isEmpty()) {
+                peerTasks.add(t.task);
+            }
+            if (peerTasks.size() >= 3) {
+                break;
+            }
+        }
+        if (!peerTasks.isEmpty()) {
+            sb.append(" neighbors=").append(String.join(",", peerTasks));
         }
         return sb.toString();
     }

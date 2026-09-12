@@ -11,7 +11,7 @@ softdepend: []
 commands:
   hearth:
     description: Main Hearth command.
-    usage: /<command> <help|list|status|wall|mine|light|chest|ai|reload|stop>
+    usage: /<command> <help|list|status|wall|mine|light|chest|book|ai|reload|stop>
 permissions:
   hearth.admin:
     description: Allows use of all Hearth commands.
