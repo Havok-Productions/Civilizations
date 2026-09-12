@@ -11,7 +11,7 @@ Hearth turns a group of villagers into a small self-sufficient collective:
 - 📦 **Places a community chest automatically** if the village doesn't have one, and villagers deposit everything they gather there
 - 🌙 **Goes to bed at night** (sleep window matches vanilla: ~5:20 PM → 7:00 AM) and wakes in the morning
 - 🏃 **Moves at normal villager speed** — small velocity nudges + occasional natural "step", never 100 mph teleport-zoomies
-- 🤖 **Quen AI core, built into the plugin**: a pool of "Quen" mini-agents (default 3) runs the villagers' priorities. Each agent owns a stable subset of villages and keeps a **persistent, human-readable memory file** per village — it remembers progress and its own decisions across restarts. The brain can be **self-hosted**: on first enable Hearth downloads a llama.cpp server + a Qwen model into its own folder and runs the AI locally (no API, no internet after the first run) — or you can point it at an external API (DeepSeek, ChatGPT, LM Studio). Local safety rules always override the AI (villagers always sleep at night, always flee mobs). The local runtime can run on your **GPU** (CUDA build of llama.cpp, `ai.local.gpu: auto` by default).
+- 🤖 **Quen AI core, built into the plugin**: a pool of "Quen" mini-agents (default 14) runs the villagers' priorities. Each agent owns a stable subset of villages and keeps a **persistent, human-readable memory file** per village — it remembers progress and its own decisions across restarts. The brain can be **self-hosted**: on first enable Hearth downloads a llama.cpp server + a Qwen model into its own folder and runs the AI locally (no API, no internet after the first run) — or you can point it at an external API (DeepSeek, ChatGPT, LM Studio). Local safety rules always override the AI (villagers always sleep at night, always flee mobs). The local runtime can run on your **GPU** (CUDA build of llama.cpp, `ai.local.gpu: auto` by default).
 - 👥 **Village society (v1.2)**: villagers *talk* with their neighbors (they face each other and pause), keep a **shared book** on an auto-placed **bookshelf** next to the chest (`books/<villageId>.json` — plans, needs, observations), **claim jobs** so nobody digs the same block twice, post **"we need X"** requests that idle or redundant villagers pick up, and can **ask their Quen agent for advice when stuck** (cooldown-gated, local safety rules still win).
 
 Hearth is an **original implementation**. It borrows *ideas* from two well-known projects (Baritone's budgeted A* pathfinding and behavior concepts; Civilizations' villager task-management approach) but contains no copied code.
@@ -135,7 +135,7 @@ The AI is part of the plugin, not an external dependency:
     API (DeepSeek, OpenAI/ChatGPT, LM Studio, ...) via `ai.external.base-url` /
     `model` / `api-key`. The v1.0.0 `ai.base-url`/`ai.model`/`ai.api-key` keys
     still work as a fallback.
-- **Multiple mini-agents** — `ai.agents-count` (default 3) agents run in
+- **Multiple mini-agents** — `ai.agents-count` (default 14) agents run in
   parallel, each on its own daemon thread. A village's UUID hash decides which
   agent owns it, so the *same* agent always advises the *same* village.
 - **Persistent memory** — each agent stores what it has learned per village in
@@ -207,6 +207,8 @@ Requires **Java 25** and **Maven 3.9+** (the Folia 26.x API is Java-25 bytecode)
 
 ### Changelog
 
+- **v1.2.2** — default `ai.agents-count` raised to 14 (each agent is one
+  lightweight thread; trivial load on a modern CPU).
 - **v1.2.1** — Folia runtime fixes: village discovery now runs on a real
   region thread (the global region thread may not load chunks, which crashed
   the bed scan), and brain/village tasks use a 1-tick initial delay (Folia
@@ -223,7 +225,7 @@ cd hearth
 mvn package
 ```
 
-Output: `target/Hearth-1.2.1.jar` → drop into your Folia/Paper `plugins/` folder.
+Output: `target/Hearth-1.2.2.jar` → drop into your Folia/Paper `plugins/` folder.
 
 > **Version note:** this project is built against the **latest stable Folia
 > API**, `dev.folia:folia-api:26.1.2.build.8-stable`, and ships
@@ -243,7 +245,7 @@ Output: `target/Hearth-1.2.1.jar` → drop into your Folia/Paper `plugins/` fold
 ## Setup
 
 1. Spawn (or find) some villagers in one area.
-2. Put `Hearth-1.2.1.jar` in `plugins/`, start the server.
+2. Put `Hearth-1.2.2.jar` in `plugins/`, start the server.
 3. The Quen AI core is **on by default** (`ai.enabled: true`, `backend: local`):
    the first run downloads the runtime + model (~1.1 GB) into the plugin folder,
    then the agents run the villagers — fully offline afterwards. Set
@@ -285,7 +287,7 @@ Permissions: `hearth.admin` (default: op), `hearth.player` (default: everyone).
 | `sleep.sleep-from` / `sleep-until` | 17000 / 7000 | Sleep window (Minecraft time) |
 | `ai.enabled` | true | Quen AI core on/off (agents run the villagers) |
 | `ai.backend` | local | `local` = bundled llama.cpp + Qwen in `local-ai/`; `external` = remote API |
-| `ai.agents-count` | 3 | Number of Quen mini-agents (each keeps its own memory) |
+| `ai.agents-count` | 14 | Number of Quen mini-agents (each keeps its own memory) |
 | `ai.local.model-repo` / `model-file` | Qwen2.5-1.5B | The local Quen model (swap for Qwen3-4B = bigger brain) |
 | `ai.local.gpu` | auto | `auto` = CUDA build on NVIDIA GPUs (falls back to CPU), `cpu` = always CPU, `cuda` = force GPU |
 | `society.enabled` | true | Master on/off for gossip, book, needs, job claims, stuck-consult |

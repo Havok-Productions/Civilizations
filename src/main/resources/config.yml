@@ -167,8 +167,9 @@ ai:
   #                   LM Studio, ...). No downloads, no local CPU/GPU load.
   backend: local
   # How many mini-agents run the villagers (each owns a stable subset of
-  # villages and keeps its own memory). 1 is fine for a few villages.
-  agents-count: 3
+  # villages and keeps its own memory). Each agent is just one lightweight
+  # thread, so 14 is comfortable on a modern CPU; drop it if you want fewer.
+  agents-count: 14
   # How often (minutes) to re-ask an agent per village.
   interval-minutes: 4
   # Chat parameters (both backends).
