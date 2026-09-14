@@ -207,6 +207,13 @@ Requires **Java 25** and **Maven 3.9+** (the Folia 26.x API is Java-25 bytecode)
 
 ### Changelog
 
+- **v1.3.3** — Quen local AI bootstrap, final fix: the llama.cpp runtime and
+  Qwen model downloads failed with HTTP 302 even though the asset name and
+  release were correct — GitHub release URLs and Hugging Face URLs both
+  302-redirect to their CDN, and Java's `HttpClient` default redirect policy
+  is `NEVER`. The shared client now follows standard redirects
+  (`Redirect.NORMAL`), so first-run bootstrap actually downloads the runtime
+  (CUDA 13.3 build first for RTX 50-series) and the model.
 - **v1.3.2** — Folia watchdog fix (the remaining "has not responded in 5.9s"
   region stalls). The v1.3.0 per-read 750 ms cap was still too coarse: a scan
   touching ~50 chunks paid ~50 *sequential* cross-region waits, and under load
@@ -265,7 +272,7 @@ cd hearth
 mvn package
 ```
 
-Output: `target/Hearth-1.3.2.jar` → drop into your Folia/Paper `plugins/` folder.
+Output: `target/Hearth-1.3.3.jar` → drop into your Folia/Paper `plugins/` folder.
 
 > **Version note:** this project is built against the **latest stable Folia
 > API**, `dev.folia:folia-api:26.1.2.build.8-stable`, and ships
@@ -285,7 +292,7 @@ Output: `target/Hearth-1.3.2.jar` → drop into your Folia/Paper `plugins/` fold
 ## Setup
 
 1. Spawn (or find) some villagers in one area.
-2. Put `Hearth-1.3.2.jar` in `plugins/`, start the server.
+2. Put `Hearth-1.3.3.jar` in `plugins/`, start the server.
 3. The Quen AI core is **on by default** (`ai.enabled: true`, `backend: local`):
    the first run downloads the runtime + model (~1.1 GB) into the plugin folder,
    then the agents run the villagers — fully offline afterwards. Set

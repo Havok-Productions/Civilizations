@@ -74,6 +74,11 @@ public class LocalAIManager {
     private final File modelsDir;
     private final HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(15))
+            // GitHub release downloads and Hugging Face model URLs both 302-redirect
+            // to their CDN (objects.githubusercontent.com / cdn-lfs.huggingface.co).
+            // Java's default redirect policy is NEVER, which turned every download
+            // into a spurious HTTP-302 failure — so follow standard redirects.
+            .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
     private volatile State state = State.STOPPED;
