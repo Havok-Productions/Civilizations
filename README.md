@@ -207,6 +207,46 @@ Requires **Java 25** and **Maven 3.9+** (the Folia 26.x API is Java-25 bytecode)
 
 ### Changelog
 
+- **v1.3.2** — Folia watchdog fix (the remaining "has not responded in 5.9s"
+  region stalls). The v1.3.0 per-read 750 ms cap was still too coarse: a scan
+  touching ~50 chunks paid ~50 *sequential* cross-region waits, and under load
+  (busy owning region, GC, chunk-load backlog) that multiplied past Folia's
+  ~6 s region-thread watchdog. Now:
+  1. **Batched cross-region reads** — `RegionIO.inChunks` dispatches every
+     chunk's read first (all in flight concurrently on their owning regions)
+     and then performs ONE bounded wait for the whole batch (default 1500 ms;
+     500 ms for single reads). A 40-chunk scan costs one wait, not 40.
+  2. **Per-thread circuit breaker** — every real cross-region wait is
+     additionally capped by a rolling budget: at most 1200 ms of blocking per
+     thread in any 3000 ms window. Once spent, further reads fast-fail to
+     their fallback (the caller retries on a later tick), so no thread can
+     ever stall a region long enough to trip the watchdog.
+  3. **Discovery moved to the global region thread** — it no longer touches
+     chunks directly (all reads go through `RegionIO`, the one chest-placement
+     write is region-routed and re-validated in-region), so the only remaining
+     blocking happens off the watchdog-protected tick regions.
+  All multi-chunk hot loops (beds, chest/bookshelf finds + spots, wall
+  planning + missing-count, light planning, darkness sampling, source-block
+  rings) use the batch API with original iteration order preserved
+  ("first found wins" semantics unchanged). Non-Folia servers still run every
+  read inline — zero overhead.
+- **v1.3.1** — Quen local AI bootstrap fix: the runtime asset list was
+  fetched from the wrong GitHub endpoint (`/releases/latest` returns an
+  ancient tag), and the asset-name patterns didn't match llama.cpp's current
+  Windows naming — so first-run downloads 404'd. Now the real asset list of
+  the resolved release is used, all known naming generations match, and the
+  newest CUDA build is tried first (so RTX 50-series / Blackwell gets a CUDA
+  build that can run on it).
+- **v1.3.0** — full Folia cross-region safety: every block/inventory read
+  that can happen outside the owning region (bed scans, chest contents,
+  wall/mine/light planning, darkness sampling, pathfinding) is routed
+  through a new `RegionIO` helper that queues the read onto the chunk's
+  owning region thread (inline when we already own it, with per-chunk
+  batching and a bounded 750 ms wait + safe fallback). Pathfinding now
+  prefetches per-chunk column windows; an unreadable chunk degrades to
+  "no path" instead of crashing the region thread. Fixes the recurring
+  `Thread failed main thread check: Cannot retrieve chunk asynchronously`
+  errors on Folia.
 - **v1.2.2** — default `ai.agents-count` raised to 14 (each agent is one
   lightweight thread; trivial load on a modern CPU).
 - **v1.2.1** — Folia runtime fixes: village discovery now runs on a real
@@ -225,7 +265,7 @@ cd hearth
 mvn package
 ```
 
-Output: `target/Hearth-1.2.2.jar` → drop into your Folia/Paper `plugins/` folder.
+Output: `target/Hearth-1.3.2.jar` → drop into your Folia/Paper `plugins/` folder.
 
 > **Version note:** this project is built against the **latest stable Folia
 > API**, `dev.folia:folia-api:26.1.2.build.8-stable`, and ships
@@ -245,7 +285,7 @@ Output: `target/Hearth-1.2.2.jar` → drop into your Folia/Paper `plugins/` fold
 ## Setup
 
 1. Spawn (or find) some villagers in one area.
-2. Put `Hearth-1.2.2.jar` in `plugins/`, start the server.
+2. Put `Hearth-1.3.2.jar` in `plugins/`, start the server.
 3. The Quen AI core is **on by default** (`ai.enabled: true`, `backend: local`):
    the first run downloads the runtime + model (~1.1 GB) into the plugin folder,
    then the agents run the villagers — fully offline afterwards. Set

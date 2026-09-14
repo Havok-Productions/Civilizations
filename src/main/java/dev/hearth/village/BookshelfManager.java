@@ -8,7 +8,13 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.persistence.PersistentDataType;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Random;
+
+import dev.hearth.region.RegionIO;
 
 /**
  * Ensures every village has a bookshelf — the physical "library" the
@@ -22,10 +28,10 @@ import java.util.Random;
  *       village center) and place a BOOKSHELF, tagged for future rescans.</li>
  * </ol>
  *
- * <p>Folia-safety: the searches are read-only (legal from any thread) and the
- * placement write is routed onto the target block's region thread via
- * {@link HearthPlugin#runInRegion}, where the world state is re-validated
- * before writing.
+ * <p>Folia-safety: the searches are read-only (routed onto each chunk's owning
+ * region via {@link RegionIO}) and the placement write is routed onto the
+ * target block's region thread via {@link HearthPlugin#runInRegion}, where
+ * the world state is re-validated before writing.
  */
 public class BookshelfManager {
 
@@ -94,27 +100,48 @@ public class BookshelfManager {
         World world = village.getWorld();
         Location anchor = village.getChestLocation() != null ? village.getChestLocation() : village.getCenter();
         int maxD = plugin.societyBookshelfMaxDistance();
+        // Batched per chunk so the scan runs on each chunk's owning region.
+        Map<Long, List<int[]>> byChunk = new LinkedHashMap<>();
         for (int x = anchor.getBlockX() - maxD; x <= anchor.getBlockX() + maxD; x += 2) {
             for (int z = anchor.getBlockZ() - maxD; z <= anchor.getBlockZ() + maxD; z += 2) {
-                int topY;
-                try {
-                    topY = world.getHighestBlockYAt(x, z);
-                } catch (IllegalArgumentException ex) {
-                    continue;
-                }
-                for (int y = topY; y >= Math.max(world.getMinHeight(), topY - 4); y--) {
-                    Block b = world.getBlockAt(x, y, z);
-                    if (b.getType() != Material.BOOKSHELF) {
+                byChunk.computeIfAbsent(RegionIO.chunkKey(x >> 4, z >> 4), k -> new ArrayList<>())
+                        .add(new int[]{x, z});
+            }
+        }
+        // Folia (v1.3.2): one dispatch per chunk, one bounded wait for the
+        // whole scan (iteration order preserved).
+        Map<Long, java.util.function.Supplier<Location>> reads = new LinkedHashMap<>();
+        for (Map.Entry<Long, List<int[]>> e : byChunk.entrySet()) {
+            List<int[]> cols = e.getValue();
+            reads.put(e.getKey(), () -> {
+                for (int[] col : cols) {
+                    int x = col[0], z = col[1];
+                    int topY;
+                    try {
+                        topY = world.getHighestBlockYAt(x, z);
+                    } catch (IllegalArgumentException ex) {
                         continue;
                     }
-                    if (!(b.getState() instanceof org.bukkit.block.Shelf shelfState)) {
-                        continue;
-                    }
-                    String id = shelfState.getPersistentDataContainer().get(plugin.bookshelfKey(), PersistentDataType.STRING);
-                    if (village.getId().toString().equals(id)) {
-                        return b.getLocation();
+                    for (int y = topY; y >= Math.max(world.getMinHeight(), topY - 4); y--) {
+                        Block b = world.getBlockAt(x, y, z);
+                        if (b.getType() != Material.BOOKSHELF) {
+                            continue;
+                        }
+                        if (!(b.getState() instanceof org.bukkit.block.Shelf shelfState)) {
+                            continue;
+                        }
+                        String id = shelfState.getPersistentDataContainer().get(plugin.bookshelfKey(), PersistentDataType.STRING);
+                        if (village.getId().toString().equals(id)) {
+                            return b.getLocation();
+                        }
                     }
                 }
+                return null;
+            });
+        }
+        for (Location found : RegionIO.inChunks(plugin, world, reads, null).values()) {
+            if (found != null) {
+                return found;
             }
         }
         return null;
@@ -127,30 +154,50 @@ public class BookshelfManager {
         Random rng = new Random(village.getId().hashCode());
         // Rings around the anchor (the chest), starting close — the bookshelf
         // belongs next to the village's common room, not across the map.
+        // Each ring's (<= 8) columns are batched per chunk for Folia-safe reads.
         for (int ring = 1; ring <= maxD; ring += 1) {
             int angles = 8;
+            Map<Long, List<int[]>> byChunk = new LinkedHashMap<>();
             for (int a = 0; a < angles; a++) {
                 double rad = (2 * Math.PI * a) / angles + rng.nextDouble() * 0.1;
                 int x = anchor.getBlockX() + (int) Math.round(Math.cos(rad) * ring);
                 int z = anchor.getBlockZ() + (int) Math.round(Math.sin(rad) * ring);
-                int topY;
-                try {
-                    topY = world.getHighestBlockYAt(x, z);
-                } catch (IllegalArgumentException ex) {
-                    continue;
+                byChunk.computeIfAbsent(RegionIO.chunkKey(x >> 4, z >> 4), k -> new ArrayList<>())
+                        .add(new int[]{x, z});
+            }
+            // Folia (v1.3.2): one bounded wait for the whole ring.
+            Map<Long, java.util.function.Supplier<Location>> reads = new LinkedHashMap<>();
+            for (Map.Entry<Long, List<int[]>> e : byChunk.entrySet()) {
+                List<int[]> cols = e.getValue();
+                reads.put(e.getKey(), () -> {
+                    for (int[] col : cols) {
+                        int x = col[0], z = col[1];
+                        int topY;
+                        try {
+                            topY = world.getHighestBlockYAt(x, z);
+                        } catch (IllegalArgumentException ex) {
+                            continue;
+                        }
+                        // Solid floor, air at the bookshelf slot and above it.
+                        Block floor = world.getBlockAt(x, topY, z);
+                        if (!floor.getType().isSolid()) {
+                            continue;
+                        }
+                        if (!BlockUtils.isReplaceable(world.getBlockAt(x, topY + 1, z).getType())) {
+                            continue;
+                        }
+                        if (!BlockUtils.isReplaceable(world.getBlockAt(x, topY + 2, z).getType())) {
+                            continue;
+                        }
+                        return new Location(world, x, topY + 1, z);
+                    }
+                    return null;
+                });
+            }
+            for (Location spot : RegionIO.inChunks(plugin, world, reads, null).values()) {
+                if (spot != null) {
+                    return spot;
                 }
-                // Solid floor, air at the bookshelf slot and above it.
-                Block floor = world.getBlockAt(x, topY, z);
-                if (!floor.getType().isSolid()) {
-                    continue;
-                }
-                if (!BlockUtils.isReplaceable(world.getBlockAt(x, topY + 1, z).getType())) {
-                    continue;
-                }
-                if (!BlockUtils.isReplaceable(world.getBlockAt(x, topY + 2, z).getType())) {
-                    continue;
-                }
-                return new Location(world, x, topY + 1, z);
             }
         }
         return null;

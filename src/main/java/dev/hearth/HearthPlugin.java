@@ -14,6 +14,7 @@ import dev.hearth.build.MinePlanner;
 import dev.hearth.build.WallPlanner;
 import dev.hearth.move.MovementController;
 import dev.hearth.path.PathStore;
+import dev.hearth.region.RegionIO;
 import dev.hearth.village.BookshelfManager;
 import dev.hearth.village.ChestManager;
 import dev.hearth.village.Village;
@@ -288,13 +289,28 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
      * also picks up villagers that spawn between rescans (spawn events start
      * their brain immediately, see {@link #onVillagerSpawn(EntitySpawnEvent)}).
      *
-     * <p><b>Folia:</b> this must run on a <em>real region</em> thread, not the
-     * global one — the global thread cannot load chunks, while village
-     * detection ({@code VillageManager#collectBeds}, chest probes) needs chunk
-     * access. Region threads may load chunks; only the global thread may not.
+     * <p><b>Folia (v1.3.2):</b> discovery runs on the <em>global</em> region
+     * thread, not a tick region. That is safe because the caller never touches
+     * chunks directly any more: every world read is routed onto the owning
+     * region via {@link dev.hearth.region.RegionIO} (batched, with one bounded
+     * wait plus a per-thread circuit-breaker budget), and the one write it can
+     * trigger (chest placement) is region-routed by {@link ChestManager} via
+     * {@link #runInRegion}. Entity iteration and task scheduling (village +
+     * brain tasks) are legal from any thread. The only remaining blocking —
+     * waiting for cross-region read delivery — therefore happens on the global
+     * thread, which is <em>not</em> the thread Folia's tick-region watchdog
+     * protects, so a congested region can never stall a tick region any more.
+     * (Before v1.3.2 this ran on the anchor <em>region</em> thread, where the
+     * per-chunk sequential waits were what tripped the watchdog.)
      */
     private void scheduleDiscovery() {
         long period = Math.max(20L, rescanInterval);
+        try {
+            Bukkit.getGlobalRegionScheduler().runAtFixedRate(this, t -> discoverAndStart(), 20L, period);
+            return;
+        } catch (Throwable t) {
+            // Non-Folia fallback: no global region scheduler (legacy builds).
+        }
         List<World> worlds = Bukkit.getWorlds();
         if (worlds.isEmpty()) {
             getLogger().warning("No worlds loaded yet; discovery will start after the first /hearth reload.");
@@ -540,7 +556,7 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
         fleeRadius = c.getInt("defense.flee-radius", 8);
         aiEnabled = c.getBoolean("ai.enabled", true);
         aiBackend = c.getString("ai.backend", "local").toLowerCase(Locale.ROOT);
-        aiAgentsCount = Math.max(1, c.getInt("ai.agents-count", 3));
+        aiAgentsCount = Math.max(1, c.getInt("ai.agents-count", 14));
         aiCharter = c.getString("ai.charter", "Hearth is a peaceful collective.");
         aiTemperature = c.getDouble("ai.temperature", 0.2);
         aiMaxTokens = c.getInt("ai.max-tokens", 220);
@@ -1242,19 +1258,29 @@ public class HearthPlugin extends JavaPlugin implements Listener, TabExecutor {
 
     /**
      * Count items of a given material in the chest at the given location.
-     * Read-only, so it is safe to call from any region thread.
+     * Folia-safe: the inventory read is routed to the chest's owning region
+     * via {@link dev.hearth.region.RegionIO}, so brains may call it from any
+     * region thread. Returns 0 when the chest cannot be read.
      */
     public static int chestCount(Material material, Location chest) {
-        if (chest == null || !(chest.getBlock().getState() instanceof org.bukkit.block.Chest c)) {
+        HearthPlugin plugin = get();
+        if (plugin == null || chest == null) {
             return 0;
         }
-        int n = 0;
-        for (ItemStack item : c.getBlockInventory()) {
-            if (item != null && item.getType() == material) {
-                n += item.getAmount();
+        Integer count = RegionIO.inChunk(plugin, chest.getWorld(),
+                chest.getBlockX(), chest.getBlockZ(), () -> {
+            if (!(chest.getBlock().getState() instanceof org.bukkit.block.Chest c)) {
+                return 0;
             }
-        }
-        return n;
+            int n = 0;
+            for (ItemStack item : c.getBlockInventory()) {
+                if (item != null && item.getType() == material) {
+                    n += item.getAmount();
+                }
+            }
+            return n;
+        }, 0);
+        return count == null ? 0 : count;
     }
 
     public static void log(HearthPlugin p, String msg) {

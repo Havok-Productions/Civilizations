@@ -2,6 +2,7 @@ package dev.hearth.village;
 
 import dev.hearth.HearthPlugin;
 import dev.hearth.ai.AIAdvice;
+import dev.hearth.region.RegionIO;
 import dev.hearth.brain.TaskType;
 import dev.hearth.build.MinePlanner;
 import dev.hearth.build.WallPlanner;
@@ -189,14 +190,28 @@ public class Village {
      */
     public Map<String, Integer> getChestContentsSummary() {
         Map<String, Integer> out = new HashMap<>();
-        if (chestLocation == null || !(chestLocation.getBlock().getState() instanceof org.bukkit.block.Chest c)) {
+        Location at = chestLocation;
+        if (at == null) {
             return out;
         }
-        for (org.bukkit.inventory.ItemStack item : c.getBlockInventory()) {
-            if (item != null) {
-                out.merge(item.getType().name().toLowerCase(), item.getAmount(), Integer::sum);
-            }
+        HearthPlugin p = HearthPlugin.get();
+        if (p == null) {
+            return out;
         }
+        // Folia: the chest may live in another region. Route the state +
+        // inventory read onto the owning region thread (or inline if we
+        // already own it). The caller blocks until the read completes, so
+        // all map mutations are visible before we return.
+        RegionIO.inChunk(p, at.getWorld(), at.getBlockX(), at.getBlockZ(), () -> {
+            if (at.getBlock().getState() instanceof org.bukkit.block.Chest c) {
+                for (org.bukkit.inventory.ItemStack item : c.getBlockInventory()) {
+                    if (item != null) {
+                        out.merge(item.getType().name().toLowerCase(), item.getAmount(), Integer::sum);
+                    }
+                }
+            }
+            return null;
+        }, null);
         return out;
     }
 

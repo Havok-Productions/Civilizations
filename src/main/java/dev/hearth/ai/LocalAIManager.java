@@ -367,10 +367,15 @@ public class LocalAIManager {
      */
     private List<String> runtimeAssetCandidates(String os, String arch, String tag, boolean wantCuda) {
         List<String> out = new ArrayList<>();
-        List<String> listed = listedAssetNames();
+        List<String> listed = listedAssetNames(tag);
         if (listed != null) {
             if (wantCuda) {
-                out.addAll(matchAssets(listed, os, arch, true));
+                // Highest CUDA version first: newer GPUs (e.g. Blackwell /
+                // RTX 50-series) need the newest CUDA build, and llama.cpp
+                // ships several CUDA variants per release.
+                List<String> cuda = new ArrayList<>(matchAssets(listed, os, arch, true));
+                cuda.sort((a, b) -> Double.compare(cudaVersion(b), cudaVersion(a)));
+                out.addAll(cuda);
             }
             out.addAll(matchAssets(listed, os, arch, false));
         }
@@ -386,12 +391,17 @@ public class LocalAIManager {
     }
 
     /**
-     * Names of the latest release's assets, or null when the API is unreachable.
+     * Names of the assets of the given release tag, or null when the API is
+     * unreachable.
+     *
+     * <p>Note: the {@code /releases/latest} endpoint must NOT be used here —
+     * it returns the oldest non-prerelease tag (llama.cpp keeps that around),
+     * not the newest one.
      */
-    private List<String> listedAssetNames() {
+    private List<String> listedAssetNames(String tag) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"))
+                    .uri(URI.create("https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/" + tag))
                     .timeout(Duration.ofSeconds(30))
                     .header("Accept", "application/vnd.github+json")
                     .header("User-Agent", "Hearth-Minecraft-Plugin")
@@ -421,14 +431,23 @@ public class LocalAIManager {
     private static List<String> matchAssets(List<String> names, String os, String arch, boolean cuda) {
         List<String> out = new ArrayList<>();
         for (String n : names) {
+            // Only real runtime bundles (llama-bXXXX-bin-...): this also
+            // excludes the separate cudart-llama-* / ui bundles that would
+            // match the CUDA patterns but contain no llama-server.
+            if (!n.startsWith("llama-")) {
+                continue;
+            }
             boolean ok;
             if ("win".equals(os)) {
-                ok = cuda ? n.matches(".*-bin-win-cuda\\d*-x64\\.zip")
-                          : n.matches(".*-bin-win-(x64|arm64)\\.zip");
+                // Naming has shifted over time: win-x64 (old) / win-cpu-x64
+                // (current); cuda12 / cuda-12.4 / cuda-13.3 all appear across
+                // releases, so match all of them.
+                ok = cuda ? n.matches(".*-bin-win-cuda-?[\\d.]*-x64\\.zip")
+                          : n.matches(".*-bin-win-(cpu-)?(x64|arm64)\\.zip");
             } else if ("mac".equals(os)) {
                 ok = !cuda && n.matches(".*-bin-macos-" + ("arm64".equals(arch) ? "arm64" : "x64") + "\\.tar\\.gz");
             } else {
-                ok = cuda ? n.matches(".*-bin-ubuntu-cuda\\d*-x64\\.tar\\.gz")
+                ok = cuda ? n.matches(".*-bin-ubuntu-cuda-?[\\d.]*-x64\\.tar\\.gz")
                           : n.matches(".*-bin-ubuntu-x64\\.tar\\.gz");
             }
             if (ok) {
@@ -445,14 +464,17 @@ public class LocalAIManager {
         List<String> out = new ArrayList<>();
         if (wantCuda && "x64".equals(arch)) {
             if ("win".equals(os)) {
-                out.add("llama-" + tag + "-bin-win-cuda12-x64.zip");
+                out.add("llama-" + tag + "-bin-win-cuda-13.3-x64.zip");
+                out.add("llama-" + tag + "-bin-win-cuda-12.4-x64.zip");
+                out.add("llama-" + tag + "-bin-win-cuda12-x64.zip"); // older naming
             } else if ("linux".equals(os)) {
                 out.add("llama-" + tag + "-bin-ubuntu-cuda12-x64.tar.gz");
             }
         }
         if ("win".equals(os)) {
             // The x64 zip runs on Windows ARM via emulation.
-            out.add("llama-" + tag + "-bin-win-x64.zip");
+            out.add("llama-" + tag + "-bin-win-cpu-x64.zip");
+            out.add("llama-" + tag + "-bin-win-x64.zip"); // older naming
         } else if ("mac".equals(os)) {
             out.add("llama-" + tag + "-bin-macos-" + arch + ".tar.gz");
         } else if ("linux".equals(os) && "x64".equals(arch)) {
@@ -465,7 +487,25 @@ public class LocalAIManager {
      * Whether a llama.cpp asset name is a CUDA build (cuda12, cuda13, ...).
      */
     private static boolean isCudaAsset(String name) {
-        return name != null && name.matches(".*-cuda\\d*-.*");
+        return name != null && name.matches(".*-cuda[\\d.]*-.*");
+    }
+
+    /**
+     * CUDA version encoded in an asset name ({@code cuda12}, {@code cuda-12.4},
+     * {@code cuda-13.3}, ...); 0 when not a CUDA asset. Used to sort
+     * candidates newest-first.
+     */
+    private static double cudaVersion(String asset) {
+        java.util.regex.Matcher m =
+                java.util.regex.Pattern.compile("cuda-?([0-9]+(?:\\.[0-9]+)?)").matcher(asset);
+        if (m.find()) {
+            try {
+                return Double.parseDouble(m.group(1));
+            } catch (NumberFormatException ignored) {
+                // fall through
+            }
+        }
+        return 0.0;
     }
 
     private static String readMarker(File f) {

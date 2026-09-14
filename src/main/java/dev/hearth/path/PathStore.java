@@ -13,11 +13,13 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Manages active path searches per villager.
  *
- * <p>Folia note: pathfinding is pure block <em>reading</em>, which is safe from any
- * region thread. Because each brain now ticks on its own entity region thread, this
- * store is accessed concurrently and therefore uses concurrent maps. Each brain steps
- * only its own request ({@link #tickFor(HearthPlugin, Request)}), keeping the work
- * bounded per villager.
+ * <p>Folia note: the searches read blocks that usually live in <em>other</em>
+ * regions, so every read inside {@link PathSearch} is routed through
+ * {@code RegionIO} (one cross-region round trip per touched chunk, batched). Because
+ * each brain now ticks on its own entity region thread, this store is accessed
+ * concurrently and therefore uses concurrent maps. Each brain steps only its own
+ * request ({@link #tickFor(HearthPlugin, Request)}), keeping the work bounded per
+ * villager.
  */
 public class PathStore {
 
@@ -52,7 +54,7 @@ public class PathStore {
      */
     public Request request(World world, Location start, Location goal) {
         Request req = new Request(UUID.randomUUID(), world,
-                new PathSearch(world,
+                new PathSearch(plugin, world,
                         start.getBlockX(), start.getBlockY(), start.getBlockZ(),
                         goal.getBlockX(), goal.getBlockY(), goal.getBlockZ(),
                         plugin.maxPathRadius(), plugin.maxPathDepth()),

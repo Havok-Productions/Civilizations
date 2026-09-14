@@ -1,5 +1,7 @@
 package dev.hearth.path;
 
+import dev.hearth.HearthPlugin;
+import dev.hearth.region.RegionIO;
 import dev.hearth.util.BlockUtils;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -27,11 +29,28 @@ import java.util.PriorityQueue;
  *   <li>water: +2.0 swim penalty (still allowed to cross rivers)</li>
  *   <li>lava/fire: never</li>
  * </ul>
+ *
+ * <p><b>Folia:</b> the search is stepped from a brain's region thread, but the
+ * blocks it reads usually live in <em>other</em> regions. Every block read goes
+ * through {@link RegionIO#inChunk}, and each touched chunk is prefetched once
+ * (a vertical column window around the current node) into a per-search cache —
+ * so a long search pays ONE cross-region round trip per chunk it touches, not
+ * one per block. A chunk that cannot be read reports {@code AIR}, which fails
+ * the ground checks below and simply blocks that column: the search degrades
+ * to "no path" instead of crashing ("Cannot retrieve chunk asynchronously").
  */
 public class PathSearch {
 
+    /**
+     * Vertical half-window prefetched per chunk. The search never looks more
+     * than ~9 blocks below or 1 above the node being expanded, so ±16 covers
+     * every neighbor read without another round trip.
+     */
+    private static final int Y_WINDOW = 16;
+
     public enum Status { RUNNING, DONE, FAILED }
 
+    private final HearthPlugin plugin;
     private final World world;
     private final int startX, startY, startZ;
     private final int goalX, goalY, goalZ;
@@ -41,12 +60,19 @@ public class PathSearch {
     private final PriorityQueue<PathNode> open = new PriorityQueue<>(Comparator.comparingDouble(n -> n.f));
     private final Map<Long, PathNode> closed = new HashMap<>();
 
+    // Folia: per-chunk column cache (chunkKey -> materials) + the y-range each
+    // cached window covers. Only touched while this search is stepped (one
+    // brain at a time), so plain HashMaps are fine.
+    private final Map<Long, Material[]> chunkCols = new HashMap<>();
+    private final Map<Long, int[]> chunkWindows = new HashMap<>();
+
     private int expansions = 0;
     private PathNode goalNode = null;
     private int lastStepped = 0;
 
-    public PathSearch(World world, int startX, int startY, int startZ,
+    public PathSearch(HearthPlugin plugin, World world, int startX, int startY, int startZ,
                       int goalX, int goalY, int goalZ, int maxRadius, int maxDepth) {
+        this.plugin = plugin;
         this.world = world;
         this.startX = startX; this.startY = startY; this.startZ = startZ;
         this.goalX = goalX; this.goalY = goalY; this.goalZ = goalZ;
@@ -124,7 +150,7 @@ public class PathSearch {
         if (!inBounds(nx, ny, nz)) {
             return;
         }
-        Material t = world.getBlockAt(nx, ny, nz).getType();
+        Material t = materialAt(nx, ny, nz);
         if (!BlockUtils.isPassable(t)) {
             return;
         }
@@ -139,16 +165,16 @@ public class PathSearch {
         if (!inBounds(nx, ny, nz)) {
             return;
         }
-        Material t = world.getBlockAt(nx, ny, nz).getType();
+        Material t = materialAt(nx, ny, nz);
         if (!BlockUtils.isPassable(t)) {
             return;
         }
         // Headroom: target and the block above it must be passable.
-        Material above = world.getBlockAt(nx, ny + 1, nz).getType();
+        Material above = materialAt(nx, ny + 1, nz);
         if (!BlockUtils.isPassable(above)) {
             return;
         }
-        Material below = world.getBlockAt(nx, ny - 1, nz).getType();
+        Material below = materialAt(nx, ny - 1, nz);
         if (!below.isSolid() && !BlockUtils.isLiquid(below)) {
             return;
         }
@@ -159,7 +185,7 @@ public class PathSearch {
         if (y == world.getMinHeight()) {
             return true;
         }
-        Material below = world.getBlockAt(x, y - 1, z).getType();
+        Material below = materialAt(x, y - 1, z);
         if (below.isSolid() || BlockUtils.isLiquid(below)) {
             return true;
         }
@@ -179,7 +205,7 @@ public class PathSearch {
         if (!inBounds(nx, ny, nz)) {
             return;
         }
-        Material t = world.getBlockAt(nx, ny, nz).getType();
+        Material t = materialAt(nx, ny, nz);
         if (!BlockUtils.isPassable(t)) {
             return;
         }
@@ -198,10 +224,49 @@ public class PathSearch {
         if (dx * dx + dz * dz > maxRadius * maxRadius) {
             return false;
         }
-        if (!BlockUtils.chunkLoaded(world, x, z)) {
-            return false;
-        }
+        // Note: no chunkLoaded() check here — on Folia that is itself a
+        // cross-region call. Unreadable chunks report AIR from materialAt(),
+        // which fails the ground checks and blocks the column instead.
         return true;
+    }
+
+    /**
+     * Folia-safe material at (x, y, z): served from the per-chunk cache when
+     * possible, otherwise ONE cross-region read of a ±{@link #Y_WINDOW} column
+     * window is made and cached. Unreadable chunks report AIR, which makes the
+     * column fail its ground checks (the search avoids it — no crash).
+     */
+    private Material materialAt(int x, int y, int z) {
+        if (y < world.getMinHeight() || y > world.getMaxHeight()) {
+            return Material.AIR;
+        }
+        long key = RegionIO.chunkKey(x >> 4, z >> 4);
+        Material[] col = chunkCols.get(key);
+        int[] win = chunkWindows.get(key);
+        if (col != null && win != null) {
+            int idx = y - win[0];
+            if (idx >= 0 && idx < col.length) {
+                return col[idx];
+            }
+        }
+        // No cached window, or the cached window does not cover this y (deep
+        // descent): fetch a window centered on the requested y.
+        int lo = Math.max(world.getMinHeight(), y - Y_WINDOW);
+        int hi = Math.min(world.getMaxHeight(), y + Y_WINDOW);
+        Material[] fetched = RegionIO.inChunk(plugin, world, x, z, () -> {
+            Material[] c = new Material[hi - lo + 1];
+            for (int yy = lo; yy <= hi; yy++) {
+                c[yy - lo] = world.getBlockAt(x, yy, z).getType();
+            }
+            return c;
+        }, null);
+        if (fetched == null) {
+            return Material.AIR; // chunk unavailable: treat the column as blocked
+        }
+        chunkCols.put(key, fetched);
+        chunkWindows.put(key, new int[]{lo, hi});
+        int idx = y - lo;
+        return (idx >= 0 && idx < fetched.length) ? fetched[idx] : Material.AIR;
     }
 
     private void relax(PathNode cur, int nx, int ny, int nz, double cost) {

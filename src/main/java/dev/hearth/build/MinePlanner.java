@@ -6,9 +6,14 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 
+import dev.hearth.util.BlockUtils;
+import dev.hearth.region.RegionIO;
+
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
@@ -122,13 +127,14 @@ public class MinePlanner {
                 // (the claimant dug it). Otherwise the claimant may still be
                 // walking there and we must not double-count.
                 if (job.claimedBy != null && !job.claimedBy.equals(who)) {
-                    Material t;
-                    try {
-                        t = job.location.getBlock().getType();
-                    } catch (Throwable ex) {
-                        return false;
-                    }
-                    if (t != Material.AIR) {
+                    // Folia: the job block may sit in a foreign chunk; read it
+                    // on its owning region. If the read cannot be delivered we
+                    // cannot verify the block is gone, so don't count it.
+                    HearthPlugin p = HearthPlugin.get();
+                    Material t = p == null ? null : RegionIO.inChunk(p, job.location.getWorld(),
+                            job.location.getBlockX(), job.location.getBlockZ(),
+                            () -> job.location.getBlock().getType(), null);
+                    if (t == null || t != Material.AIR) {
                         return false;
                     }
                 }
@@ -181,7 +187,12 @@ public class MinePlanner {
 
             Mine mine = new Mine(new Location(world, startX, 0, startZ));
             if (planRoute(world, mine, startX, startZ, depth, width, length, pillarEvery, rng)) {
-                mine.entrance.setY(world.getHighestBlockYAt(startX, startZ) + 1);
+                // Folia-safe read of the entrance column (one cross-region round trip).
+                Integer surfaceY = RegionIO.inChunk(plugin, world, startX, startZ,
+                        () -> world.getHighestBlockYAt(startX, startZ), null);
+                if (surfaceY != null) {
+                    mine.entrance.setY(surfaceY + 1);
+                }
                 return mine;
             }
             // Otherwise try the next direction / offset.
@@ -195,23 +206,33 @@ public class MinePlanner {
      */
     private boolean planRoute(World world, Mine mine, int startX, int startZ,
                               int depth, int width, int length, int pillarEvery, Random rng) {
-        int surfaceY = world.getHighestBlockYAt(startX, startZ) + 1;
+        // Folia-safe read of the start column; if the region cannot serve it,
+        // treat this route as blocked and try the next direction.
+        Integer top = RegionIO.inChunk(plugin, world, startX, startZ,
+                () -> world.getHighestBlockYAt(startX, startZ), null);
+        if (top == null) {
+            return false;
+        }
+        int surfaceY = top + 1;
         if (surfaceY <= depth) {
             // Surface is already below the target depth; just build a tunnel at surface.
             depth = surfaceY - 1;
         }
 
         // 1. Staircase descent (diagonal steps down to tunnel floor).
+        //    Probed per chunk (one cross-region round trip per chunk).
         int steps = surfaceY - depth;
+        List<int[]> stairs = new ArrayList<>();
         for (int i = 0; i < steps; i++) {
             int y = surfaceY - i;
             int x = startX + (i % 2 == 0 ? 1 : -1);
-            int z = startZ;
-            // The "step" block the villager digs is at (x, y, z).
-            if (!isDiggable(world, x, y, z)) {
-                return false;
-            }
-            mine.jobs.add(new BuildJob(loc(world, x, y, z), Material.STONE, BuildJob.Kind.MINE));
+            stairs.add(new int[]{x, y, startZ});
+        }
+        if (!allDiggable(world, stairs)) {
+            return false;
+        }
+        for (int[] p : stairs) {
+            mine.jobs.add(new BuildJob(loc(world, p[0], p[1], p[2]), Material.STONE, BuildJob.Kind.MINE));
         }
 
         // 2. Horizontal tunnel, room-and-pillar.
@@ -223,33 +244,27 @@ public class MinePlanner {
             if (pillarEvery > 0 && (col % pillarEvery) == (pillarEvery - 1)) {
                 continue;
             }
-            boolean colOk = true;
-            for (int w = 0; w < width && colOk; w++) {
-                int x = startX - (width / 2) + w;
-                for (int h = 0; h < 3; h++) {
-                    int y = floorY + h;
-                    if (!isDiggable(world, x, y, z)) {
-                        colOk = false;
-                        break;
-                    }
-                }
-            }
-            if (!colOk) {
-                return false; // route blocked; caller tries next direction
-            }
+            // Probe the whole cross-section at once (batched per chunk).
+            List<int[]> cross = new ArrayList<>();
             for (int w = 0; w < width; w++) {
                 int x = startX - (width / 2) + w;
                 for (int h = 0; h < 3; h++) {
-                    int y = floorY + h;
-                    Material target = (h == 0) ? Material.STONE : Material.AIR;
-                    mine.jobs.add(new BuildJob(loc(world, x, y, z), target, BuildJob.Kind.MINE));
+                    cross.add(new int[]{x, floorY + h, z});
                 }
             }
-            // 3. Ceiling light every 8 columns.
+            if (!allDiggable(world, cross)) {
+                return false; // route blocked; caller tries next direction
+            }
+            for (int[] p : cross) {
+                Material target = (p[1] == floorY) ? Material.STONE : Material.AIR;
+                mine.jobs.add(new BuildJob(loc(world, p[0], p[1], p[2]), target, BuildJob.Kind.MINE));
+            }
+            // 3. Ceiling light every 8 columns (Folia-safe single read).
             if (plugin.lightMine() && col % 8 == 4) {
                 int x = startX;
                 int y = floorY + 3;
-                if (world.getBlockAt(x, y, z).getType().isAir()) {
+                Material ceiling = RegionIO.blockType(plugin, loc(world, x, y, z), Material.AIR);
+                if (ceiling.isAir()) {
                     mine.jobs.add(new BuildJob(loc(world, x, y, z), plugin.lightMaterial(), BuildJob.Kind.LIGHT));
                 }
             }
@@ -258,7 +273,40 @@ public class MinePlanner {
     }
 
     /**
+     * Folia-safe diggability probe for a set of points.
+     *
+     * <p>Points are grouped by chunk so a scan pays ONE cross-region round
+     * trip per chunk (not one per block). If a chunk's read cannot be served
+     * (shutdown / extreme lag) the batch counts as blocked — we would rather
+     * try another route than dig blind.
+     */
+    private boolean allDiggable(World world, List<int[]> points) {
+        if (points.isEmpty()) {
+            return true;
+        }
+        Map<Long, List<int[]>> byChunk = new LinkedHashMap<>();
+        for (int[] p : points) {
+            byChunk.computeIfAbsent(RegionIO.chunkKey(p[0] >> 4, p[2] >> 4), k -> new ArrayList<>()).add(p);
+        }
+        for (List<int[]> pos : byChunk.values()) {
+            Boolean ok = RegionIO.inChunk(plugin, world, pos.get(0)[0], pos.get(0)[2], () -> {
+                for (int[] p : pos) {
+                    if (!isDiggable(world, p[0], p[1], p[2])) {
+                        return Boolean.FALSE;
+                    }
+                }
+                return Boolean.TRUE;
+            }, Boolean.FALSE);
+            if (!Boolean.TRUE.equals(ok)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * A block is diggable if it is not water/lava/bedrock and not a house block.
+     * Runs on the region that owns the chunk (see {@link #allDiggable}).
      */
     private boolean isDiggable(World world, int x, int y, int z) {
         if (y < world.getMinHeight() || y > world.getMaxHeight()) {
@@ -274,7 +322,7 @@ public class MinePlanner {
         if (plugin.avoidLava() && t == Material.LAVA) {
             return false;
         }
-        if (plugin.avoidHouse() && dev.hearth.util.BlockUtils.isHouseBlock(t)) {
+        if (plugin.avoidHouse() && BlockUtils.isHouseBlock(t)) {
             return false;
         }
         return true;

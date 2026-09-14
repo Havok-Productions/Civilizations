@@ -1,6 +1,7 @@
 package dev.hearth.brain;
 
 import dev.hearth.HearthPlugin;
+import dev.hearth.region.RegionIO;
 import dev.hearth.village.Village;
 
 /**
@@ -103,23 +104,61 @@ public class PriorityPolicy {
 
     /**
      * Sample a few spots inside the village to see if it is dark.
+     *
+     * <p>Each sample is one read inside one chunk (highest block + light
+     * level), so it is Folia-safe: the read runs on the chunk's owning region
+     * when needed, with a bounded wait and a safe skip on failure.
      */
     private boolean sampleDarkness(Village village) {
         int dark = 0;
         int samples = 0;
+        org.bukkit.World w = village.getWorld();
+        // Folia (v1.3.2): read all sample columns in ONE batched cross-region
+        // wait instead of eight sequential per-chunk waits.
+        java.util.List<int[]> cols = new java.util.ArrayList<>();
         for (int a = 0; a < 360; a += 45) {
             double rad = Math.toRadians(a);
             int x = village.getCenter().getBlockX() + (int) Math.round(Math.cos(rad) * village.getRadius() * 0.6);
             int z = village.getCenter().getBlockZ() + (int) Math.round(Math.sin(rad) * village.getRadius() * 0.6);
-            org.bukkit.block.Block b;
-            try {
-                b = village.getWorld().getHighestBlockAt(x, z);
-            } catch (IllegalArgumentException ex) {
-                continue;
+            cols.add(new int[]{x, z});
+        }
+        java.util.Map<Long, java.util.List<int[]>> byChunk = new java.util.LinkedHashMap<>();
+        for (int[] col : cols) {
+            byChunk.computeIfAbsent(RegionIO.chunkKey(col[0] >> 4, col[1] >> 4), k -> new java.util.ArrayList<>()).add(col);
+        }
+        java.util.Map<Long, java.util.function.Supplier<java.util.List<Boolean>>> reads = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<Long, java.util.List<int[]>> e : byChunk.entrySet()) {
+            java.util.List<int[]> chunkCols = e.getValue();
+            reads.put(e.getKey(), () -> {
+                java.util.List<Boolean> darkCols = new java.util.ArrayList<>();
+                for (int[] col : chunkCols) {
+                    int x = col[0], z = col[1];
+                    org.bukkit.block.Block b;
+                    try {
+                        b = w.getHighestBlockAt(x, z);
+                    } catch (IllegalArgumentException ex) {
+                        darkCols.add(null);
+                        continue;
+                    }
+                    darkCols.add(b.getLightLevel() < plugin.lightMinLevel());
+                }
+                return darkCols;
+            });
+        }
+        java.util.Map<Long, java.util.List<Boolean>> results = RegionIO.inChunks(plugin, w, reads, null);
+        for (java.util.Map.Entry<Long, java.util.List<int[]>> e : byChunk.entrySet()) {
+            java.util.List<Boolean> darkCols = results.get(e.getKey());
+            if (darkCols == null) {
+                continue; // chunk unavailable; skip these samples
             }
-            samples++;
-            if (b.getLightLevel() < plugin.lightMinLevel()) {
-                dark++;
+            for (Boolean darkCol : darkCols) {
+                if (darkCol == null) {
+                    continue;
+                }
+                samples++;
+                if (darkCol) {
+                    dark++;
+                }
             }
         }
         return samples > 0 && dark * 2 > samples;

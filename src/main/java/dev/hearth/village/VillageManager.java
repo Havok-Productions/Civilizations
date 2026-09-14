@@ -8,10 +8,13 @@ import org.bukkit.entity.Villager;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+
+import dev.hearth.region.RegionIO;
 
 /**
  * Detects villages by clustering villagers (flood fill within {@code radius}),
@@ -220,20 +223,49 @@ public class VillageManager {
         World world = village.getWorld();
         // Beds live near the surface: sample a coarse grid and check the
         // highest block plus a few below (covers one- and two-story houses).
+        //
+        // Folia: group the sampled columns by chunk and run each chunk's scan
+        // on that chunk's owning region (RegionIO). One cross-region round
+        // trip per chunk — reading from a foreign region thread is what
+        // crashed the old code ("Cannot retrieve chunk asynchronously").
+        Map<Long, List<int[]>> byChunk = new LinkedHashMap<>();
         for (int x = c.getBlockX() - r; x <= c.getBlockX() + r; x += 3) {
             for (int z = c.getBlockZ() - r; z <= c.getBlockZ() + r; z += 3) {
-                int topY;
-                try {
-                    topY = world.getHighestBlockYAt(x, z);
-                } catch (IllegalArgumentException ex) {
-                    continue;
-                }
-                for (int y = topY; y >= Math.max(world.getMinHeight(), topY - 6); y--) {
-                    org.bukkit.block.Block b = world.getBlockAt(x, y, z);
-                    if (b.getState() instanceof Bed) {
-                        beds.add(b.getLocation());
+                byChunk.computeIfAbsent(RegionIO.chunkKey(x >> 4, z >> 4), k -> new ArrayList<>())
+                        .add(new int[]{x, z});
+            }
+        }
+        // Folia (v1.3.2): dispatch one read per chunk, then make ONE bounded
+        // wait for all of them (RegionIO.inChunks) instead of N sequential
+        // per-chunk waits — the per-thread circuit breaker additionally bounds
+        // total blocking, so the calling thread (the global region) can never
+        // stall a Folia tick region the way the old loop did.
+        Map<Long, java.util.function.Supplier<List<Location>>> reads = new LinkedHashMap<>();
+        for (Map.Entry<Long, List<int[]>> e : byChunk.entrySet()) {
+            List<int[]> cols = e.getValue();
+            reads.put(e.getKey(), () -> {
+                List<Location> local = new ArrayList<>();
+                for (int[] col : cols) {
+                    int x = col[0], z = col[1];
+                    int topY;
+                    try {
+                        topY = world.getHighestBlockYAt(x, z);
+                    } catch (IllegalArgumentException ex) {
+                        continue;
+                    }
+                    for (int y = topY; y >= Math.max(world.getMinHeight(), topY - 6); y--) {
+                        org.bukkit.block.Block b = world.getBlockAt(x, y, z);
+                        if (b.getState() instanceof Bed) {
+                            local.add(b.getLocation());
+                        }
                     }
                 }
+                return local;
+            });
+        }
+        for (List<Location> l : RegionIO.inChunks(plugin, world, reads, null).values()) {
+            if (l != null) {
+                beds.addAll(l);
             }
         }
         village.setBeds(beds);

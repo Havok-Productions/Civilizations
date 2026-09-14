@@ -6,6 +6,7 @@ import dev.hearth.build.BuildJob;
 import dev.hearth.build.MinePlanner;
 import dev.hearth.path.PathResult;
 import dev.hearth.path.PathStore;
+import dev.hearth.region.RegionIO;
 import dev.hearth.social.Thought;
 import dev.hearth.social.VillageBook;
 import dev.hearth.util.BlockUtils;
@@ -24,6 +25,7 @@ import org.bukkit.inventory.ItemStack;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -589,7 +591,9 @@ public class VillagerBrain {
                         idleWander(plugin, System.currentTimeMillis());
                         return;
                     }
-                    currentJob = new BuildJob(ore.clone(), ore.getBlock().getType(), BuildJob.Kind.MINE);
+                    // Folia-safe read of the ore type (the work pass re-reads it live).
+                    Material oreType = RegionIO.blockType(plugin, ore, Material.STONE);
+                    currentJob = new BuildJob(ore.clone(), oreType, BuildJob.Kind.MINE);
                 } else {
                     currentJob = job;
                 }
@@ -730,7 +734,10 @@ public class VillagerBrain {
             return;
         }
         Block target = job.location.getBlock();
-        if (!target.getType().isAir() && !BlockUtils.isReplaceable(target.getType())) {
+        // Folia-safe pre-check (AIR fallback: proceed — the region write below
+        // re-validates before placing).
+        Material targetType = RegionIO.blockType(plugin, target.getLocation(), Material.AIR);
+        if (!BlockUtils.isReplaceable(targetType)) {
             // Already built (by a neighbor or a player).
             v.markWallBlockBuilt(v.getWallJobs().size());
             setState(VillagerState.IDLE);
@@ -797,7 +804,9 @@ public class VillagerBrain {
         Material light = plugin.lightMaterial();
         Location spot = currentJob.location;
         Block target = spot.getBlock();
-        if (!target.getType().isAir() && !BlockUtils.isReplaceable(target.getType())) {
+        // Folia-safe pre-check (AIR fallback: proceed — the region write below
+        // re-validates before placing).
+        if (!BlockUtils.isReplaceable(RegionIO.blockType(plugin, target.getLocation(), Material.AIR))) {
             setState(VillagerState.IDLE);
             return;
         }
@@ -884,7 +893,8 @@ public class VillagerBrain {
 
     private void workGather(HearthPlugin plugin, Village v) {
         Block src = currentJob.location.getBlock();
-        Material sourceType = src.getType();
+        // Folia-safe read (AIR fallback: treat as already mined by a neighbor).
+        Material sourceType = RegionIO.blockType(plugin, src.getLocation(), Material.AIR);
         if (sourceType == Material.AIR) {
             // Already mined (by a neighbor).
             setState(VillagerState.IDLE);
@@ -922,7 +932,8 @@ public class VillagerBrain {
 
     private void workMine(HearthPlugin plugin, Village v) {
         Block b = currentJob.location.getBlock();
-        Material type = b.getType();
+        // Folia-safe read (AIR fallback: treat as already mined by a neighbor).
+        Material type = RegionIO.blockType(plugin, b.getLocation(), Material.AIR);
         if (type == Material.AIR) {
             advanceMine(v);
             setState(VillagerState.IDLE);
@@ -1041,19 +1052,7 @@ public class VillagerBrain {
      * two villagers don't place the same light.
      */
     private BuildJob nextMissingLightJob(HearthPlugin plugin, Village v) {
-        long now = System.currentTimeMillis();
-        UUID me = villager.getUniqueId();
-        long ttl = plugin.jobClaimTtlMs();
-        for (BuildJob job : v.getLightJobs()) {
-            Material t = job.location.getBlock().getType();
-            if (t == Material.AIR || BlockUtils.isReplaceable(t)) {
-                if (job.isAvailableTo(me, now, ttl)) {
-                    job.claim(me, now);
-                    return job;
-                }
-            }
-        }
-        return null;
+        return firstClaimableMissing(plugin, v.getLightJobs(), null);
     }
 
     /**
@@ -1061,34 +1060,63 @@ public class VillagerBrain {
      * two villagers don't walk to the same block (the work splits naturally).
      */
     private BuildJob nextMissingWallJob(HearthPlugin plugin, Village v) {
-        long now = System.currentTimeMillis();
-        UUID me = villager.getUniqueId();
-        long ttl = plugin.jobClaimTtlMs();
-        List<BuildJob> jobs = v.getWallJobs();
-        for (BuildJob job : jobs) {
-            Material t = job.location.getBlock().getType();
-            if (t == Material.AIR || BlockUtils.isReplaceable(t)) {
-                if (job.isAvailableTo(me, now, ttl)) {
-                    job.claim(me, now);
-                    return job;
-                }
-            }
-        }
-        return null;
+        return firstClaimableMissing(plugin, v.getWallJobs(), null);
     }
 
     private BuildJob nextWallJobNear(Village v, double radius, Material material) {
         double r2 = radius * radius;
-        for (BuildJob job : v.getWallJobs()) {
-            if (job.material != material) {
+        Location me = villager.getLocation();
+        return firstClaimableMissing(HearthPlugin.get(), v.getWallJobs(), job ->
+                job.material == material && job.location.distanceSquared(me) <= r2);
+    }
+
+    /**
+     * Scan jobs for the first one that still needs a block and is claimable by
+     * me. Folia-safe: the per-job block reads are grouped by chunk (one
+     * cross-region round trip per chunk, not one per job). Jobs in a chunk
+     * that could not be read are skipped this tick (retried next time).
+     */
+    private BuildJob firstClaimableMissing(HearthPlugin plugin, List<BuildJob> jobs,
+                                           java.util.function.Predicate<BuildJob> prefilter) {
+        if (plugin == null || jobs == null || jobs.isEmpty()) {
+            return null;
+        }
+        long now = System.currentTimeMillis();
+        UUID me = villager.getUniqueId();
+        long ttl = plugin.jobClaimTtlMs();
+        Map<Long, List<BuildJob>> byChunk = new LinkedHashMap<>();
+        for (BuildJob job : jobs) {
+            if (prefilter != null && !prefilter.test(job)) {
                 continue;
             }
-            if (job.location.distanceSquared(villager.getLocation()) > r2) {
-                continue;
+            byChunk.computeIfAbsent(
+                    RegionIO.chunkKey(job.location.getBlockX() >> 4, job.location.getBlockZ() >> 4),
+                    k -> new ArrayList<>()).add(job);
+        }
+        for (List<BuildJob> chunkJobs : byChunk.values()) {
+            Location anchor = chunkJobs.get(0).location;
+            Map<BuildJob, Material> types = RegionIO.inChunk(plugin, anchor.getWorld(),
+                    anchor.getBlockX(), anchor.getBlockZ(), () -> {
+                        Map<BuildJob, Material> m = new HashMap<>();
+                        for (BuildJob job : chunkJobs) {
+                            m.put(job, job.location.getBlock().getType());
+                        }
+                        return m;
+                    }, null);
+            if (types == null) {
+                continue; // chunk unavailable; skip it this tick
             }
-            Material t = job.location.getBlock().getType();
-            if (t == Material.AIR || BlockUtils.isReplaceable(t)) {
-                return job;
+            for (BuildJob job : chunkJobs) {
+                Material t = types.get(job);
+                if (t == null) {
+                    continue;
+                }
+                if (t == Material.AIR || BlockUtils.isReplaceable(t)) {
+                    if (job.isAvailableTo(me, now, ttl)) {
+                        job.claim(me, now);
+                        return job;
+                    }
+                }
             }
         }
         return null;
@@ -1102,11 +1130,19 @@ public class VillagerBrain {
         int x = block.getBlockX();
         int y = block.getBlockY();
         int z = block.getBlockZ();
+        HearthPlugin plugin = HearthPlugin.get();
         int[] dx = {1, -1, 0, 0};
         int[] dz = {0, 0, 1, -1};
         for (int i = 0; i < 4; i++) {
-            if (BlockUtils.isStandable(w, x + dx[i], y, z + dz[i])) {
-                return new Location(w, x + dx[i], y, z + dz[i]);
+            int cx = x + dx[i];
+            int cz = z + dz[i];
+            // Folia-safe: the standability check reads two blocks, both inside
+            // this one chunk, so it is a single (possibly cross-region) read.
+            Boolean standable = plugin == null ? null
+                    : RegionIO.inChunk(plugin, w, cx, cz,
+                    () -> BlockUtils.isStandable(w, cx, y, cz), Boolean.FALSE);
+            if (Boolean.TRUE.equals(standable)) {
+                return new Location(w, cx, y, cz);
             }
         }
         // Fall back: the block location itself.
@@ -1116,22 +1152,61 @@ public class VillagerBrain {
     private Location findNearestSourceBlock(Village v, Material source, int maxDist) {
         World w = v.getWorld();
         Location c = v.getCenter();
-        // Sample a growing ring of columns.
+        HearthPlugin plugin = HearthPlugin.get();
+        // Sample a growing ring of columns. Folia (v1.3.2): each ring's
+        // columns are grouped by chunk and read in ONE batched cross-region
+        // wait (early exit between rings is preserved).
         for (int ring = 4; ring <= maxDist; ring += 4) {
             int angles = 8;
+            java.util.List<int[]> cols = new java.util.ArrayList<>();
             for (int a = 0; a < angles; a++) {
                 double rad = 2 * Math.PI * a / angles;
                 int x = c.getBlockX() + (int) Math.round(Math.cos(rad) * ring);
                 int z = c.getBlockZ() + (int) Math.round(Math.sin(rad) * ring);
-                int topY;
-                try {
-                    topY = w.getHighestBlockYAt(x, z);
-                } catch (IllegalArgumentException ex) {
-                    continue;
+                cols.add(new int[]{x, z});
+            }
+            java.util.Map<Long, java.util.List<int[]>> byChunk = new java.util.LinkedHashMap<>();
+            for (int[] col : cols) {
+                byChunk.computeIfAbsent(RegionIO.chunkKey(col[0] >> 4, col[1] >> 4), k -> new java.util.ArrayList<>()).add(col);
+            }
+            java.util.Map<Long, java.util.function.Supplier<java.util.List<Integer>>> reads = new java.util.LinkedHashMap<>();
+            for (java.util.Map.Entry<Long, java.util.List<int[]>> e : byChunk.entrySet()) {
+                java.util.List<int[]> chunkCols = e.getValue();
+                reads.put(e.getKey(), () -> {
+                    java.util.List<Integer> ys = new java.util.ArrayList<>();
+                    for (int[] col : chunkCols) {
+                        int x = col[0], z = col[1];
+                        int topY;
+                        try {
+                            topY = w.getHighestBlockYAt(x, z);
+                        } catch (IllegalArgumentException ex) {
+                            ys.add(null);
+                            continue;
+                        }
+                        Integer y = null;
+                        for (int yy = Math.max(w.getMinHeight(), topY - 6); yy <= topY + 2; yy++) {
+                            if (w.getBlockAt(x, yy, z).getType() == source) {
+                                y = yy;
+                                break;
+                            }
+                        }
+                        ys.add(y);
+                    }
+                    return ys;
+                });
+            }
+            java.util.Map<Long, java.util.List<Integer>> results =
+                    plugin == null ? java.util.Map.of() : RegionIO.inChunks(plugin, w, reads, null);
+            for (java.util.Map.Entry<Long, java.util.List<int[]>> e : byChunk.entrySet()) {
+                java.util.List<int[]> chunkCols = e.getValue();
+                java.util.List<Integer> ys = results.get(e.getKey());
+                if (ys == null) {
+                    continue; // chunk unavailable; skip to the next ring
                 }
-                for (int y = Math.max(w.getMinHeight(), topY - 6); y <= topY + 2; y++) {
-                    if (w.getBlockAt(x, y, z).getType() == source) {
-                        return new Location(w, x, y, z);
+                for (int i = 0; i < chunkCols.size() && i < ys.size(); i++) {
+                    Integer foundY = ys.get(i);
+                    if (foundY != null) {
+                        return new Location(w, chunkCols.get(i)[0], foundY, chunkCols.get(i)[1]);
                     }
                 }
             }
@@ -1149,14 +1224,32 @@ public class VillagerBrain {
         int ex = mine.entrance.getBlockX();
         int ez = mine.entrance.getBlockZ();
         int depth = plugin.mineDepth();
+        // Folia-safe: group the scanned columns by chunk so the window costs
+        // one cross-region round trip per chunk.
+        List<int[]> cols = new ArrayList<>();
         for (int dx = -6; dx <= 6; dx += 2) {
             for (int dz = -6; dz <= 6; dz += 2) {
-                for (int y = depth; y <= depth + 6; y++) {
-                    Material t = w.getBlockAt(ex + dx, y, ez + dz).getType();
-                    if (Drops.isOre(t)) {
-                        return new Location(w, ex + dx, y, ez + dz);
+                cols.add(new int[]{ex + dx, ez + dz});
+            }
+        }
+        Map<Long, List<int[]>> byChunk = new LinkedHashMap<>();
+        for (int[] col : cols) {
+            byChunk.computeIfAbsent(RegionIO.chunkKey(col[0] >> 4, col[1] >> 4), k -> new ArrayList<>()).add(col);
+        }
+        for (List<int[]> chunkCols : byChunk.values()) {
+            int[] found = RegionIO.inChunk(plugin, w, chunkCols.get(0)[0], chunkCols.get(0)[1], () -> {
+                for (int[] col : chunkCols) {
+                    for (int y = depth; y <= depth + 6; y++) {
+                        Material t = w.getBlockAt(col[0], y, col[1]).getType();
+                        if (Drops.isOre(t)) {
+                            return new int[]{col[0], y, col[1]};
+                        }
                     }
                 }
+                return null;
+            }, null);
+            if (found != null) {
+                return new Location(w, found[0], found[1], found[2]);
             }
         }
         return null;
