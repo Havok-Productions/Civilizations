@@ -165,7 +165,6 @@ public final class WorkerSkillTrial {
     }
     if (now < nextAction) return true;
     SkillProgram.Step step = program.steps().get(index);
-    Pos p = trial.context.origin().add(step.x(), step.y(), step.z());
     if (step.op() == SkillProgram.Op.VERIFY) {
       observing = true;
       actor.getPathfinder().stopPathfinding();
@@ -179,6 +178,17 @@ public final class WorkerSkillTrial {
       } catch (IllegalArgumentException error) {
         finish(false, "search_rule_rejected: " + error.getMessage());
       }
+      return true;
+    }
+    Pos origin = trial.context.origin(), p;
+    try {
+      p =
+          new Pos(
+              Math.addExact(origin.x(), step.x()),
+              Math.addExact(origin.y(), step.y()),
+              Math.addExact(origin.z(), step.z()));
+    } catch (ArithmeticException overflow) {
+      finish(false, "proposed_coordinate_cannot_be_represented_in_world");
       return true;
     }
     if (stepStarted == 0) stepStarted = now;

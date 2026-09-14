@@ -145,7 +145,7 @@ public final class CivilizationsPlugin extends JavaPlugin
             planning,
             new dev.civilizations.navigation.NavigationArchive(
                 getDataFolder().toPath().resolve("debug/navigation/maps"), getLogger()::warning),
-            Math.clamp(getConfig().getInt("navigation.search-radius", 20), 8, 20),
+            getConfig().getInt("navigation.search-radius", 20),
             getConfig().getBoolean("navigation.clear-natural-obstacles", true));
     storageObserver = new StorageObserver(this);
     model =
@@ -190,8 +190,7 @@ public final class CivilizationsPlugin extends JavaPlugin
                           .toJson(router.lastWasDeep() ? deepTeacher : primaryTeacher),
                   getLogger()::warning);
         if (experiments != null) {
-          navigation.rules(
-              experiments.rules(), getConfig().getInt("navigation.max-adaptive-search-radius", 48));
+          navigation.rules(experiments.rules());
           snapshots.rules(experiments.rules());
         }
         coreAi.saveKnowledge(Map.of("server", Bukkit.getVersion(), "recipes", recipes.snapshot()));

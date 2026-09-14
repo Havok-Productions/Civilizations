@@ -27,10 +27,8 @@ final class DesignSite {
   }
 
   Pos ground(int x, int z) {
-    require(
-        Math.abs((long) x) <= 24 && Math.abs((long) z) <= 24,
-        "Design exceeds +/-24 block map bounds");
-    int wx = center.x() + x, wz = center.z() + z;
+
+    int wx = Math.addExact(center.x(), x), wz = Math.addExact(center.z(), z);
     require(terrain.available(wx, wz), "Unloaded terrain at " + x + "," + z);
     Pos ground = new Pos(wx, terrain.groundHeight(wx, wz), wz);
     while ("AIR".equals(placed.get(ground))) ground = ground.add(0, -1, 0);
@@ -54,9 +52,7 @@ final class DesignSite {
   }
 
   void reserve(Pos p) {
-    require(
-        Math.abs((long) p.x() - center.x()) <= 26 && Math.abs((long) p.z() - center.z()) <= 26,
-        "Access extends beyond map");
+
     require(!terrain.type(p).equals("UNKNOWN"), "Unknown block at " + p.key());
     require(
         !occupied.test(p), "Existing structure, reserved access, or player block at " + p.key());
@@ -83,7 +79,10 @@ final class DesignSite {
   }
 
   void add(Job.Kind kind, Pos target, Pos stand, String material, String data, int phase) {
-    require(jobs.size() < 512, "Design exceeds 512 block actions");
+    require(
+        jobs.size() < 512,
+        "Compilation work budget exhausted; split this proposal into independently buildable"
+            + " stages");
     require(
         target.distance2(stand) <= 21 && Math.abs(target.y() - stand.y()) <= 3,
         "Block is beyond ordinary villager reach");

@@ -73,7 +73,21 @@ public final class DesignCoordinator implements AutoCloseable {
   public void consider(
       Settlement v, World world, Terrain terrain, Map<String, Integer> resourceSites) {
     try {
-      considerReady(v, world, terrain, resourceSites);
+      Pos focus = DesignFocus.select(v);
+      if (focus.equals(v.center())) considerReady(v, world, focus, terrain, resourceSites);
+      else if (!closed
+          && !pending.contains(v.id())
+          && System.currentTimeMillis() >= next.getOrDefault(v.id(), 0L))
+        snapshots
+            .capture(world, focus, 32)
+            .thenAcceptAsync(t -> considerReady(v, world, focus, t, resourceSites), executor)
+            .exceptionally(
+                error -> {
+                  pending.remove(v.id());
+                  next.put(v.id(), System.currentTimeMillis() + interval);
+                  feedback(v, "Design survey unavailable: " + error.getMessage());
+                  return null;
+                });
     } catch (RuntimeException e) {
       pending.remove(v.id());
       next.put(v.id(), System.currentTimeMillis() + interval);
@@ -82,62 +96,56 @@ public final class DesignCoordinator implements AutoCloseable {
   }
 
   private void considerReady(
-      Settlement v, World world, Terrain terrain, Map<String, Integer> resourceSites) {
+      Settlement v, World world, Pos origin, Terrain terrain, Map<String, Integer> resourceSites) {
     long now = System.currentTimeMillis();
     Set<String> kinds = DesignNeeds.allowed(v, activeLimit);
     if (closed || now < next.getOrDefault(v.id(), 0L) || kinds.isEmpty() || !pending.add(v.id()))
       return;
+    var viewData = v.snapshot();
+    viewData.center = origin;
+    Settlement view = new Settlement(viewData);
     Map<String, Object> report = new LinkedHashMap<>();
-    Map<String, Object> map = TerrainMap.capture(terrain, v, occupied(v));
+    report.put("survey_origin", origin);
+    report.put(
+        "defense_scope",
+        "Local defenses may protect a bed/chest neighborhood; one wall need not enclose every"
+            + " distant landmark in the merged village.");
+    Map<String, Object> map = TerrainMap.capture(terrain, view, occupied(v));
     report.put("terrain", map);
     report.put("allowed_kinds", kinds);
     report.put("village_needs", v.needs().report(v, Map.of(), now));
-    report.put("beds", v.beds().stream().map(p -> relative(v, p)).toList());
-    report.put("chest", v.chest() == null ? null : relative(v, v.chest()));
-    report.put("community_chests", v.chests().stream().map(p -> relative(v, p)).toList());
+    report.put("beds", v.beds().stream().map(p -> relative(view, p)).toList());
+    report.put("chest", v.chest() == null ? null : relative(view, v.chest()));
+    report.put("community_chests", v.chests().stream().map(p -> relative(view, p)).toList());
     report.put("stock", v.stock());
     report.put("local_resource_sites", resourceSites);
     report.put("stock_age_seconds", Math.min(9999, v.stockAge(now) / 1000));
     report.put("feedback", v.designFeedback());
     report.put("supply_requests", v.supplyNeeds(now));
     report.put("shared_facts", v.knowledge().report(now));
-    report.put("crafting_table", v.craftingTable() == null ? null : relative(v, v.craftingTable()));
+    report.put(
+        "crafting_table", v.craftingTable() == null ? null : relative(view, v.craftingTable()));
+    Map<String, Integer> rejected = new TreeMap<>();
     List<Map<String, Object>> examples =
-        SiteObservations.candidates(terrain, v, occupied(v), kinds);
+        SiteObservations.candidates(terrain, view, occupied(v), kinds, rejected);
     report.put("validated_site_examples", examples);
-    if (examples.isEmpty()) {
-      next.put(v.id(), now + interval);
-      pending.remove(v.id());
-      statuses.put(
-          v.id(), "No validated construction site in the loaded survey; rescan before thinking");
-      return;
-    }
-
-    String schema =
-        kinds.contains("mine")
-                && resourceSites.getOrDefault("COAL", 0) == 0
-                && v.supplyNeeds(now).stream().anyMatch(s -> s.material().equals("COAL"))
-            ? SupplyDesignSchema.coalRoutes(examples)
-            : Blueprint.SCHEMA;
-    if (!schema.equals(Blueprint.SCHEMA)) {
-      report.put("allowed_kinds", Set.of("mine"));
-      report.put(
-          "supply_route_instruction",
-          "Urgent fuel request: choose one surveyed coal-bearing route. Geometry is fixed by the"
-              + " response schema; explain why it meets the need.");
-    }
-    if (schema.equals(Blueprint.SCHEMA) && !examples.isEmpty()) {
-      schema = SupplyDesignSchema.surveyed(examples);
-      report.put(
-          "allowed_kinds",
-          examples.stream()
-              .map(e -> ((Blueprint) e.get("blueprint")).kind())
-              .collect(java.util.stream.Collectors.toSet()));
-      report.put(
-          "site_instruction",
-          "Choose a validated_site_examples blueprint. The response schema keeps its surveyed"
-              + " geometry; explain which need it meets. Do not invent unsurveyed coordinates.");
-    }
+    report.put("site_rejections", rejected);
+    report.put(
+        "site_instruction",
+        "Examples are suggestions, not an allowed list. Propose different coordinates, dimensions,"
+            + " or a local wall when useful. Exact terrain and work-position checks follow. Explain"
+            + " how you address recorded site failures.");
+    String schema = Blueprint.SCHEMA;
+    if (examples.isEmpty())
+      observer.accept(
+          v.id(),
+          Map.of(
+              "stage",
+              "site_search",
+              "reason",
+              "No surveyed example; model may propose another layout",
+              "rejections",
+              rejected));
     report.put(
         "goal_dependencies",
         v.jobs().stream()
@@ -206,9 +214,19 @@ public final class DesignCoordinator implements AutoCloseable {
                 pending.remove(v.id());
                 return;
               }
+              write(
+                  v,
+                  "proposal",
+                  Map.of(
+                      "blueprint",
+                      blueprint,
+                      "origin",
+                      origin,
+                      "status",
+                      "received; awaiting physical validation"));
               snapshots
-                  .capture(world, v.center(), 32)
-                  .thenAcceptAsync(fresh -> accept(v, blueprint, fresh), executor)
+                  .capture(world, origin, blueprint.surveyRadius())
+                  .thenAcceptAsync(fresh -> accept(v, blueprint, origin, fresh), executor)
                   .whenComplete(
                       (unused, error) -> {
                         if (error != null && !closed)
@@ -223,11 +241,11 @@ public final class DesignCoordinator implements AutoCloseable {
     }
   }
 
-  private synchronized void accept(Settlement v, Blueprint blueprint, Terrain terrain) {
-    connections.read(() -> acceptCurrent(v, blueprint, terrain));
+  private synchronized void accept(Settlement v, Blueprint blueprint, Pos origin, Terrain terrain) {
+    connections.read(() -> acceptCurrent(v, blueprint, origin, terrain));
   }
 
-  private void acceptCurrent(Settlement v, Blueprint blueprint, Terrain terrain) {
+  private void acceptCurrent(Settlement v, Blueprint blueprint, Pos origin, Terrain terrain) {
     if (closed || v.paused()) return;
     try {
       if (!DesignNeeds.allowed(v, activeLimit).contains(blueprint.kind()))
@@ -236,32 +254,8 @@ public final class DesignCoordinator implements AutoCloseable {
           "design-" + blueprint.kind() + "-" + UUID.randomUUID().toString().substring(0, 8);
       List<Pos> landmarks = new ArrayList<>(v.beds());
       landmarks.addAll(v.chests());
-      if (blueprint.kind().equals("wall"))
-        v.jobs().stream()
-            .filter(j -> j.project.startsWith("wall-") || j.project.startsWith("design-wall-"))
-            .map(j -> j.target)
-            .distinct()
-            .forEach(landmarks::add);
       DesignCompiler.Result compiled =
-          new DesignCompiler()
-              .compile(blueprint, terrain, v.center(), project, occupied(v), landmarks);
-      if (blueprint.kind().equals("house")) {
-        Optional<DesignRecord> defense =
-            v.designs().stream().filter(d -> d.kind().equals("wall")).reduce((a, b) -> b);
-        if (defense.isPresent()) {
-          Blueprint wall = Blueprint.parse(defense.get().blueprint());
-          if (compiled.jobs().stream()
-              .anyMatch(
-                  j ->
-                      !DesignCompiler.insideWall(
-                          wall,
-                          defense.get().origin() == null ? v.center() : defense.get().origin(),
-                          j.target)))
-            throw new IllegalArgumentException(
-                "House must fit inside the planned defenses; expand the wall first if more space is"
-                    + " needed");
-        }
-      }
+          new DesignCompiler().compile(blueprint, terrain, origin, project, occupied(v), landmarks);
       String json = new Gson().toJson(blueprint);
       DesignRecord record =
           new DesignRecord(
@@ -271,7 +265,8 @@ public final class DesignCoordinator implements AutoCloseable {
               json,
               compiled.materials(),
               compiled.jobs().size(),
-              System.currentTimeMillis());
+              System.currentTimeMillis(),
+              origin);
       if (!v.addDesign(
           record,
           compiled.jobs(),
@@ -347,14 +342,8 @@ public final class DesignCoordinator implements AutoCloseable {
 
   static final String SYSTEM =
       """
-      You are the village architect. Design ONE useful project from allowed_kinds, based on the observed terrain map, beds/chest, resources, previous designs and failures. Return a compact JSON blueprint matching the schema, never executable code or commands. All x/z are integer offsets from the village center; +/-24 bounds include the entire footprint. Map cells cover 3x3 blocks and heights are offsets from the center's y. Unknown/occupied/wet cells must be avoided; exact validation will reject unsafe geometry. Respond wait if no feasible needed project exists. Prioritize missing shelter/food, mob defenses, then required materials and access. Do not repeat a rejected location unchanged. Reuse successful design dimensions where appropriate, adapting their position to current terrain. Existing projects keep their materials and are not deleted by a new design.
-      Resolve supply_requests before adding another project that needs the same unavailable materials. Missing coal calls for a safe mine when no reachable exposed source is available, not endless requests to gather. Workers obtain wood and craft a real table, sticks and wooden pickaxe before excavation; stone tools are required for iron/copper. validated_site_examples were checked against this snapshot: select/adapt one or design a different safe layout. Prefer a mine with observed coal in its route when coal is needed. Zero coal means exploration only, not a promise of coal. goal_dependencies and shared_facts describe actual prerequisites and failures. Keep reasoning brief and return a final blueprint.
-      kind house: x/z is the minimum corner, width/depth 5..9, height 3..4, direction is the centered entrance side. Requires dry natural ground, a one-block clear margin, roof space. One layer of unprotected dirt/grass can be graded by real clearance jobs before construction; buildings, trees and deeper excavation cannot be cleared by house preparation. points optionally contains up to four bed FOOT offsets inside this footprint; each bed faces south and uses z+1 too. Keep a walkable interior/doorway. Empty points creates one bed. Choose the size and placement yourself.
-      kind wall: points are 4..16 vertices of a simple CLOSED axis-aligned polygon (do not repeat the first vertex), enclosing center and known beds/chest. Route may bend around obstacles. height=3. x/z selects one gate on a STRAIGHT section; direction north/south for a horizontal wall, east/west for a vertical wall. Requires clear dry natural ground, normal accessible working positions and an accessible gate on both sides. At most 512 resulting block actions.
-      kind path: points are 2..16 axis-aligned polyline vertices; width=1. Connect useful entrances/storage/farms by shaping existing dirt/grass; avoid existing reserved structure footprints. No water bridges or excavation. Slope must be walkable.
-      kind farm: x/z minimum corner, width/depth 1..5, product at most 16. Use dirt/farmland within four blocks of EXISTING water, with adjacent walking space. Prefer narrow strips so crops remain accessible. Real seeds and normal wheat growth are required.
-      kind lights: points are 1..16 distinct ground torch sites near paths/homes, spaced about six blocks apart. Needs actual coal and sticks/wood. Avoid already planned lights.
-      kind mine: x/z entrance at least ten blocks from center, direction is travel direction, depth 3..12 descending steps, width 0..8 is subsequent level gallery length. A three-block-high corridor is generated in order. Entire route must fit the map and stay in dry natural terrain, away from buildings, water, protected land and other designs. Choose another entrance/direction if rejected. It never excavates under a surface building.
-      Unused numeric fields must be 0; unused points must be []; direction defaults north. purpose is a short sentence explaining the observed need. No imaginary resource generation, instant building, teleportation or growth acceleration. Proposals are not proof that construction succeeded. Villagers perform validated jobs at normal speed using real ingredients.
+      You are the village architect. Propose one useful project from supported kinds using observations, needs, resources and prior failures. Return a JSON blueprint. Coordinates are offsets from survey_origin, which is an inhabited work area rather than necessarily the old settlement center. Examples are optional suggestions, not a whitelist: you may change coordinates, dimensions and routes. There are no configured numeric proposal ranges. World checks validate actual support, access, resources, collision and protected blocks. Larger work may need independently buildable stages when execution resources are exhausted; explain the useful first stage rather than claiming a whole village is finished.
+      Respond wait if no physically meaningful project is available. Recent hostile mobs and missing defenses are urgent: propose a local wall protecting an inhabited bed/storage area even when other houses remain unfinished. A merged village can have multiple local defenses. A wall need not include every distant chest or the historic village center. Do not build a wall around nothing. Avoid repeating the same failed geometry. site_rejections provides actual reasons candidates failed.
+      house: x/z minimum corner, width/depth footprint, height walls, direction entrance, optional points bed feet facing south. Leave headroom and room for the two-block beds. wall: simple closed axis-aligned polygon points, x/z a gate point on a straight segment, height positive, direction gate orientation. path: ordered axis-aligned points and width1. farm: x/z footprint, width/depth; needs soil and existing water. lights: points with support. mine: x/z entrance, direction staircase, depth descending steps and width horizontal continuation. Workers need actual tools and materials. Survey observations, not model recollection, determine what exists. A zero-coal mine is exploration, not guaranteed fuel. End with the final blueprint; never attest completed world work.
       """;
 }

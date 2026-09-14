@@ -23,8 +23,11 @@ class LiveLearningTest {
     String source = program(2).source();
     assertThrows(
         IllegalArgumentException.class, () -> SkillProgram.parse(source.replace("WALK", "EXEC")));
-    assertThrows(IllegalArgumentException.class, () -> program(Integer.MIN_VALUE));
-    assertThrows(IllegalArgumentException.class, () -> program(21));
+    assertDoesNotThrow(() -> program(Integer.MIN_VALUE));
+    assertDoesNotThrow(() -> program(21));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> SkillProgram.parse(source.replace("\"x\":2", "\"x\":2147483648")));
     assertThrows(
         IllegalArgumentException.class, () -> SkillProgram.parse(source.replace("VERIFY", "WALK")));
     assertThrows(

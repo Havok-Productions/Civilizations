@@ -7,24 +7,23 @@ import java.util.*;
 final class RouteDesign {
   static List<Blueprint.Point> line(Blueprint b, boolean closed) {
     List<Blueprint.Point> points = b.points();
-    if (points.size() < (closed ? 4 : 2) || points.size() > 16)
-      throw new IllegalArgumentException("Wall needs 4..16 vertices; path needs 2..16");
+    if (points.size() < (closed ? 4 : 2))
+      throw new IllegalArgumentException(
+          "A closed wall needs at least four vertices; a path needs two");
     List<Blueprint.Point> result = new ArrayList<>();
     result.add(points.getFirst());
     for (int i = 0; i < (closed ? points.size() : points.size() - 1); i++) {
       Blueprint.Point a = points.get(i), z = points.get((i + 1) % points.size());
-      if (Math.abs((long) a.x()) > 24
-          || Math.abs((long) a.z()) > 24
-          || Math.abs((long) z.x()) > 24
-          || Math.abs((long) z.z()) > 24)
-        throw new IllegalArgumentException("Route exceeds map bounds");
       if ((a.x() == z.x()) == (a.z() == z.z()))
         throw new IllegalArgumentException("Route segments must be nonzero and axis aligned");
       int dx = Integer.compare(z.x(), a.x()), dz = Integer.compare(z.z(), a.z());
       int length = Math.abs(z.x() - a.x()) + Math.abs(z.z() - a.z());
       for (int n = 1; n <= length; n++)
         result.add(new Blueprint.Point(a.x() + dx * n, a.z() + dz * n));
-      if (result.size() > 193) throw new IllegalArgumentException("Route exceeds 192 blocks");
+      if (result.size() > 8192)
+        throw new IllegalArgumentException(
+            "Route compilation work budget exhausted; retain the proposal and divide construction"
+                + " into stages");
     }
     if (closed) result.removeLast();
     if (new HashSet<>(result).size() != result.size())
@@ -43,13 +42,15 @@ final class RouteDesign {
   }
 
   static void wall(DesignSite s, Blueprint b, List<Pos> landmarks) {
-    s.require(b.height() == 3, "Defense wall must be three blocks high");
+    s.require(b.height() > 0, "A wall needs positive height");
     List<Blueprint.Point> ring = line(b, true);
-    s.require(inside(b.points(), 0, 0), "Wall must enclose the settlement center");
-    for (Pos p : landmarks)
-      s.require(
-          inside(b.points(), p.x() - s.center.x(), p.z() - s.center.z()),
-          "Wall leaves a village bed or chest outside");
+    s.require(
+        landmarks.isEmpty()
+            ? inside(b.points(), 0, 0)
+            : landmarks.stream()
+                .anyMatch(p -> inside(b.points(), p.x() - s.center.x(), p.z() - s.center.z())),
+        "Wall must protect a village bed, chest, or the work center; other neighborhoods may have"
+            + " their own defenses");
     Blueprint.Point gate = new Blueprint.Point(b.x(), b.z());
     s.require(ring.contains(gate), "Gate must be on the wall contour");
     List<Pos> columns = new ArrayList<>(), stands = new ArrayList<>();
@@ -64,7 +65,7 @@ final class RouteDesign {
           Math.abs(ground.y() - s.ground(next.x(), next.z()).y()) <= 1,
           "Wall terrain changes too sharply");
       s.reserve(ground);
-      for (int y = 1; y <= 3; y++) s.open(ground.add(0, y, 0));
+      for (int y = 1; y <= b.height(); y++) s.open(ground.add(0, y, 0));
       Pos stand = null;
       for (int[] d :
           new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}}) {
@@ -105,7 +106,7 @@ final class RouteDesign {
       columns.add(ground);
       stands.add(stand);
     }
-    for (int y = 1; y <= 3; y++)
+    for (int y = 1; y <= b.height(); y++)
       for (int i = 0; i < ring.size(); i++) {
         boolean isGate = ring.get(i).equals(gate);
         if (isGate && y > 1) continue;

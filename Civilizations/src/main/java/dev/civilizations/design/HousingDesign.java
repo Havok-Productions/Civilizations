@@ -8,8 +8,8 @@ final class HousingDesign {
   static void build(DesignSite s, Blueprint b) {
     int w = b.width(), d = b.depth(), h = b.height();
     s.require(
-        w >= 5 && w <= 9 && d >= 5 && d <= 9 && h >= 3 && h <= 4,
-        "House width/depth 5..9 and wall height 3..4 required");
+        w >= 3 && d >= 4 && h >= 3,
+        "House needs room for walls, a two-block bed, and standing headroom");
     SitePreparation.house(s, b);
     int floor = s.ground(b.x(), b.z()).y();
     for (int x = -1; x <= w; x++)
@@ -54,7 +54,7 @@ final class HousingDesign {
       }
     List<Blueprint.Point> beds =
         b.points().isEmpty() ? List.of(new Blueprint.Point(b.x() + 1, b.z() + 1)) : b.points();
-    s.require(beds.size() <= 4, "At most four beds per house");
+
     for (Blueprint.Point bed : beds) {
       int x = bed.x() - b.x(), z = bed.z() - b.z();
       s.require(

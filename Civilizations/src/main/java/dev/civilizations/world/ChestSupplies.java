@@ -21,14 +21,16 @@ public final class ChestSupplies {
       boolean table,
       Pos at,
       long now) {
+    int demand = village.placementDemand(actor.getUniqueId().toString(), output, now);
     Pos chest =
         village.supplyChest(
             at,
-            stock -> !plugin.recipes().withdrawal(output, inventory, stock, table).isEmpty(),
+            stock ->
+                !plugin.recipes().withdrawal(output, inventory, stock, table, demand).isEmpty(),
             now);
     if (chest == null || village.knowledge().blocked("route:" + chest.key(), now)) return false;
     Map<String, Integer> wanted =
-        plugin.recipes().withdrawal(output, inventory, village.stock(chest), table);
+        plugin.recipes().withdrawal(output, inventory, village.stock(chest), table, demand);
     if (wanted.isEmpty()) return false;
     Location p = new Location(actor.getWorld(), chest.x(), chest.y(), chest.z());
     if (at.distance2(chest) > 12 || !Bukkit.isOwnedByCurrentRegion(p, 1)) {
@@ -41,7 +43,7 @@ public final class ChestSupplies {
     }
     Map<String, Integer> beforeChest = InventoryOps.summary(storage.getInventory());
     Map<String, Integer> beforeActor = InventoryOps.summary(actor.getInventory());
-    wanted = plugin.recipes().withdrawal(output, beforeActor, beforeChest, table);
+    wanted = plugin.recipes().withdrawal(output, beforeActor, beforeChest, table, demand);
     int total = 0;
     for (var e : wanted.entrySet())
       total +=

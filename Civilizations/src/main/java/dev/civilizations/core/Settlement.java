@@ -209,6 +209,20 @@ public final class Settlement {
     return a.committedProjects == null || a.committedProjects.stream().allMatch(this::allComplete);
   }
 
+  /** Finished blocks for the current project, excluding another worker's live claims. */
+  public synchronized int placementDemand(String worker, String material, long now) {
+    String project = taskProject(worker);
+    if (project.isEmpty()) return 1;
+    int remaining = 0;
+    for (Job j : data.jobs)
+      if (!j.complete
+          && j.kind == Job.Kind.PLACE
+          && project.equals(j.project)
+          && material.equals(j.material)
+          && (j.owner == null || worker.equals(j.owner) || j.leaseUntil <= now)) remaining++;
+    return Math.max(1, remaining);
+  }
+
   public synchronized boolean taskComplete(String worker) {
     Agent a = data.agents.get(worker);
     if (a == null) return false;
@@ -269,9 +283,13 @@ public final class Settlement {
 
   public synchronized boolean addDesign(
       DesignRecord record, List<Job> jobs, Set<Pos> occupied, int activeLimit) {
-    if (data.designs.size() >= 32
-        || data.paused
-        || data.designs.stream().filter(d -> !allComplete(d.project())).count() >= activeLimit)
+    boolean defense =
+        Set.of("wall", "mine").contains(record.kind())
+            && data.designs.stream()
+                .noneMatch(d -> d.kind().equals(record.kind()) && !allComplete(d.project()));
+    if (data.paused
+        || !defense
+            && data.designs.stream().filter(d -> !allComplete(d.project())).count() >= activeLimit)
       return false;
     Set<Pos> old = layoutOccupancy();
     if (occupied.stream().anyMatch(p -> old.contains(p) || playerProtected(p))) return false;

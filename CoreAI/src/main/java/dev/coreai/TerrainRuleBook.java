@@ -57,11 +57,7 @@ public final class TerrainRuleBook {
       if (Files.size(file) > 1_000_000) throw new IOException("Terrain rule size limit");
       try {
         State saved = new Gson().fromJson(Files.readString(file), State.class);
-        if (saved.rules().size() > 256
-            || saved.searchRadius() < 0
-            || saved.searchRadius() > 48
-            || saved.searchRadius() > 0 && saved.searchRadius() < 8)
-          throw new IllegalArgumentException("Rule limits");
+        if (saved.rules().size() > 256) throw new IllegalArgumentException("Rule storage capacity");
         for (Rule r : saved.rules()) {
           validate(r.facts(), r.category());
           rules.put(key(r.facts().material(), r.facts().state()), r);
@@ -108,7 +104,7 @@ public final class TerrainRuleBook {
       String teacher) {
     validate(facts, category);
     Pilot pilot = pilot(trial, worker);
-    if (pilot.rules.size() >= 8) throw new IllegalArgumentException("Classification trial budget");
+
     Rule r = new Rule(facts, category, explanation, teacher, System.currentTimeMillis());
     pilot.rules.put(key(facts.material(), facts.state()), r);
     return r;
@@ -123,15 +119,13 @@ public final class TerrainRuleBook {
   }
 
   public synchronized void stageRadius(String trial, String worker, int radius) {
-    if (radius < 8 || radius > 48)
-      throw new IllegalArgumentException("Search radius must be 8..48");
     pilot(trial, worker).radius = radius;
   }
 
   public synchronized int radius(String worker, int fallback, int maximum) {
     int result = searchRadius == 0 ? fallback : searchRadius;
     for (Pilot p : pilots.values()) if (p.worker.equals(worker) && p.radius != 0) result = p.radius;
-    return Math.clamp(result, 8, Math.clamp(maximum, 8, 48));
+    return result;
   }
 
   public synchronized void stageParameter(String trial, String worker, String key, int value) {

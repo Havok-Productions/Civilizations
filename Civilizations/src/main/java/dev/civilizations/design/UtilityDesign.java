@@ -7,8 +7,7 @@ import java.util.*;
 /** Model-positioned food, lighting, and mining projects with bounded physical operations. */
 final class UtilityDesign {
   static void lights(DesignSite s, Blueprint b) {
-    s.require(
-        !b.points().isEmpty() && b.points().size() <= 16, "Lighting needs 1..16 distinct sites");
+    s.require(!b.points().isEmpty(), "Lighting needs a site");
     for (Blueprint.Point point : b.points()) {
       Pos ground = s.ground(point.x(), point.z()), p = ground.add(0, 1, 0);
       s.require(s.terrain.natural(ground), "Torch needs natural solid support");
@@ -18,13 +17,7 @@ final class UtilityDesign {
   }
 
   static void farm(DesignSite s, Blueprint b) {
-    s.require(
-        b.width() >= 1
-            && b.width() <= 5
-            && b.depth() >= 1
-            && b.depth() <= 5
-            && b.width() * b.depth() <= 16,
-        "Farm footprint must contain 1..16 plots");
+    s.require(b.width() > 0 && b.depth() > 0, "Farm footprint must have area");
     for (int x = 0; x < b.width(); x++)
       for (int z = 0; z < b.depth(); z++) {
         Pos ground = s.ground(b.x() + x, b.z() + z);
@@ -57,11 +50,8 @@ final class UtilityDesign {
 
   static void mine(DesignSite s, Blueprint b) {
     s.require(
-        b.depth() >= 3 && b.depth() <= 12 && b.width() >= 0 && b.width() <= 8,
-        "Mine depth 3..12; level gallery length (width) 0..8");
-    s.require(
-        (long) b.x() * b.x() + (long) b.z() * b.z() >= 100,
-        "Mine entrance must be at least ten blocks from the village center");
+        b.depth() > 0 && b.width() >= 0,
+        "Mine needs positive depth and a nonnegative gallery length");
     Pos ground = s.ground(b.x(), b.z());
     s.require(s.terrain.natural(ground), "Mine entrance cannot be in a building or water");
     int dx = b.direction().equals("east") ? 1 : b.direction().equals("west") ? -1 : 0,

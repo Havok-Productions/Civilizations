@@ -22,6 +22,14 @@ public final class RegionSnapshots {
   }
 
   public CompletableFuture<Terrain> capture(World world, Pos center, int radius) {
+    if (radius < 0)
+      return CompletableFuture.failedFuture(
+          new IllegalArgumentException("Negative survey radius has no geometry"));
+    long axis = 2L * radius / 16 + 3;
+    if (axis > 4096 / axis)
+      return CompletableFuture.failedFuture(
+          new RejectedExecutionException(
+              "snapshot_resource_budget_exceeded; retain proposal and survey it in sections"));
     Map<Long, CompletableFuture<ChunkSnapshot>> calls = new HashMap<>();
     for (int x = (center.x() - radius) >> 4; x <= (center.x() + radius) >> 4; x++)
       for (int z = (center.z() - radius) >> 4; z <= (center.z() + radius) >> 4; z++) {

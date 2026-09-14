@@ -30,8 +30,19 @@ public final class CraftingBook {
 
   public Map<String, Integer> withdrawal(
       String output, Map<String, Integer> inv, Map<String, Integer> stock, boolean table) {
+    return withdrawal(output, inv, stock, table, 1);
+  }
+
+  public Map<String, Integer> withdrawal(
+      String output,
+      Map<String, Integer> inv,
+      Map<String, Integer> stock,
+      boolean table,
+      int demand) {
+    int finished =
+        Math.min(Math.max(0, demand - inv.getOrDefault(output, 0)), stock.getOrDefault(output, 0));
+    if (finished > 0) return Map.of(output, finished);
     if (inv.getOrDefault(output, 0) > 0 || stock.isEmpty()) return Map.of();
-    if (stock.getOrDefault(output, 0) > 0) return Map.of(output, 1);
     Map<String, Integer> combined = new HashMap<>(inv);
     stock.forEach((m, n) -> combined.merge(m, n, Integer::sum));
     Step step = next(output, combined, table);

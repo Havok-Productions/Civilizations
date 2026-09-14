@@ -674,6 +674,13 @@ public final class VillagerWorker {
   }
 
   private void fallback(long now, Pos at) {
+    List<Job> candidates = offered(now, at);
+    // Reuse carried building supplies before classifying them as surplus from the last project.
+    for (Job candidate : candidates)
+      if (needed(candidate).isEmpty() && village.claim(candidate.id, id, now)) {
+        begin(candidate);
+        return;
+      }
     if (village.mayShareSurplus(id)) {
       if (RecipeCatalog.surplus(inventory(), true).isEmpty()) village.finishTasks(id);
       else if (village.chest() != null) {
@@ -681,7 +688,7 @@ public final class VillagerWorker {
         return;
       }
     }
-    for (Job candidate : offered(now, at))
+    for (Job candidate : candidates)
       if (village.claim(candidate.id, id, now)) {
         begin(candidate);
         return;

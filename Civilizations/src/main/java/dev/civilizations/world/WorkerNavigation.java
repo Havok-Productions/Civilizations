@@ -136,8 +136,20 @@ public final class WorkerNavigation {
   }
 
   public void walkWork(Pos stand, Pos target, long now) {
-    walk(stand, target, WorkerTuning.value(plugin, actor, "construction.reach_squared"), now);
+    if (!target.equals(workTarget)) {
+      rejectedWorkPositions.clear();
+      workTarget = target;
+    }
+    int reach = WorkerTuning.value(plugin, actor, "construction.reach_squared");
+    walk(
+        WorkPositions.choose(actor, stand, target, reach, rejectedWorkPositions),
+        target,
+        reach,
+        now);
   }
+
+  private Pos workTarget;
+  private final java.util.Set<Pos> rejectedWorkPositions = new java.util.HashSet<>();
 
   private NavigationService.Plan plan;
   private final RouteClearance clearance;
@@ -292,8 +304,8 @@ public final class WorkerNavigation {
               village,
               actor.getUniqueId().toString(),
               at,
-              target,
-              Math.min(range, 2))
+              destination,
+              destination.equals(target) ? range : 0)
           .whenComplete(
               (answer, error) ->
                   actor
@@ -304,6 +316,9 @@ public final class WorkerNavigation {
                             if (token != generation) return;
                             pending = false;
                             if (error != null) {
+                              if (skillTrial.active())
+                                skillTrial.failedVerification(
+                                    "map_execution_failed: " + error.getMessage());
                               nextPlan = System.currentTimeMillis() + 3000;
                               event(
                                   "map_capture_or_search_failed",
@@ -332,6 +347,27 @@ public final class WorkerNavigation {
                                     answer.route().reached()),
                                 answer.route().steps().isEmpty() && !answer.route().reached());
                             if (answer.route().steps().isEmpty() && !answer.route().reached()) {
+                              if (!destination.equals(target)
+                                  && target.equals(workTarget)
+                                  && rejectedWorkPositions.add(destination)) {
+                                event(
+                                    "work_position_unreachable",
+                                    java.util.Map.of(
+                                        "stand",
+                                        destination,
+                                        "target",
+                                        target,
+                                        "route_reason",
+                                        answer.route().reason(),
+                                        "next_action",
+                                        "try another observed work position"),
+                                    true);
+                                plan = null;
+                                selected = null;
+                                nextPlan = 0;
+                                requestStarted = 0;
+                                return;
+                              }
                               if (!skillTrial.active()
                                   && skillTrial.start(
                                       answer.map(),
@@ -462,13 +498,18 @@ public final class WorkerNavigation {
   }
 
   private boolean nativePathDry(com.destroystokyo.paper.entity.Pathfinder.PathResult path) {
+    Block current = actor.getLocation().getBlock();
+    boolean exitingWater =
+        current.getType() == org.bukkit.Material.WATER
+            || current.getRelative(BlockFace.DOWN).getType() == org.bukkit.Material.WATER;
     for (Location node : path.getPoints()) {
       if (!Bukkit.isOwnedByCurrentRegion(node, 1)) return false;
       Block b = node.getBlock();
+      if (b.getRelative(BlockFace.UP).getType() == org.bukkit.Material.WATER) return false;
       for (Block block :
           java.util.List.of(b, b.getRelative(BlockFace.UP), b.getRelative(BlockFace.DOWN))) {
         String name = block.getType().name();
-        if (block.isLiquid()
+        if (block.isLiquid() && !(exitingWater && block.getType() == org.bukkit.Material.WATER)
             || java.util.Set.of(
                     "FIRE",
                     "SOUL_FIRE",
@@ -483,6 +524,9 @@ public final class WorkerNavigation {
             || block.getBlockData() instanceof org.bukkit.block.data.Waterlogged w
                 && w.isWaterlogged()) return false;
       }
+      if (b.getType() != org.bukkit.Material.WATER
+          && b.getRelative(BlockFace.DOWN).getType() != org.bukkit.Material.WATER)
+        exitingWater = false;
     }
     return true;
   }

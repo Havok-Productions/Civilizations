@@ -11,29 +11,51 @@ public final class SiteObservations {
 
   public static List<Map<String, Object>> candidates(
       Terrain terrain, Settlement village, Predicate<Pos> occupied, Set<String> allowed) {
+    return candidates(terrain, village, occupied, allowed, new TreeMap<>());
+  }
+
+  public static List<Map<String, Object>> candidates(
+      Terrain terrain,
+      Settlement village,
+      Predicate<Pos> occupied,
+      Set<String> allowed,
+      Map<String, Integer> rejections) {
     List<Map<String, Object>> result = new ArrayList<>();
     DesignCompiler compiler = new DesignCompiler();
     if (allowed.contains("wall")) {
-      for (int radius : new int[] {8, 12, 16, 20, 24}) {
-        add(
-            result,
-            compiler,
-            new Blueprint(
-                "wall",
-                "Protect village beds and storage",
-                0,
-                -radius,
-                0,
-                0,
-                3,
-                "north",
-                List.of(
-                    new Blueprint.Point(-radius, -radius), new Blueprint.Point(radius, -radius),
-                    new Blueprint.Point(radius, radius), new Blueprint.Point(-radius, radius))),
-            terrain,
-            village,
-            occupied);
-      }
+      List<Pos> hubs = new ArrayList<>(village.beds());
+      hubs.addAll(village.chests());
+      hubs.add(village.center());
+      for (Pos hub :
+          hubs.stream()
+              .distinct()
+              .sorted(Comparator.comparingLong(village.center()::distance2))
+              .limit(9)
+              .toList())
+        for (int radius : new int[] {4, 6, 8, 12, 16, 20, 24}) {
+          int cx = hub.x() - village.center().x(), cz = hub.z() - village.center().z();
+          add(
+              result,
+              compiler,
+              new Blueprint(
+                  "wall",
+                  "Protect village beds and storage",
+                  cx,
+                  cz - radius,
+                  0,
+                  0,
+                  3,
+                  "north",
+                  List.of(
+                      new Blueprint.Point(cx - radius, cz - radius),
+                          new Blueprint.Point(cx + radius, cz - radius),
+                      new Blueprint.Point(cx + radius, cz + radius),
+                          new Blueprint.Point(cx - radius, cz + radius))),
+              terrain,
+              village,
+              occupied,
+              rejections);
+        }
     }
     if (allowed.contains("path") && village.chest() != null) {
       int cx = village.chest().x() - village.center().x(),
@@ -60,7 +82,8 @@ public final class SiteObservations {
               List.copyOf(route)),
           terrain,
           village,
-          occupied);
+          occupied,
+          rejections);
     }
     if (allowed.contains("mine"))
       for (int radius : new int[] {12, 16, 20}) {
@@ -79,7 +102,7 @@ public final class SiteObservations {
                   0,
                   facing,
                   List.of());
-          add(result, compiler, proposal, terrain, village, occupied);
+          add(result, compiler, proposal, terrain, village, occupied, rejections);
         }
       }
     for (String kind : List.of("house", "farm", "lights")) {
@@ -117,7 +140,7 @@ public final class SiteObservations {
                         List.of(new Blueprint.Point(x, z)));
               };
           int before = result.size();
-          add(result, compiler, candidate, terrain, village, occupied);
+          add(result, compiler, candidate, terrain, village, occupied, rejections);
           found += result.size() - before;
           if (found >= 2) break outer;
         }
@@ -146,7 +169,8 @@ public final class SiteObservations {
       Blueprint b,
       Terrain t,
       Settlement v,
-      Predicate<Pos> occupied) {
+      Predicate<Pos> occupied,
+      Map<String, Integer> rejections) {
     try {
       List<Pos> landmarks = new ArrayList<>(v.beds());
       landmarks.addAll(v.chests());
@@ -165,8 +189,9 @@ public final class SiteObservations {
               compiled.jobs().size(),
               "materials",
               compiled.materials()));
-    } catch (IllegalArgumentException ignored) {
-      /* Invalid geometry is not offered as buildable. */
+    } catch (IllegalArgumentException invalid) {
+      String reason = b.kind() + ": " + invalid.getMessage().replaceAll("-?\\d+", "#");
+      rejections.merge(reason, 1, Integer::sum);
     }
   }
 }

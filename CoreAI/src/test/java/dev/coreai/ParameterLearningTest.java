@@ -46,7 +46,7 @@ final class ParameterLearningTest {
 
   @Test
   @Tag("coreai")
-  void executableTuningValidatesKeysRangesAndCoordinates() {
+  void executableTuningAcceptsValuesBeyondFormerRangesAndChecksInstructionShape() {
     String source =
         """
         {"explanation":"Allow a slow transition time to finish","steps":[
@@ -54,8 +54,10 @@ final class ParameterLearningTest {
         {"op":"VERIFY","x":0,"y":0,"z":0,"material":""}]}
         """;
     assertEquals(SkillProgram.Op.TUNE, SkillProgram.parse(source).steps().getFirst().op());
-    assertThrows(
-        IllegalArgumentException.class, () -> SkillProgram.parse(source.replace("15000", "1")));
+    assertDoesNotThrow(() -> SkillProgram.parse(source.replace("15000", "1")));
+    assertDoesNotThrow(() -> SkillProgram.parse(source.replace("15000", "500000")));
+    assertFalse(SkillProgram.schema().contains("minimum"));
+    assertFalse(SkillProgram.schema().contains("maximum"));
     assertThrows(
         IllegalArgumentException.class,
         () -> SkillProgram.parse(source.replace("navigation.transition_ms", "protection.enabled")));

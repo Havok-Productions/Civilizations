@@ -23,7 +23,7 @@ class StallRecoveryTest {
 
   @org.junit.jupiter.api.Tag("design")
   @Test
-  void surveysOfferWallsAndPathsAndKeepBedsInsideDefenses() {
+  void surveysOfferWallsAndPathsAndProtectAnInhabitedLandmark() {
     Settlement v = CoreTest.village();
     v.beds(List.of(new Pos(10, 65, 0)));
     v.chest(new Pos(4, 65, 3));
@@ -39,7 +39,10 @@ class StallRecoveryTest {
     assertFalse(walls.isEmpty());
     assertTrue(
         walls.stream()
-            .allMatch(b -> DesignCompiler.insideWall(b, v.center(), v.beds().getFirst())));
+            .allMatch(
+                b ->
+                    DesignCompiler.insideWall(b, v.center(), v.beds().getFirst())
+                        || DesignCompiler.insideWall(b, v.center(), v.chest())));
   }
 
   @org.junit.jupiter.api.Tag("design")

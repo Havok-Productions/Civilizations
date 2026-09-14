@@ -126,5 +126,4 @@ core-ai:
 navigation:
   search-radius: 20
   # AI may trial a wider or narrower loaded map and keep a verified search policy.
-  max-adaptive-search-radius: 48
   clear-natural-obstacles: true

@@ -31,7 +31,9 @@ public final class NavigationMap {
     this.center = center;
     this.radius = radius;
     this.vertical = vertical;
-    this.cells = Map.copyOf(cells);
+    // Dense coordinate hashes cluster badly in MapN's linear probing during Map.copyOf.
+    // HashMap keeps bucket collision handling while the wrapper preserves snapshot immutability.
+    this.cells = Collections.unmodifiableMap(new HashMap<>(cells));
     // Stable geometry fingerprint, independent of insertion order and map acquisition timing.
     long hash = 0;
     for (var e : cells.entrySet())
@@ -75,9 +77,9 @@ public final class NavigationMap {
   }
 
   public boolean contains(Pos p) {
-    return Math.abs(p.x() - center.x()) <= radius
-        && Math.abs(p.z() - center.z()) <= radius
-        && Math.abs(p.y() - center.y()) <= vertical;
+    return Math.abs((long) p.x() - center.x()) <= radius
+        && Math.abs((long) p.z() - center.z()) <= radius
+        && Math.abs((long) p.y() - center.y()) <= vertical;
   }
 
   public Passage passage(Pos feet, boolean salvage) {
@@ -122,6 +124,14 @@ public final class NavigationMap {
       }
     }
     return new Passage(true, "", List.copyOf(clear), List.copyOf(open));
+  }
+
+  /** Surface water is an escape state, never an invitation for dry routes to enter water. */
+  public boolean surfaceWater(Pos feet) {
+    Cell body = cell(feet), head = cell(feet.add(0, 1, 0)), floor = cell(feet.add(0, -1, 0));
+    return (body.material.equals("WATER")
+            || body.kind == Kind.AIR && floor.material.equals("WATER"))
+        && head.kind == Kind.AIR;
   }
 
   /** Compact complete volume, palette + runs, x then z then y. Includes floor/head margins. */

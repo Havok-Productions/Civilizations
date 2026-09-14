@@ -57,7 +57,7 @@ class TerrainRuleBookTest {
     assertNull(book.rule("two", clutter.material(), clutter.state()));
     assertEquals(32, book.radius("one", 20, 48));
     assertEquals(20, book.radius("two", 20, 48));
-    assertEquals(24, book.radius("one", 20, 24));
+    assertEquals(32, book.radius("one", 20, 24));
     assertEquals(20, new TerrainRuleBook(root).radius("one", 20, 48));
     book.finish("trial", true);
     var restored = new TerrainRuleBook(root);
@@ -80,7 +80,8 @@ class TerrainRuleBookTest {
     book.stageRadius("c", "one", 40);
     book.cancel("c");
     assertEquals(20, book.radius("one", 20, 48));
-    assertThrows(IllegalArgumentException.class, () -> book.stageRadius("d", "one", 49));
+    book.stageRadius("d", "one", 96);
+    assertEquals(96, book.radius("one", 20, 48));
   }
 
   @org.junit.jupiter.api.Tag("coreai")
@@ -106,9 +107,7 @@ class TerrainRuleBookTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> SkillProgram.parse(source.replace("PASSABLE", "HAZARD")));
-    assertThrows(
-        IllegalArgumentException.class, () -> SkillProgram.parse(source.replace("32", "49")));
-    assertThrows(
-        IllegalArgumentException.class, () -> SkillProgram.parse(source.replace("SEARCH", "WALK")));
+    assertDoesNotThrow(() -> SkillProgram.parse(source.replace("32", "96")));
+    assertDoesNotThrow(() -> SkillProgram.parse(source.replace("SEARCH", "WALK")));
   }
 }

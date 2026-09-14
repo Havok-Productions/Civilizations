@@ -78,8 +78,9 @@ final class RuleLearningChecks {
       CivilizationsPlugin plugin =
           (CivilizationsPlugin) Bukkit.getPluginManager().getPlugin("Civilizations");
       int y = world.getHighestBlockYAt(0, 0) + 1;
-      for (int x = -8; x <= 12; x++)
-        for (int z = -6; z <= 6; z++)
+      boolean wallCase = Boolean.getBoolean("civilizations.test.wall-work");
+      for (int x = -8; x <= (wallCase ? 28 : 12); x++)
+        for (int z = -8; z <= 8; z++)
           for (int dy = -1; dy <= 3; dy++)
             world.getBlockAt(x, y + dy, z).setType(dy == -1 ? Material.STONE : Material.AIR, false);
       Pos a = new Pos(2, y, 0), b = new Pos(4, y, 0), origin = new Pos(0, y, 0);
@@ -130,6 +131,77 @@ final class RuleLearningChecks {
       Job first = new Job(Job.Kind.PLACE, "learning-repair", a, origin, "OAK_PLANKS", "AIR", null);
       Job second = new Job(Job.Kind.PLACE, "learning-repair", b, origin, "OAK_PLANKS", "AIR", null);
       village.addProject("learning-repair", List.of(first, second));
+      List<Job> construction = new ArrayList<>();
+      if (wallCase) {
+        Job roof =
+            new Job(
+                Job.Kind.PLACE,
+                "fixture-roof",
+                new Pos(6, y + 3, 0),
+                new Pos(5, y, 0),
+                "OAK_PLANKS",
+                "AIR",
+                null);
+        construction.add(roof);
+        village.addProject("fixture-roof", List.of(roof));
+        Terrain floor =
+            new Terrain() {
+              public int height(int x, int z) {
+                return y - 1;
+              }
+
+              public boolean available(int x, int z) {
+                return x >= -8 && x <= 28 && z >= -8 && z <= 8;
+              }
+
+              public String type(Pos p) {
+                return p.y() == y - 1 ? "GRASS_BLOCK" : p.y() < y - 1 ? "STONE" : "AIR";
+              }
+            };
+        var blueprint =
+            new dev.civilizations.design.Blueprint(
+                "wall",
+                "Protect local storage",
+                0,
+                -3,
+                0,
+                0,
+                3,
+                "north",
+                List.of(
+                    new dev.civilizations.design.Blueprint.Point(-3, -3),
+                    new dev.civilizations.design.Blueprint.Point(3, -3),
+                    new dev.civilizations.design.Blueprint.Point(3, 3),
+                    new dev.civilizations.design.Blueprint.Point(-3, 3)));
+        var compiled =
+            new dev.civilizations.design.DesignCompiler()
+                .compile(
+                    blueprint,
+                    floor,
+                    new Pos(16, y, 0),
+                    "design-wall-fixture",
+                    p -> false,
+                    List.of(new Pos(16, y, 0), new Pos(150, y, 0)));
+        construction.addAll(compiled.jobs());
+        village.addProject("design-wall-fixture", compiled.jobs());
+        int wallStone =
+            (int) compiled.jobs().stream().filter(j -> j.material.equals("COBBLESTONE")).count();
+        actor
+            .getInventory()
+            .addItem(
+                new ItemStack(Material.OAK_PLANKS, 1),
+                new ItemStack(Material.COBBLESTONE, 10),
+                new ItemStack(Material.OAK_FENCE_GATE, 1));
+        Pos supply = new Pos(-3, y, -3);
+        world.getBlockAt(supply.x(), supply.y(), supply.z()).setType(Material.CHEST, false);
+        var storage =
+            (org.bukkit.block.Chest)
+                world.getBlockAt(supply.x(), supply.y(), supply.z()).getState();
+        storage.getInventory().addItem(new ItemStack(Material.COBBLESTONE, wallStone - 10));
+        village.chest(supply);
+        village.stock(
+            supply, InventoryOps.summary(storage.getInventory()), System.currentTimeMillis());
+      }
       AtomicInteger calls = new AtomicInteger();
       AtomicInteger firstCalls = new AtomicInteger(-1);
       Path evidence = plugin.getDataFolder().toPath().resolve("CoreAI-rule-fixture");
@@ -174,14 +246,18 @@ final class RuleLearningChecks {
                   throw error;
                 }
               }
-              return """
-              {"explanation":"Probe shows harmless removable clutter; classify, clear the repair site, and trial a wider map.","steps":[
-              {"op":"TUNE","x":500,"y":0,"z":0,"material":"construction.face_ms"},
-              {"op":"CLASSIFY","x":2,"y":0,"z":0,"material":"PASSABLE"},
-              {"op":"SEARCH","x":32,"y":0,"z":0,"material":""},
-              {"op":"CLEAR","x":2,"y":0,"z":0,"material":""},
-              {"op":"VERIFY","x":0,"y":0,"z":0,"material":""}]}
-              """;
+              String source =
+                  """
+                  {"explanation":"Probe shows harmless removable clutter; classify, clear the repair site, and trial a wider map.","steps":[
+                  {"op":"TUNE","x":500,"y":0,"z":0,"material":"construction.face_ms"},
+                  {"op":"CLASSIFY","x":2,"y":0,"z":0,"material":"PASSABLE"},
+                  {"op":"SEARCH","x":32,"y":0,"z":0,"material":""},
+                  {"op":"CLEAR","x":2,"y":0,"z":0,"material":""},
+                  {"op":"VERIFY","x":0,"y":0,"z":0,"material":""}]}
+                  """;
+              return wallCase
+                  ? source.replace("\"x\":500", "\"x\":125").replace("\"x\":32", "\"x\":64")
+                  : source;
             }
           };
       InferenceQueue queue = new InferenceQueue(backend, 4);
@@ -208,7 +284,19 @@ final class RuleLearningChecks {
               t -> {
                 try {
                   if (first.complete) firstCalls.compareAndSet(-1, calls.get());
-                  if (first.complete && second.complete) {
+                  if (first.complete
+                      && second.complete
+                      && construction.stream().allMatch(j -> j.complete)) {
+                    for (Job built : construction)
+                      if (world
+                              .getBlockAt(built.target.x(), built.target.y(), built.target.z())
+                              .getType()
+                          != Material.valueOf(built.material))
+                        throw new AssertionError("Unbuilt construction target " + built.target);
+                    if (wallCase
+                        && (InventoryOps.count(actor.getInventory(), Material.COBBLESTONE) != 0
+                            || InventoryOps.count(actor.getInventory(), Material.OAK_FENCE_GATE)
+                                != 0)) throw new AssertionError("Wall material accounting");
                     if (poseFailure.get() != null || facedActions.get() < 4)
                       throw new AssertionError(
                           "Facing verification: "
@@ -218,7 +306,8 @@ final class RuleLearningChecks {
                     if (!real
                         && replay == null
                         && service.rules().parameter("another-worker", "construction.face_ms", 250)
-                            != 500) throw new AssertionError("Tuning was not persisted and shared");
+                            != (wallCase ? 125 : 500))
+                      throw new AssertionError("Tuning was not persisted and shared");
                     if (world.getBlockAt(a.x(), y, a.z()).getType() != Material.OAK_PLANKS
                         || world.getBlockAt(b.x(), y, b.z()).getType() != Material.OAK_PLANKS
                         || InventoryOps.count(actor.getInventory(), Material.OAK_PLANKS) != 0
@@ -235,14 +324,16 @@ final class RuleLearningChecks {
                         == null) throw new AssertionError("No published classification");
                     if (!real
                         && replay == null
-                        && plugin.navigation().radiusFor("another-worker") != 32)
+                        && plugin.navigation().radiusFor("another-worker") != (wallCase ? 64 : 32))
                       throw new AssertionError("Search edit not learned");
                     t.cancel();
                     worker.stop();
                     fixture
                         .getLogger()
                         .info(
-                            "RULE LEARNING PASS: two actual worker-loop repairs; two planks"
+                            "RULE LEARNING PASS: extra construction blocks="
+                                + construction.size()
+                                + "; two actual worker-loop repairs; repair planks"
                                 + " consumed; two string retained; classification published and"
                                 + " reused; facing verified; inference requests="
                                 + calls
@@ -252,7 +343,7 @@ final class RuleLearningChecks {
                     queue.close();
                     Bukkit.getGlobalRegionScheduler()
                         .runDelayed(fixture, q -> Bukkit.shutdown(), 20);
-                  } else if (System.currentTimeMillis() - started > 210000)
+                  } else if (System.currentTimeMillis() - started > (wallCase ? 360000 : 210000))
                     throw new AssertionError("Rule-learning deadline; " + worker.status());
                 } catch (Throwable e) {
                   t.cancel();

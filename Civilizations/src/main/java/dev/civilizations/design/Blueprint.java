@@ -16,9 +16,19 @@ public record Blueprint(
     List<Point> points) {
   public record Point(int x, int z) {}
 
+  public int surveyRadius() {
+    long extent =
+        Math.max(
+            Math.abs((long) x) + Math.abs((long) width) + Math.abs((long) depth),
+            Math.abs((long) z) + Math.abs((long) width) + Math.abs((long) depth));
+    for (Point p : points)
+      extent = Math.max(extent, Math.max(Math.abs((long) p.x()), Math.abs((long) p.z())));
+    return (int) Math.min(Integer.MAX_VALUE, Math.max(32, extent + 3));
+  }
+
   public static final String SCHEMA =
       """
-      {"type":"object","properties":{"kind":{"type":"string","enum":["house","wall","path","farm","lights","mine","wait"]},"purpose":{"type":"string"},"x":{"type":"integer","minimum":-24,"maximum":24},"z":{"type":"integer","minimum":-24,"maximum":24},"width":{"type":"integer"},"depth":{"type":"integer"},"height":{"type":"integer"},"direction":{"type":"string","enum":["north","south","east","west"]},"points":{"type":"array","maxItems":16,"items":{"type":"object","properties":{"x":{"type":"integer","minimum":-24,"maximum":24},"z":{"type":"integer","minimum":-24,"maximum":24}},"required":["x","z"],"additionalProperties":false}}},"required":["kind","purpose","x","z","width","depth","height","direction","points"],"additionalProperties":false}
+      {"type":"object","properties":{"kind":{"type":"string","enum":["house","wall","path","farm","lights","mine","wait"]},"purpose":{"type":"string"},"x":{"type":"integer"},"z":{"type":"integer"},"width":{"type":"integer"},"depth":{"type":"integer"},"height":{"type":"integer"},"direction":{"type":"string","enum":["north","south","east","west"]},"points":{"type":"array","items":{"type":"object","properties":{"x":{"type":"integer"},"z":{"type":"integer"}},"required":["x","z"],"additionalProperties":false}}},"required":["kind","purpose","x","z","width","depth","height","direction","points"],"additionalProperties":false}
       """;
 
   public static Blueprint parse(String text) {
@@ -41,7 +51,6 @@ public record Blueprint(
       JsonObject p = e.getAsJsonObject();
       if (!p.keySet().equals(Set.of("x", "z"))) throw new IllegalArgumentException("Invalid point");
       points.add(new Point(integer(p, "x"), integer(p, "z")));
-      if (points.size() > 16) throw new IllegalArgumentException("At most 16 points");
     }
     return new Blueprint(
         kind,

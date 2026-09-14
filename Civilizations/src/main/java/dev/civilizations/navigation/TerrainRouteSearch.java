@@ -22,6 +22,7 @@ public final class TerrainRouteSearch {
   private record Node(State state, double cost, double score, Node parent, Step step) {}
 
   public static Pos start(NavigationMap map, Pos from) {
+    if (map.surfaceWater(from)) return from;
     for (int dy : new int[] {0, 1, -1, 2, -2}) {
       Pos p = from.add(0, dy, 0);
       if (map.passage(p, false).allowed()) return p;
@@ -78,7 +79,9 @@ public final class TerrainRouteSearch {
       Node n = open.poll();
       if (n.cost > costs.getOrDefault(n.state, Double.POSITIVE_INFINITY)) continue;
       expanded++;
-      if (n.state.at.distance2(target) <= reach2 && Math.abs(n.state.at.y() - target.y()) <= 3)
+      if (!map.surfaceWater(n.state.at)
+          && n.state.at.distance2(target) <= reach2
+          && Math.abs(n.state.at.y() - target.y()) <= 3)
         return result(n, true, "reached", expanded, rejected, examples);
       if (heuristic(n.state.at, target) < heuristic(best.state.at, target)) best = n;
       for (int[] d : new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}})
@@ -90,6 +93,8 @@ public final class TerrainRouteSearch {
             continue;
           }
           NavigationMap.Passage passage = map.passage(to, maxClear > 0);
+          if (map.surfaceWater(n.state.at) && map.surfaceWater(to))
+            passage = new NavigationMap.Passage(true, "surface_water_exit", List.of(), List.of());
           if (blocked.contains(new Edge(n.state.at, to))) reason = "remembered_failed_transition";
           else if (!passage.allowed()) reason = passage.reason();
           else if (dy > 0 && map.cell(n.state.at.add(0, 2, 0)).kind() != NavigationMap.Kind.AIR)

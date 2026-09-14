@@ -74,7 +74,7 @@ class DesignTest {
               Set.of(job.target),
               2));
     }
-    assertEquals(Set.of("mine"), DesignNeeds.allowed(v, 2));
+    assertEquals(Set.of("mine", "wall"), DesignNeeds.allowed(v, 2));
     v.paused(true);
     assertTrue(DesignNeeds.allowed(v, 2).isEmpty());
   }

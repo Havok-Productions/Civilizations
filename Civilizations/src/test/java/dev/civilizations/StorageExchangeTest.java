@@ -8,6 +8,48 @@ import java.util.*;
 import org.junit.jupiter.api.*;
 
 class StorageExchangeTest {
+  @Tag("storage")
+  @Tag("crafting")
+  @Tag("tasks")
+  @Tag("interaction")
+  @Test
+  void collectsFinishedProjectMaterialsWithoutTakingOthersClaimedBlocks() {
+    Settlement.Data d = new Settlement.Data();
+    d.world = UUID.randomUUID().toString();
+    d.center = new Pos(0, 1, 0);
+    d.agents.put("worker", new Settlement.Agent("worker", "builder"));
+    for (int x = 0; x < 7; x++)
+      d.jobs.add(
+          new Job(
+              Job.Kind.PLACE,
+              "wall",
+              new Pos(x, 1, 0),
+              new Pos(x, 1, 1),
+              "COBBLESTONE",
+              "AIR",
+              null));
+    d.jobs.get(0).complete = true;
+    d.jobs.get(1).owner = "other";
+    d.jobs.get(1).leaseUntil = 2000;
+    Settlement village = new Settlement(d);
+    village.taskProject("worker", "wall");
+    int demand = village.placementDemand("worker", "COBBLESTONE", 1000);
+    assertEquals(5, demand);
+    CraftingBook book = new CraftingBook(List.of());
+    assertEquals(
+        Map.of("COBBLESTONE", 3),
+        book.withdrawal(
+            "COBBLESTONE", Map.of("COBBLESTONE", 2), Map.of("COBBLESTONE", 100), false, demand));
+    assertEquals(
+        Map.of("COBBLESTONE", 2),
+        book.withdrawal("COBBLESTONE", Map.of(), Map.of("COBBLESTONE", 2), false, demand));
+    assertTrue(
+        book.withdrawal(
+                "COBBLESTONE", Map.of("COBBLESTONE", 5), Map.of("COBBLESTONE", 100), false, demand)
+            .isEmpty());
+    assertEquals(1, village.placementDemand("worker", "STONE_PICKAXE", 1000));
+  }
+
   @org.junit.jupiter.api.Tag("storage")
   @org.junit.jupiter.api.Tag("crafting")
   @org.junit.jupiter.api.Tag("interaction")

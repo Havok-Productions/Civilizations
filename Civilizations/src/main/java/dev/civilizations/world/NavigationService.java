@@ -24,19 +24,17 @@ public final class NavigationService implements AutoCloseable {
   private final int radius;
   private final boolean salvage;
   private volatile dev.coreai.TerrainRuleBook rules;
-  private volatile int maximumRadius = 48;
 
   public void rules(dev.coreai.TerrainRuleBook rules, int maximum) {
+    rules(rules);
+  }
+
+  public void rules(dev.coreai.TerrainRuleBook rules) {
     this.rules = rules;
-    maximumRadius = Math.clamp(maximum, 20, 48);
   }
 
   public int radiusFor(String worker) {
-    return rules == null ? radius : rules.radius(worker, radius, maximumRadius);
-  }
-
-  public int maximumRadius() {
-    return maximumRadius;
+    return rules == null ? radius : rules.radius(worker, radius, 0);
   }
 
   public NavigationService(
@@ -73,6 +71,14 @@ public final class NavigationService implements AutoCloseable {
           new RejectedExecutionException("navigation_search_queue_full"));
     try {
       int searchRadius = radiusFor(worker);
+      if (searchRadius < 0)
+        throw new IllegalArgumentException("Negative radius has no geometric meaning");
+      long side = 2L * searchRadius + 1;
+      if (side > 2_000_000L / 24 / side)
+        throw new RejectedExecutionException(
+            "snapshot_resource_budget_exceeded: proposed radius="
+                + searchRadius
+                + "; use successive loaded maps or propose a cheaper search");
       Set<Pos> protectedBlocks = new HashSet<>(village.layoutOccupancy());
       village
           .snapshot()
@@ -115,7 +121,8 @@ public final class NavigationService implements AutoCloseable {
           .whenComplete((p, error) -> admission.release());
     } catch (RuntimeException error) {
       admission.release();
-      throw error;
+      // Keep the asynchronous contract: callers clear pending state and roll back trials here.
+      return CompletableFuture.failedFuture(error);
     }
   }
 
@@ -136,7 +143,7 @@ public final class NavigationService implements AutoCloseable {
   }
 
   public static int searchBudget(int radius) {
-    return Math.clamp(radius * radius * 30, 12000, 48000);
+    return Math.clamp((long) radius * radius * 30, 12000, 48000);
   }
 
   public int radius() {

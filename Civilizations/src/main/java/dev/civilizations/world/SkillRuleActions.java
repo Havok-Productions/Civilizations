@@ -42,7 +42,10 @@ public final class SkillRuleActions {
     Map<String, Object> report = new LinkedHashMap<>(context.observation());
     report.put("physical_block_probes", probes);
     report.put("tunable_parameters", WorkerTuning.report(plugin, actor));
-    report.put("max_adaptive_search_radius", plugin.navigation().maximumRadius());
+    report.put(
+        "search_execution",
+        "No proposal radius ceiling. Execution uses observed loaded terrain and reports actual"
+            + " snapshot/search resource exhaustion.");
     // Bound teacher context; global rules remain available to navigation, without sending 256
     // entries.
     report.put("known_rule_count", plugin.experiments().rules().snapshot().rules().size());
@@ -85,8 +88,7 @@ public final class SkillRuleActions {
               "status",
               "trial_scoped_parameter_edit");
     } else if (step.op() == SkillProgram.Op.SEARCH) {
-      if (step.x() > plugin.navigation().maximumRadius())
-        throw new IllegalArgumentException("Requested radius exceeds configured loaded-map budget");
+
       rules.stageRadius(trial.id, trial.worker, step.x());
       receipt =
           Map.of(

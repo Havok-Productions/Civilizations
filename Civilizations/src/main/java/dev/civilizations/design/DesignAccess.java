@@ -10,6 +10,20 @@ final class DesignAccess {
     Set<String> reached = new HashSet<>();
     ArrayDeque<Pos> queue = new ArrayDeque<>();
     Pos c = s.center;
+    int extent =
+        s.jobs.stream()
+                .mapToInt(
+                    j ->
+                        (int)
+                            Math.min(
+                                Integer.MAX_VALUE - 2,
+                                Math.max(
+                                    Math.abs((long) j.stand.x() - c.x()),
+                                    Math.abs((long) j.stand.z() - c.z()))))
+                .max()
+                .orElse(0)
+            + 2;
+    extent = Math.max(26, extent);
     outer:
     for (int r = 0; r <= 4; r++)
       for (int x = -r; x <= r; x++)
@@ -26,7 +40,10 @@ final class DesignAccess {
       Pos p = queue.remove();
       for (int[] d : new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
         int x = p.x() + d[0], z = p.z() + d[1];
-        if (Math.abs(x - c.x()) > 26 || Math.abs(z - c.z()) > 26) continue;
+        if (Math.abs((long) x - c.x()) > extent || Math.abs((long) z - c.z()) > extent) continue;
+        s.require(
+            reached.size() < 20000,
+            "Access-search work budget exhausted; divide the proposed project into stages");
         Pos q = walk(s.terrain, x, z, p.y(), 1);
         if (q != null && Math.abs(q.y() - p.y()) <= 1 && reached.add(key(q))) queue.add(q);
       }

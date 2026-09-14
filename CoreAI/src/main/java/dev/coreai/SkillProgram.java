@@ -33,10 +33,10 @@ public record SkillProgram(String explanation, List<Step> steps) {
     String explanation = json.get("explanation").getAsString();
     if (explanation.length() > 1000) throw new IllegalArgumentException("Explanation size");
     List<Step> steps = new ArrayList<>();
-    int clear = 0, place = 0, classify = 0, searches = 0, tunes = 0;
     JsonArray values = json.getAsJsonArray("steps");
-    if (values.size() < 2 || values.size() > 24)
-      throw new IllegalArgumentException("Use 2..24 instructions");
+    if (values.size() < 2)
+      throw new IllegalArgumentException(
+          "At least one instruction and final verification are required");
     for (JsonElement entry : values) {
       JsonObject value = entry.getAsJsonObject();
       if (!value.keySet().equals(Set.of("op", "x", "y", "z", "material")))
@@ -44,42 +44,27 @@ public record SkillProgram(String explanation, List<Step> steps) {
       Op op = Op.valueOf(value.get("op").getAsString());
       int x = integer(value, "x"), y = integer(value, "y"), z = integer(value, "z");
       String material = value.get("material").getAsString();
-      if (op != Op.SEARCH
-          && op != Op.TUNE
-          && (x < -20 || x > 20 || z < -20 || z > 20 || y < -10 || y > 10))
-        throw new IllegalArgumentException("Instruction outside observed radius");
       if (op == Op.TUNE) {
         ParameterCatalog.validate(material, x);
         if (y != 0 || z != 0)
           throw new IllegalArgumentException("TUNE uses x=value,y=z=0,material=parameter key");
-        tunes++;
       } else if (op == Op.SEARCH) {
-        if (x < 8 || x > 48 || y != 0 || z != 0 || !material.isEmpty())
-          throw new IllegalArgumentException(
-              "SEARCH uses x=radius 8..48 and y=z=0, empty material");
-        searches++;
+        if (y != 0 || z != 0 || !material.isEmpty())
+          throw new IllegalArgumentException("SEARCH uses x=radius and y=z=0, empty material");
       } else if (op == Op.CLASSIFY) {
         if (!Set.of("PASSABLE", "CLEARABLE", "OBSTACLE").contains(material))
           throw new IllegalArgumentException("CLASSIFY requires an environment category");
-        classify++;
       } else if (op == Op.PLACE_SUPPORT) {
         if (!SUPPORTS.contains(material))
           throw new IllegalArgumentException("Unsupported building material");
-        place++;
       } else if (!material.isEmpty())
         throw new IllegalArgumentException("Only placement specifies material");
-      if (op == Op.CLEAR) clear++;
       if (op == Op.VERIFY && (x != 0 || y != 0 || z != 0 || steps.size() != values.size() - 1))
         throw new IllegalArgumentException("VERIFY must be last and uses the host goal");
       steps.add(new Step(op, x, y, z, material));
     }
-    if (steps.getLast().op() != Op.VERIFY
-        || clear > 8
-        || place > 4
-        || classify > 8
-        || searches > 1
-        || tunes > 3)
-      throw new IllegalArgumentException("Missing verification or action budget exceeded");
+    if (steps.getLast().op() != Op.VERIFY)
+      throw new IllegalArgumentException("Missing verification");
     return new SkillProgram(explanation, steps);
   }
 
@@ -105,13 +90,7 @@ public record SkillProgram(String explanation, List<Step> steps) {
                                 "op",
                                 Map.of("const", "TUNE"),
                                 "x",
-                                Map.of(
-                                    "type",
-                                    "integer",
-                                    "minimum",
-                                    entry.getValue().minimum(),
-                                    "maximum",
-                                    entry.getValue().maximum()),
+                                Map.of("type", "integer"),
                                 "y",
                                 Map.of("const", 0),
                                 "z",
@@ -122,23 +101,11 @@ public record SkillProgram(String explanation, List<Step> steps) {
       }
       Map<String, Object> fields = new LinkedHashMap<>();
       fields.put("op", Map.of("const", op.name()));
+      fields.put("x", op == Op.VERIFY ? Map.of("const", 0) : Map.of("type", "integer"));
       fields.put(
-          "x",
-          op == Op.VERIFY
-              ? Map.of("const", 0)
-              : op == Op.SEARCH
-                  ? Map.of("type", "integer", "minimum", 8, "maximum", 48)
-                  : Map.of("type", "integer", "minimum", -20, "maximum", 20));
+          "y", op == Op.VERIFY || op == Op.SEARCH ? Map.of("const", 0) : Map.of("type", "integer"));
       fields.put(
-          "y",
-          op == Op.VERIFY || op == Op.SEARCH
-              ? Map.of("const", 0)
-              : Map.of("type", "integer", "minimum", -10, "maximum", 10));
-      fields.put(
-          "z",
-          op == Op.VERIFY || op == Op.SEARCH
-              ? Map.of("const", 0)
-              : Map.of("type", "integer", "minimum", -20, "maximum", 20));
+          "z", op == Op.VERIFY || op == Op.SEARCH ? Map.of("const", 0) : Map.of("type", "integer"));
       fields.put(
           "material",
           op == Op.PLACE_SUPPORT
@@ -176,8 +143,8 @@ public record SkillProgram(String explanation, List<Step> steps) {
                         "array",
                         "minItems",
                         2,
-                        "maxItems",
-                        24,
+                        "description",
+                        "Finite instructions with final VERIFY",
                         "items",
                         Map.of("oneOf", choices)))));
   }
