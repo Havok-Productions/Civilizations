@@ -26,6 +26,7 @@ public final class VillagerWorker {
   private final WorkMovementControl movementControl;
   private final BuildingActions building;
   private final WorkPose workPose;
+  private final VillagerMind mind;
   private String waitingReason = "";
   private final GatheringActions gathering;
   private final RecoveryPolicy recovery;
@@ -67,6 +68,15 @@ public final class VillagerWorker {
     this.entity = entity;
     this.village = village;
     this.id = entity.getUniqueId().toString();
+    mind =
+        new VillagerMind(
+            id,
+            village,
+            experience -> {
+              debug("agent_experience", Map.of("experience", experience));
+              if (plugin.coreAi() != null) plugin.coreAi().experience(experience);
+            },
+            message -> plugin.getLogger().warning(message));
     village.observe((worker, event) -> plugin.debug(village.id(), worker, "result", event));
     movementControl =
         new WorkMovementControl(
@@ -94,6 +104,7 @@ public final class VillagerWorker {
                 t -> tick(),
                 () -> {
                   stopped = true;
+                  mind.close();
                   if (plugin.experiments() != null)
                     plugin.experiments().cancelWorker(id, "worker_retired");
                   village.release(id);
@@ -109,6 +120,7 @@ public final class VillagerWorker {
 
   public void stop() {
     stopped = true;
+    mind.close();
     if (plugin.experiments() != null) plugin.experiments().cancelWorker(id, "worker_stopped");
     if (scheduled != null) scheduled.cancel();
     village.release(id);
@@ -149,6 +161,7 @@ public final class VillagerWorker {
     return List.of(
         "Worker " + id + " | village=" + village.id(),
         "State: " + status(),
+        mind.status(),
         "Position: " + here().key() + " | inventory: " + inventory(),
         "Task: "
             + (job == null
@@ -164,6 +177,10 @@ public final class VillagerWorker {
 
   public Map<String, Object> navigationEvidence() {
     return navigation.evidence();
+  }
+
+  public List<dev.coreai.agent.AgentSession.Experience> agentExperiences() {
+    return mind.experiences();
   }
 
   public void damaged(String cause) {
@@ -510,6 +527,7 @@ public final class VillagerWorker {
       report.put("current_project", village.taskProject(id));
       report.put("deposit_allowed", village.mayShareSurplus(id) && village.chest() != null);
       report.put("recent_results", village.memories(id));
+      report.put("agent_experiences", mind.report());
       if (escalate) report.put("recovery_problem", recovery.problem(now));
       debug("decision_request", Map.of("reasoning", escalate, "observations", report));
       long token = ++generation;
@@ -588,6 +606,11 @@ public final class VillagerWorker {
   }
 
   private void begin(Job candidate) {
+    mind.begin(
+        candidate, here(), inventory(), System.currentTimeMillis(), () -> beginWork(candidate));
+  }
+
+  private void beginWork(Job candidate) {
     workPose.reset();
     waitingReason = "";
     job = candidate;
@@ -700,6 +723,21 @@ public final class VillagerWorker {
   private void complete(long now) {
     workPose.reset();
     boolean committed = village.done(job.id, id);
+    if (supplyFor == null) {
+      if (committed)
+        mind.succeeded(
+            job.id,
+            Map.of(
+                "verified_job",
+                job.id,
+                "target",
+                VillagerMind.position(job.target),
+                "inventory_after",
+                inventory(),
+                "observed_block",
+                location(job.target).getBlock().getType().name()));
+      else mind.cancel("job_claim_no_longer_owned");
+    }
     if (policyTicket != null && policyTicket.selected().equals(job.id) && committed) {
       plugin
           .coreAi()
@@ -1026,6 +1064,7 @@ public final class VillagerWorker {
     evidence.put("failure_id", failureId);
     lastFailure = Map.copyOf(evidence);
     debug("failure", lastFailure);
+    mind.failed(reason, lastFailure);
     navigation.mapFailure(failureId, job == null ? here() : job.target, now);
     if (plugin.coreAi() != null) {
       if (policyTicket != null) plugin.coreAi().outcome(policyTicket, false, lastFailure);
@@ -1045,6 +1084,7 @@ public final class VillagerWorker {
   }
 
   private void reset() {
+    mind.cancel("worker_reset");
     workPose.reset();
     waitingReason = "";
     policyTicket = null;

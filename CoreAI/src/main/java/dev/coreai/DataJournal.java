@@ -16,7 +16,7 @@ public final class DataJournal {
   }
 
   public synchronized void append(String stream, Map<String, ?> event) throws IOException {
-    if (!java.util.Set.of("observations", "outcomes", "proposals", "roadblocks", "experiments")
+    if (!java.util.Set.of("observations", "outcomes", "proposals", "roadblocks", "experiments", "agents")
         .contains(stream)) throw new IllegalArgumentException("Unknown stream");
     String line = JSON.toJson(event);
     if (line.length() > 64_000) throw new IOException("Event exceeds 64K limit");

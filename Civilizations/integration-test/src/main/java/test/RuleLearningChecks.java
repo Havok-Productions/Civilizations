@@ -287,6 +287,32 @@ final class RuleLearningChecks {
                   if (first.complete
                       && second.complete
                       && construction.stream().allMatch(j -> j.complete)) {
+                    if (Boolean.getBoolean("civilizations.test.framework")) {
+                      var experiences = worker.agentExperiences();
+                      for (Job expected : List.of(first, second)) {
+                        var verified =
+                            experiences.stream()
+                                .filter(
+                                    e ->
+                                        e.attempt().action().id().equals(expected.id)
+                                            && e.outcome().status()
+                                                == dev.coreai.agent.Outcome.Status.SUCCEEDED)
+                                .findFirst()
+                                .orElseThrow(
+                                    () ->
+                                        new AssertionError(
+                                            "Missing CoreAI receipt for " + expected.id));
+                        if (!verified
+                            .outcome()
+                            .evidence()
+                            .object()
+                            .get("observed_block")
+                            .getAsString()
+                            .equals("OAK_PLANKS"))
+                          throw new AssertionError(
+                              "CoreAI outcome did not contain the real block observation");
+                      }
+                    }
                     for (Job built : construction)
                       if (world
                               .getBlockAt(built.target.x(), built.target.y(), built.target.z())

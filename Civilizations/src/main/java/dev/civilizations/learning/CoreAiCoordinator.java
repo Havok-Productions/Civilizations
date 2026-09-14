@@ -230,6 +230,13 @@ public final class CoreAiCoordinator implements AutoCloseable {
         });
   }
 
+  /** Complete immutable agent experiences; independent of policy scoring and model suggestions. */
+  public void experience(dev.coreai.agent.AgentSession.Experience experience) {
+    enqueue(
+        () ->
+            record("agents", Map.of("experience", experience, "basis", "host executor lifecycle")));
+  }
+
   private void review() {
     long now = System.currentTimeMillis();
     if (closed || pending || now < nextAttempt || failures - lastFailures < 3 || !inference.idle())

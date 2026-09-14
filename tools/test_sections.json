@@ -12,6 +12,8 @@
     "diagnostics": "Failure classification, journal persistence and outcome evidence"
   },
   "source_rules": [
+    {"patterns": ["CoreAI/src/main/java/dev/coreai/reasoning/*"], "sections": ["coreai", "inference"]},
+    {"patterns": ["*/VillagerMind.java"], "sections": ["coreai", "tasks", "diagnostics"]},
     {"patterns": ["*/WorkerTuning.java", "*/WorkPose.java", "*/WorkPositions.java"], "sections": ["coreai", "navigation", "design", "tasks"]},
     {"patterns": ["*/WorkerSkillTrial.java", "*/SkillRuleActions.java", "*/BlockObservation.java", "*/SkillContext.java", "*/RecoveryExperiments.java"], "sections": ["coreai", "navigation", "inference"]},
     {"patterns": ["CoreAI/**"], "sections": ["coreai"]},
