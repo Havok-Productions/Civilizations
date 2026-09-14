@@ -30,6 +30,9 @@ public final class WorkerSkillTrial {
   private Pos lastProgress;
   private int index, placed, cleared;
   private long deadline, stepStarted, nextAction;
+  private long startedAt, executionAt;
+  private Location previousPosition;
+  private double travelled;
   private boolean observing, siteGoal;
 
   public WorkerSkillTrial(
@@ -114,6 +117,10 @@ public final class WorkerSkillTrial {
     observation = null;
     nextObservation = 0;
     lastProgress = here();
+    previousPosition = actor.getLocation().clone();
+    travelled = 0;
+    startedAt = now;
+    executionAt = 0;
     siteGoal = site;
     deadline = now + 185_000;
     workPose.reset();
@@ -146,6 +153,10 @@ public final class WorkerSkillTrial {
 
   public void observe(long now) {
     if (trial == null) return;
+    Location actual = actor.getLocation();
+    if (previousPosition != null && actual.getWorld().equals(previousPosition.getWorld()))
+      travelled += actual.distance(previousPosition);
+    previousPosition = actual.clone();
     if (now > deadline) {
       finish(false, program == null ? "proposal_timeout" : "live_trial_deadline");
       return;
@@ -182,6 +193,7 @@ public final class WorkerSkillTrial {
       if (!trial.program.isDone()) return true;
       try {
         program = trial.program.join();
+        executionAt = now;
       } catch (Exception error) {
         Throwable cause = error;
         while (cause.getCause() != null) cause = cause.getCause();
@@ -390,31 +402,38 @@ public final class WorkerSkillTrial {
     instructionNavigation.stop();
     observation = null;
     var done = trial;
+    long finishedAt = System.currentTimeMillis();
+    var finalInstruction = program == null ? null : program.steps().get(index);
     trial = null;
     program = null;
     actor.getPathfinder().stopPathfinding();
     Map<String, Object> evidence =
-        Map.of(
-            "reason",
-            reason,
-            "position",
-            here(),
-            "origin",
-            done.context.origin(),
-            "goal",
-            done.context.goal(),
-            "instructions_completed",
-            index,
-            "placed",
-            placed,
-            "cleared",
-            cleared,
-            "inventory",
-            InventoryOps.summary(actor.getInventory()),
-            "basis",
-            siteGoal
-                ? "physical site-clearance recovery; construction resumes separately"
-                : "physical navigation recovery outcome; not a completed village project");
+        new LinkedHashMap<>(
+            Map.of(
+                "reason",
+                reason,
+                "position",
+                here(),
+                "origin",
+                done.context.origin(),
+                "goal",
+                done.context.goal(),
+                "instructions_completed",
+                index,
+                "placed",
+                placed,
+                "cleared",
+                cleared,
+                "inventory",
+                InventoryOps.summary(actor.getInventory()),
+                "basis",
+                siteGoal
+                    ? "physical site-clearance recovery; construction resumes separately"
+                    : "physical navigation recovery outcome; not a completed village project"));
+    evidence.put("elapsed_ms", Math.max(0, finishedAt - startedAt));
+    evidence.put("execution_ms", executionAt == 0 ? 0 : Math.max(0, finishedAt - executionAt));
+    evidence.put("distance_travelled", travelled);
+    evidence.put("final_instruction", finalInstruction);
     plugin.experiments().finish(done, success, reason, evidence);
     plugin.debug(
         village.id(),

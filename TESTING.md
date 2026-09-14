@@ -38,6 +38,8 @@ The runner prints chosen classes and method counts. `test-results/last-run.json`
 
 ## Slow checks are separate
 
+Alpha.21 extends the existing `progress` case to omit model VERIFY deliberately, then verifies the host checks the real recovery result. After sand-to-glass it runs charcoal-to-torch preparation with actual fuel, intermediate output collection, final crafting/placement and exact leftovers. This single workflow targets the intermediate-batch regression; it does not benchmark live-model reasoning or complete wall construction.
+
 Alpha.20 adds `progress`: a deterministic recovery beyond the original map followed by actual sand gathering, furnace crafting/placement, native smelting and glass repair. For changes confined to farm clutter, run that scenario with `-Dcivilizations.test.farm-preparation=true`; it skips the recovery/glass setup and checks the dandelion-to-wheat action with real drops and a consumed seed. These selectors never start automatically during section checks.
 
 Folia scenarios must use a disposable world, never the live server. Build the fixture only when a relevant physical check is needed. Select exactly one scenario:

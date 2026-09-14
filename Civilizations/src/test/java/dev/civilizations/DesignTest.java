@@ -108,6 +108,49 @@ class DesignTest {
 
   @org.junit.jupiter.api.Tag("design")
   @Test
+  void wallsUseReachableStandingGroundOneBlockBelowContour() {
+    Blueprint b =
+        new Blueprint(
+            "wall",
+            "Protect a raised perimeter",
+            0,
+            -2,
+            0,
+            0,
+            3,
+            "north",
+            List.of(p(-2, -2), p(2, -2), p(2, 2), p(-2, 2)));
+    Terrain terrain =
+        new CoreTest.Flat() {
+          @Override
+          public int height(int x, int z) {
+            return Math.max(Math.abs(x), Math.abs(z)) == 2 ? 65 : 64;
+          }
+
+          @Override
+          public String type(Pos p) {
+            return p.y() > height(p.x(), p.z()) ? "AIR" : "GRASS_BLOCK";
+          }
+        };
+    var result = compile(b, terrain);
+    assertEquals(46, result.jobs().size());
+    assertTrue(result.jobs().stream().allMatch(j -> j.stand.y() == 65));
+    assertTrue(result.jobs().stream().allMatch(j -> j.target.distance2(j.stand) <= 21));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            new DesignCompiler()
+                .compile(
+                    b,
+                    terrain,
+                    new Pos(0, 65, 0),
+                    "protected-wall",
+                    p -> p.equals(new Pos(2, 66, 0)),
+                    List.of()));
+  }
+
+  @org.junit.jupiter.api.Tag("design")
+  @Test
   void housesUseModelDimensionsAndEntranceSideAndHaveRealMaterialRequirements() {
     var small = compile(house(3, 3, 5, 5, "north"), new CoreTest.Flat());
     var wide = compile(house(3, 3, 7, 6, "east"), new CoreTest.Flat());

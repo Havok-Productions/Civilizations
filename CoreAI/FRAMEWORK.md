@@ -1,5 +1,7 @@
 # CoreAI framework 0.2
 
+CoreAI 0.2.2 accompanies Civilizations alpha.21. `SkillProgram.parse` supplies the host's final VERIFY when an otherwise usable program omits it. Explicit verification still must be last, and success still requires executor evidence. This avoids discarding actions solely because a model forgot the terminator; it does not mark the program successful.
+
 CoreAI 0.2.1 accompanies Civilizations alpha.20. It adds the editable `navigation.clearance_blocks` parameter; the host's shared navigation executor consumes it during salvage searches. Agent lifecycle and backend interfaces remain compatible with 0.2.0. See Civilizations/ADAPTATION.md for the Minecraft recovery and material-processing changes.
 
 CoreAI provides a reusable agent lifecycle and a shared inference scheduler. It requires Java 25 and Gson; it has no Bukkit, Folia, Minecraft server, model weights or network-process dependency. Civilizations alpha.19 supplies the Minecraft adapters and the existing local model runtimes.

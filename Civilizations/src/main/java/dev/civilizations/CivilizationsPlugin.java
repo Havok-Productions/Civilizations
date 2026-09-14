@@ -895,7 +895,25 @@ public final class CivilizationsPlugin extends JavaPlugin
 
   @Override
   public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+    boolean detailed = args.length > 0 && args[0].equalsIgnoreCase("debug");
+    if (detailed) {
+      if (args.length == 1) {
+        sender.sendMessage(
+            "Optional diagnostics: /civ debug details | ai | design | coreai | plan | create");
+        sender.sendMessage(
+            "Villagers discover, plan and work automatically; these commands are not setup steps.");
+        return true;
+      }
+      args = Arrays.copyOfRange(args, 1, args.length);
+    }
     String sub = args.length == 0 ? "status" : args[0].toLowerCase(Locale.ROOT);
+    if (detailed && sub.equals("details")) sub = "status";
+    if (sub.equals("help")) {
+      sender.sendMessage(
+          "/civ: village progress | /civ inspect: nearest villager | /civ pause or resume");
+      sender.sendMessage("/civ debug: optional diagnostics. Routine village work is automatic.");
+      return true;
+    }
     if (sub.equals("status")) {
       sender.sendMessage(
           "Civilizations 2 | settlements="
@@ -904,17 +922,19 @@ public final class CivilizationsPlugin extends JavaPlugin
               + workers.size()
               + " state="
               + (loaded.get() ? "loaded" : "loading"));
-      sender.sendMessage("AI: " + inference.status());
-      sender.sendMessage(coreAi == null ? "CoreAI disabled" : coreAi.status());
-      if (experiments != null) sender.sendMessage("Live skills: " + experiments.status());
-      sender.sendMessage(
-          "Observed structure blocks available for repair: "
-              + settlements.values().stream().mapToInt(v -> v.repairBlocks().size()).sum());
-      sender.sendMessage(
-          "Discovery: loaded chunks; auto-enroll="
-              + autoDiscover
-              + "; pending chunks="
-              + discovery.pendingChunks());
+      if (detailed) {
+        sender.sendMessage("AI: " + inference.status());
+        sender.sendMessage(coreAi == null ? "CoreAI disabled" : coreAi.status());
+        if (experiments != null) sender.sendMessage("Live skills: " + experiments.status());
+        sender.sendMessage(
+            "Observed structure blocks available for repair: "
+                + settlements.values().stream().mapToInt(v -> v.repairBlocks().size()).sum());
+        sender.sendMessage(
+            "Discovery: loaded chunks; auto-enroll="
+                + autoDiscover
+                + "; pending chunks="
+                + discovery.pendingChunks());
+      }
       for (Settlement v : settlements.values()) {
         List<Job> jobs = v.jobs();
         sender.sendMessage(
@@ -927,10 +947,35 @@ public final class CivilizationsPlugin extends JavaPlugin
                 + jobs.size()
                 + " | "
                 + (v.paused() ? "paused" : "active"));
-        sender.sendMessage(
-            "  shared chests=" + v.chests() + "; " + String.join("; ", v.needs().constraints()));
+        if (detailed)
+          sender.sendMessage(
+              "  shared chests=" + v.chests() + "; " + String.join("; ", v.needs().constraints()));
+        else {
+          var activeDesigns =
+              v.designs().stream()
+                  .filter(d -> !v.allComplete(d.project()))
+                  .collect(
+                      java.util.stream.Collectors.groupingBy(
+                          DesignRecord::kind, java.util.stream.Collectors.counting()));
+          sender.sendMessage("  Projects underway: " + activeDesigns);
+          sender.sendMessage("  Planning: " + designs.status(v));
+        }
       }
-      workers.values().forEach(w -> sender.sendMessage(w.id().substring(0, 8) + ": " + w.status()));
+      if (detailed)
+        workers
+            .values()
+            .forEach(w -> sender.sendMessage(w.id().substring(0, 8) + ": " + w.status()));
+      else {
+        var activity =
+            workers.values().stream()
+                .collect(
+                    java.util.stream.Collectors.groupingBy(
+                        w -> w.status().split(" ", 2)[0], java.util.stream.Collectors.counting()));
+        sender.sendMessage("Villager activity: " + activity);
+        sender.sendMessage(
+            "Work is automatic. /civ inspect explains a nearby villager; /civ debug shows optional"
+                + " diagnostics.");
+      }
       return true;
     }
     if (sub.equals("design")) {
@@ -1057,9 +1102,7 @@ public final class CivilizationsPlugin extends JavaPlugin
         scan(v, player.getWorld(), true);
         sender.sendMessage("Terrain scan requested. Unloaded or unsafe sites are deferred.");
       }
-      default ->
-          sender.sendMessage(
-              "/civ status | create | pause | resume | plan | ai | design | inspect | coreai");
+      default -> sender.sendMessage("/civ | /civ inspect | /civ pause | /civ resume | /civ debug");
     }
     return true;
   }
@@ -1067,13 +1110,15 @@ public final class CivilizationsPlugin extends JavaPlugin
   @Override
   public List<String> onTabComplete(
       CommandSender sender, Command command, String alias, String[] args) {
-    return args.length == 1
-        ? List.of(
-                "status", "create", "pause", "resume", "plan", "ai", "design", "inspect", "coreai")
-            .stream()
-            .filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT)))
-            .toList()
-        : List.of();
+    List<String> choices =
+        args.length == 1
+            ? List.of("status", "inspect", "pause", "resume", "debug", "help")
+            : args.length == 2 && args[0].equalsIgnoreCase("debug")
+                ? List.of("details", "ai", "design", "coreai", "plan", "create")
+                : List.of();
+    return choices.stream()
+        .filter(s -> s.startsWith(args[args.length - 1].toLowerCase(Locale.ROOT)))
+        .toList();
   }
 
   private static Pos pos(Location l) {

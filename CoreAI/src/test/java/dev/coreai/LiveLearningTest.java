@@ -28,8 +28,11 @@ class LiveLearningTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> SkillProgram.parse(source.replace("\"x\":2", "\"x\":2147483648")));
+    var completed = SkillProgram.parse(source.replace("VERIFY", "WALK"));
+    assertEquals(3, completed.steps().size());
+    assertEquals(SkillProgram.Op.VERIFY, completed.steps().getLast().op());
     assertThrows(
-        IllegalArgumentException.class, () -> SkillProgram.parse(source.replace("VERIFY", "WALK")));
+        IllegalArgumentException.class, () -> SkillProgram.parse(source.replace("WALK", "VERIFY")));
     assertThrows(
         IllegalArgumentException.class,
         () -> SkillProgram.parse(source.replace("WALK", "PLACE_SUPPORT")));

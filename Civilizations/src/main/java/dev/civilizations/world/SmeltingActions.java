@@ -46,6 +46,14 @@ final class SmeltingActions {
     return batch != null && output.equals(item);
   }
 
+  boolean processing() {
+    return batch != null;
+  }
+
+  boolean resumePending(Pos at, long now) {
+    return batch != null && resume(output, at, now);
+  }
+
   boolean resume(String item, Pos at, long now) {
     if (!processing(item)) {
       var recipes = plugin.recipes().furnaceRecipes(item);
@@ -110,6 +118,36 @@ final class SmeltingActions {
       batch = null;
       pose.reset();
       return true;
+    }
+    if (furnace.getBurnTime() <= 0
+        && inv.getSmelting() != null
+        && (inv.getFuel() == null || inv.getFuel().getType().isAir())) {
+      var carried = InventoryOps.summary(actor.getInventory());
+      String fuel = SmeltingFuel.choose(carried, Map.of());
+      if (fuel != null
+          && pose.ready(location(p).getBlock(), now)
+          && plugin.mayChange(actor, location(p).getBlock(), "SMELT")
+          && InventoryOps.count(actor.getInventory(), Material.valueOf(fuel)) > 0) {
+        InventoryOps.remove(actor.getInventory(), Material.valueOf(fuel), 1);
+        inv.setFuel(new ItemStack(Material.valueOf(fuel), 1));
+        actor.swingMainHand();
+        lastProgress = now;
+        plugin.debug(
+            village.id(),
+            actor.getUniqueId().toString(),
+            "smelting_refuel",
+            Map.of(
+                "station",
+                p,
+                "fuel",
+                fuel,
+                "amount",
+                1,
+                "inventory_before",
+                carried,
+                "inventory_after",
+                InventoryOps.summary(actor.getInventory())));
+      }
     }
     if (cookTime != furnace.getCookTime()) {
       cookTime = furnace.getCookTime();

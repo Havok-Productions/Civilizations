@@ -40,7 +40,7 @@ public final class ToolActions {
   }
 
   public Map<String, Integer> needed(Job job, Map<String, Integer> inventory, Pos at, long now) {
-    if (job != null && smelting.processing(job.material)) return Map.of();
+    if (job != null && smelting.processing()) return Map.of();
     // Ranking asks about many candidates per tick; share observations, not repeated world scans.
     if (now >= stationCheck) {
       stationCheck = now + 1000;
@@ -89,6 +89,9 @@ public final class ToolActions {
   }
 
   public Preparation prepareItem(String outputItem, long now, Pos at) {
+    // A batch may produce an intermediate ingredient (charcoal for torches). Finish the
+    // deposited work before replanning from the now-empty inventory or changing recipes.
+    if (smelting.resumePending(at, now)) return new Preparation(false, "");
     Map<String, Integer> inventory = InventoryOps.summary(actor.getInventory());
     if (inventory.getOrDefault(outputItem, 0) > 0) return new Preparation(true, "");
     if (smelting.resume(outputItem, at, now)) return new Preparation(false, "");

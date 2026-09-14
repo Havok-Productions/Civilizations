@@ -1,5 +1,17 @@
 # Controller adaptation and activity recovery
 
+## Alpha.21: finish intermediate work and expose trial effort
+
+CoreAI 0.2.2 and Civilizations alpha.21 keep an active furnace batch attached to material preparation even when it produces an intermediate ingredient. Previously, a worker preparing TORCH could deposit a log for CHARCOAL and immediately ask for another log because only the final item was checked. Workers now collect the pending batch before replanning, and can replenish a furnace whose remaining burn time expires during cooking. Transfers and collected output have separate observed receipts.
+
+A recovery program that omits its final VERIFY receives a host-added verification instruction. Its original goal still must be physically checked; an explicit early VERIFY, unsupported operation or invalid coordinate remains an execution error. Trial outcomes now report total duration, execution duration, accumulated movement and the final instruction alongside actual blocks cleared/placed. A route-policy adoption based on three navigation outcomes establishes neither a completed building nor a measured speed improvement.
+
+Wall compilation permits a supported work position on either side of the contour, including a one-block ground-height difference when every placement remains within reach. Collision, access, protected positions, water and structural checks still apply. This does not establish that a complete wall can yet be built at every live site.
+
+`/civ` shows a short automatic-work summary; `/civ inspect` explains the nearest villager. Advanced details, model status, design records and manual diagnostics are grouped under `/civ debug`. Previous commands remain compatible. No command sequence is required to start autonomous work.
+
+The focused selection passed 110 JVM cases, including an uneven wall with 46 placements and protected-site rejection. The disposable `progress` workflow also passed: host-added VERIFY checked physical recovery, followed by sand-to-glass and charcoal-to-torch production/placement with exact leftovers. This is a deterministic executor check, not a live-model or full-wall benchmark.
+
 ## Alpha.20: observed progress blockers
 
 Alpha.20 uses CoreAI 0.2.1, Java 25 and Folia 26.1.2. Recovery instructions now use successive observed terrain maps instead of treating the immutable proposal map as the execution boundary. A distant WALK uses the shared mapped navigator, including natural obstacle clearance; a subsequent CLEAR or CLASSIFY obtains fresh local observations. SEARCH still updates the trial's editable search policy. Verified route transitions and actual clearance keep productive travel alive without claiming that its construction goal has completed. Navigation clearance work is now an exposed proposal parameter. Missing chunks remain unknown until observed; this does not generate arbitrary remote terrain or remove structures to satisfy a model claim.

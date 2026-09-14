@@ -34,9 +34,8 @@ public record SkillProgram(String explanation, List<Step> steps) {
     if (explanation.length() > 1000) throw new IllegalArgumentException("Explanation size");
     List<Step> steps = new ArrayList<>();
     JsonArray values = json.getAsJsonArray("steps");
-    if (values.size() < 2)
-      throw new IllegalArgumentException(
-          "At least one instruction and final verification are required");
+    if (values.isEmpty())
+      throw new IllegalArgumentException("At least one instruction is required");
     for (JsonElement entry : values) {
       JsonObject value = entry.getAsJsonObject();
       if (!value.keySet().equals(Set.of("op", "x", "y", "z", "material")))
@@ -63,8 +62,9 @@ public record SkillProgram(String explanation, List<Step> steps) {
         throw new IllegalArgumentException("VERIFY must be last and uses the host goal");
       steps.add(new Step(op, x, y, z, material));
     }
-    if (steps.getLast().op() != Op.VERIFY)
-      throw new IllegalArgumentException("Missing verification");
+    // Verification belongs to the host. A missing terminator need not discard usable actions;
+    // explicit VERIFY instructions still must be last and cannot change the original goal.
+    if (steps.getLast().op() != Op.VERIFY) steps.add(new Step(Op.VERIFY, 0, 0, 0, ""));
     return new SkillProgram(explanation, steps);
   }
 

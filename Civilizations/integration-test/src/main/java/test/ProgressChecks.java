@@ -119,8 +119,7 @@ final class ProgressChecks {
           {"explanation":"Observe beyond the original map, walk there, and clear the dirt from the work area.","steps":[
           {"op":"SEARCH","x":32,"y":0,"z":0,"material":""},
           {"op":"WALK","x":22,"y":0,"z":0,"material":""},
-          {"op":"CLEAR","x":24,"y":0,"z":2,"material":""},
-          {"op":"VERIFY","x":0,"y":0,"z":0,"material":""}]}
+          {"op":"CLEAR","x":24,"y":0,"z":2,"material":""}]}
           """;
       AtomicInteger calls = new AtomicInteger();
       ModelBackend fake =
@@ -312,9 +311,7 @@ final class ProgressChecks {
                               + " native fuel/cook cycle made glass; repaired target; eight"
                               + " cobblestone and one log consumed; one deterministic recovery"
                               + " request");
-                  experiments.close();
-                  queue.close();
-                  Bukkit.getGlobalRegionScheduler().execute(fixture, Bukkit::shutdown);
+                  torch(plugin, world, actor, village, glass.add(3, 0, 0), experiments, queue);
                 } else if (System.currentTimeMillis() > deadline)
                   throw new AssertionError(
                       "Glass workflow timeout: "
@@ -336,6 +333,71 @@ final class ProgressChecks {
     error.printStackTrace();
     fixture.getLogger().severe("PROGRESS FAIL: " + error);
     Bukkit.getGlobalRegionScheduler().execute(fixture, Bukkit::shutdown);
+  }
+
+  private void torch(
+      CivilizationsPlugin plugin,
+      World world,
+      Villager actor,
+      Settlement village,
+      Pos target,
+      RecoveryExperiments experiments,
+      InferenceQueue queue) {
+    actor
+        .getInventory()
+        .addItem(new ItemStack(Material.OAK_PLANKS, 1), new ItemStack(Material.STICK, 1));
+    Job job =
+        new Job(
+            Job.Kind.PLACE, "charcoal-torch", target, target.add(-1, 0, 0), "TORCH", "AIR", null);
+    village.addProject(job.project, List.of(job));
+    VillagerWorker worker = new VillagerWorker(plugin, actor, village);
+    worker.start();
+    long deadline = System.currentTimeMillis() + 90000;
+    actor
+        .getScheduler()
+        .runAtFixedRate(
+            fixture,
+            tick -> {
+              try {
+                if (job.complete) {
+                  worker.stop();
+                  tick.cancel();
+                  var inventory = InventoryOps.summary(actor.getInventory());
+                  if (world.getBlockAt(target.x(), target.y(), target.z()).getType()
+                          != Material.TORCH
+                      || inventory.getOrDefault("TORCH", 0) != 3
+                      || inventory.getOrDefault("CHARCOAL", 0) != 0
+                      || inventory.getOrDefault("OAK_LOG", 0) != 0
+                      || inventory.getOrDefault("STICK", 0) != 0
+                      || inventory.getOrDefault("OAK_PLANKS", 0) != 0
+                      || inventory.getOrDefault("DIRT", 0) != 1)
+                    throw new AssertionError(
+                        "Charcoal prerequisite was lost or not conserved: " + inventory);
+                  fixture
+                      .getLogger()
+                      .info(
+                          "CHARCOAL TORCH PASS: finished intermediate charcoal batch, supplied real"
+                              + " fuel, crafted four torches and placed one; retained three torches"
+                              + " and recovered dirt. Missing model VERIFY was supplied and checked"
+                              + " by host.");
+                  experiments.close();
+                  queue.close();
+                  Bukkit.getGlobalRegionScheduler().execute(fixture, Bukkit::shutdown);
+                } else if (System.currentTimeMillis() > deadline)
+                  throw new AssertionError(
+                      "Charcoal prerequisite timeout: "
+                          + worker.status()
+                          + " inventory="
+                          + InventoryOps.summary(actor.getInventory()));
+              } catch (Throwable failure) {
+                tick.cancel();
+                worker.stop();
+                fail(failure);
+              }
+            },
+            () -> fail(new AssertionError("Torch actor retired")),
+            1,
+            10);
   }
 
   private void farm(

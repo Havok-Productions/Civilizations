@@ -73,10 +73,11 @@ final class RouteDesign {
       Pos stand = null;
       for (int[] d :
           new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}}) {
-        if (!inside(b.points(), p.x() + d[0], p.z() + d[1])
-            || ring.contains(new Blueprint.Point(p.x() + d[0], p.z() + d[1]))) continue;
+        if (ring.contains(new Blueprint.Point(p.x() + d[0], p.z() + d[1]))) continue;
         Pos g = s.ground(p.x() + d[0], p.z() + d[1]);
-        if (g.y() == ground.y()
+        if (Math.abs(g.y() - ground.y()) <= 1
+            && ground.add(0, b.height(), 0).distance2(g.add(0, 1, 0)) <= 21
+            && Math.abs(ground.y() + b.height() - g.y() - 1) <= 3
             && !s.occupied.test(g)
             && !s.occupied.test(g.add(0, 1, 0))
             && !s.occupied.test(g.add(0, 2, 0))
@@ -87,7 +88,8 @@ final class RouteDesign {
           break;
         }
       }
-      s.require(stand != null, "Wall corner needs a clear interior working position");
+      s.require(
+          stand != null, "Wall needs a supported working position within reach on either side");
       if (p.equals(gate)) {
         Blueprint.Point prev = ring.get((i + ring.size() - 1) % ring.size());
         s.require(prev.x() == next.x() || prev.z() == next.z(), "Gate cannot occupy a corner");
