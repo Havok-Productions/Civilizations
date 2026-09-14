@@ -1,0 +1,16 @@
+name: Civilizations
+version: '2.0.0-alpha.17'
+main: dev.civilizations.CivilizationsPlugin
+api-version: '26.1.2'
+folia-supported: true
+author: yomamaeatstoes
+description: Local model agents and region-owned villager work
+commands:
+  civilizations:
+    aliases: [civ]
+    description: Manage local villager settlements
+    permission: civilizations.admin
+    usage: /civ status|inspect|create|pause|resume|plan|ai|design|coreai
+permissions:
+  civilizations.admin:
+    default: op

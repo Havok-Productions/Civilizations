@@ -13,3 +13,18 @@ bin/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local runtime, evidence and credentials
+__pycache__/
+*.pyc
+*.jar
+*.gguf
+*.log
+*.jsonl
+.env
+.env.*
+plugins/
+logs/
+verification/
+test-results/
+process-owner.json

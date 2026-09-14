@@ -1,0 +1,353 @@
+package dev.coreai;
+
+import com.google.gson.Gson;
+import java.io.IOException;
+import java.nio.file.*;
+import java.security.*;
+import java.util.*;
+
+/** Versioned expression programs; only the host evaluator can promote or roll them back. */
+public final class PolicyLibrary {
+  public record Provenance(
+      String model, String artifact, String sha256, String license, String use) {}
+
+  public record Version(String id, String source, Provenance teacher, long created) {}
+
+  public record Evaluation(boolean accepted, int improvements, int regressions, String reason) {}
+
+  public record Ranking(String version, List<PolicyCase.Option> options) {}
+
+  private record Active(Version version, PolicyProgram program) {}
+
+  private record State(
+      Version active,
+      List<Version> history,
+      Set<String> rejected,
+      int strikes,
+      List<PolicyCase> replay,
+      boolean liveValidated) {}
+
+  private static final Gson JSON = new Gson();
+  private final Path file;
+  private final List<PolicyCase> guards;
+  private final Deque<PolicyCase> replay = new ArrayDeque<>();
+  private final List<Version> history = new ArrayList<>();
+  private final Set<String> rejected = new LinkedHashSet<>();
+  private volatile Active active = baseline();
+  private int strikes;
+  private boolean liveValidated;
+  private Trial trial;
+
+  private static final class Trial {
+    final Active candidate;
+    final long expires;
+    String worker;
+    int successes;
+
+    Trial(Active candidate) {
+      this.candidate = candidate;
+      expires = System.currentTimeMillis() + 300_000;
+    }
+  }
+
+  public PolicyLibrary(Path folder, List<PolicyCase> guards) throws IOException {
+    Files.createDirectories(folder);
+    this.file = folder.resolve("state.json");
+    this.guards = List.copyOf(guards);
+    if (Files.exists(file)) {
+      if (Files.size(file) > 512_000) throw new IOException("Policy state exceeds limit");
+      try {
+        State state = JSON.fromJson(Files.readString(file), State.class);
+        if (state.history.size() > 32 || state.rejected.size() > 128)
+          throw new IllegalArgumentException("History limit");
+        if (state.replay.size() > 32) throw new IllegalArgumentException("Replay limit");
+        state.replay.forEach(this::remember);
+        history.addAll(state.history);
+        rejected.addAll(state.rejected);
+        strikes = state.strikes;
+        PolicyProgram code = PolicyProgram.compile(state.active.source);
+        if (state.active.id.equals("baseline") && !state.active.source.equals("base"))
+          throw new IllegalArgumentException("Baseline source changed");
+        if (!state.active.id.equals("baseline")
+            && !state.active.id.equals(digest(state.active.source)))
+          throw new IllegalArgumentException("Policy digest mismatch");
+        if (!state.active.id.equals("baseline")
+            && !state.liveValidated
+            && !evaluate(code, baseline().program).accepted)
+          throw new IllegalArgumentException("Policy no longer passes guards");
+        liveValidated = state.liveValidated;
+        active = new Active(state.active, code);
+      } catch (RuntimeException e) {
+        throw new IOException("Invalid saved policy; host must retain baseline", e);
+      }
+    }
+  }
+
+  private static Active baseline() {
+    return new Active(
+        new Version(
+            "baseline", "base", new Provenance("host", "builtin", "", "project", "reference"), 0),
+        PolicyProgram.compile("base"));
+  }
+
+  public Version version() {
+    return active.version;
+  }
+
+  public Ranking rank(List<PolicyCase.Option> options) {
+    if (options.size() > 16) throw new IllegalArgumentException("Candidate limit: 16");
+    Active snap = active;
+    List<PolicyCase.Option> sorted =
+        options.stream()
+            .sorted(Comparator.comparingDouble(o -> snap.program.score(o.features())))
+            .toList();
+    return new Ranking(snap.version.id, sorted);
+  }
+
+  /**
+   * Only a different choice on one worker counts as an experiment. Host candidates remain
+   * authoritative.
+   */
+  public synchronized Ranking rankForWorker(List<PolicyCase.Option> options, String worker) {
+    Ranking incumbent = rank(options);
+    if (trial == null) return incumbent;
+    if (System.currentTimeMillis() > trial.expires) {
+      trial = null;
+      return incumbent;
+    }
+    if (trial.worker != null && !trial.worker.equals(worker)) return incumbent;
+    List<PolicyCase.Option> sorted =
+        options.stream()
+            .sorted(Comparator.comparingDouble(o -> trial.candidate.program.score(o.features())))
+            .toList();
+    if (sorted.isEmpty() || sorted.getFirst().id().equals(incumbent.options.getFirst().id()))
+      return incumbent;
+    if (trial.worker == null) trial.worker = worker;
+    return new Ranking("trial:" + trial.candidate.version.id, sorted);
+  }
+
+  public synchronized Evaluation stageTrial(String source, Provenance teacher) {
+    PolicyProgram code = PolicyProgram.compile(source);
+    String id = digest(source);
+    if (trial != null && System.currentTimeMillis() <= trial.expires)
+      return new Evaluation(false, 0, 0, "Another candidate is awaiting live evidence");
+    if (source.equals(active.version.source)
+        || id.equals(active.version.id)
+        || rejected.contains(id))
+      return new Evaluation(false, 0, 0, "Unchanged or previously rolled-back candidate");
+    Evaluation replay = evaluate(code, active.program);
+    trial =
+        new Trial(new Active(new Version(id, source, teacher, System.currentTimeMillis()), code));
+    return new Evaluation(
+        true,
+        replay.improvements,
+        replay.regressions,
+        "One-worker live trial staged; replay is advisory; not adopted");
+  }
+
+  public synchronized String trialOutcome(String version, String worker, boolean success)
+      throws IOException {
+    if (trial != null && System.currentTimeMillis() > trial.expires) trial = null;
+    if (trial == null
+        || !version.equals("trial:" + trial.candidate.version.id)
+        || !Objects.equals(worker, trial.worker)) return "";
+    if (!success) {
+      String id = trial.candidate.version.id;
+      trial = null;
+      rejected.add(id);
+      while (rejected.size() > 128) rejected.remove(rejected.iterator().next());
+      write(
+          new State(
+              active.version,
+              List.copyOf(history),
+              Set.copyOf(rejected),
+              strikes,
+              List.copyOf(replay),
+              liveValidated));
+      return "live_trial_suspended";
+    }
+    if (++trial.successes < 3) return "live_trial_progress";
+    Active candidate = trial.candidate;
+    List<Version> nextHistory = new ArrayList<>(history);
+    nextHistory.add(active.version);
+    if (nextHistory.size() > 32) nextHistory.removeFirst();
+    write(
+        new State(
+            candidate.version,
+            List.copyOf(nextHistory),
+            Set.copyOf(rejected),
+            0,
+            List.copyOf(replay),
+            true));
+    history.clear();
+    history.addAll(nextHistory);
+    active = candidate;
+    liveValidated = true;
+    strikes = 0;
+    trial = null;
+    return "live_trial_adopted_after_three_observed_outcomes";
+  }
+
+  public synchronized String trialStatus() {
+    return trial == null
+        ? "none"
+        : "candidate="
+            + trial.candidate.version.id.substring(0, 12)
+            + ", worker="
+            + trial.worker
+            + ", successes="
+            + trial.successes;
+  }
+
+  public synchronized List<PolicyCase> cases() {
+    List<PolicyCase> all = new ArrayList<>(guards);
+    all.addAll(replay);
+    return List.copyOf(all);
+  }
+
+  public synchronized List<Map<String, Object>> report() {
+    PolicyProgram code = active.program;
+    return cases().stream()
+        .map(
+            sample -> {
+              var compact =
+                  sample.options().stream()
+                      .map(
+                          option -> {
+                            Map<String, Double> nonzero = new TreeMap<>();
+                            option
+                                .features()
+                                .forEach(
+                                    (k, v) -> {
+                                      if (v != 0 || k.equals("base")) nonzero.put(k, v);
+                                    });
+                            return Map.of("id", option.id(), "features", nonzero);
+                          })
+                      .toList();
+              return Map.<String, Object>of(
+                  "id",
+                  sample.id(),
+                  "basis",
+                  sample.basis(),
+                  "options",
+                  compact,
+                  "preferred",
+                  sample.preferred(),
+                  "current_choice",
+                  PolicyCase.best(code, sample.options()),
+                  "passing",
+                  sample.passes(code));
+            })
+        .toList();
+  }
+
+  public synchronized void remember(PolicyCase sample) {
+    if (sample.options().size() < 2
+        || sample.options().size() > 16
+        || sample.options().stream().noneMatch(o -> o.id().equals(sample.preferred()))) return;
+    sample.options().forEach(o -> baseline().program.score(o.features()));
+    if (replay.size() == 32) replay.removeFirst();
+    replay.addLast(sample);
+  }
+
+  private Evaluation evaluate(PolicyProgram candidate, PolicyProgram incumbent) {
+    int better = 0, worse = 0;
+    for (PolicyCase sample : cases()) {
+      boolean old = sample.passes(incumbent), next = sample.passes(candidate);
+      if (old && !next) worse++;
+      if (!old && next) better++;
+    }
+    return new Evaluation(
+        worse == 0 && better > 0,
+        better,
+        worse,
+        worse > 0
+            ? "Regression in host-labeled replay"
+            : better == 0 ? "No measured replay improvement" : "Replay improved; live probation");
+  }
+
+  public synchronized Evaluation propose(String source, Provenance teacher) throws IOException {
+    PolicyProgram candidate = PolicyProgram.compile(source);
+    String id = digest(source);
+    if (rejected.contains(id)) return new Evaluation(false, 0, 0, "Previously rolled back");
+    Evaluation result = evaluate(candidate, active.program);
+    if (result.accepted) {
+      Active previous = active;
+      history.add(previous.version);
+      if (history.size() > 32) history.removeFirst();
+      Version version = new Version(id, source, teacher, System.currentTimeMillis());
+      // Publish only after persistence succeeds. No candidate can supply a path or execute host IO.
+      write(
+          new State(
+              version, List.copyOf(history), Set.copyOf(rejected), 0, List.copyOf(replay), false));
+      strikes = 0;
+      liveValidated = false;
+      trial = null;
+      active = new Active(version, candidate);
+    }
+    return result;
+  }
+
+  public synchronized boolean outcome(String version, boolean success) throws IOException {
+    if (active.version.id.equals("baseline") || !active.version.id.equals(version)) return false;
+    strikes = success ? 0 : strikes + 1;
+    if (strikes < 3) {
+      write(
+          new State(
+              active.version,
+              List.copyOf(history),
+              Set.copyOf(rejected),
+              strikes,
+              List.copyOf(replay),
+              liveValidated));
+      return false;
+    }
+    rollback();
+    return true;
+  }
+
+  public synchronized void rollback() throws IOException {
+    trial = null;
+    liveValidated = false;
+    Active old = active;
+    active = baseline();
+    strikes = 0;
+    if (!old.version.id.equals("baseline")) rejected.add(old.version.id);
+    while (rejected.size() > 128) rejected.remove(rejected.iterator().next());
+    // Conservative rollback always restores the known host baseline.
+    write(
+        new State(
+            baseline().version,
+            List.copyOf(history),
+            Set.copyOf(rejected),
+            0,
+            List.copyOf(replay),
+            false));
+    active = baseline();
+    strikes = 0;
+  }
+
+  private void write(State state) throws IOException {
+    Path temporary = file.resolveSibling("state.tmp");
+    String json = JSON.toJson(state);
+    if (json.length() > 500_000) throw new IOException("Policy state size limit");
+    Files.writeString(temporary, json);
+    try {
+      Files.move(
+          temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    } catch (AtomicMoveNotSupportedException e) {
+      Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
+    }
+  }
+
+  private static String digest(String source) {
+    try {
+      return HexFormat.of()
+          .formatHex(
+              MessageDigest.getInstance("SHA-256")
+                  .digest(source.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+}

@@ -1,0 +1,155 @@
+package dev.civilizations.world;
+
+import dev.civilizations.core.*;
+import dev.civilizations.navigation.*;
+import java.util.*;
+import java.util.concurrent.*;
+import org.bukkit.World;
+
+/** Shares bounded snapshot/search admission and failed transition memory across villagers. */
+public final class NavigationService implements AutoCloseable {
+  public record Plan(
+      String id,
+      String file,
+      NavigationMap map,
+      TerrainRouteSearch.Result route,
+      Pos target,
+      int reach2) {}
+
+  private final RegionSnapshots snapshots;
+  private final Executor executor;
+  private final NavigationArchive archive;
+  private final Semaphore admission = new Semaphore(4);
+  private final ConcurrentHashMap<String, RouteMemory> memories = new ConcurrentHashMap<>();
+  private final int radius;
+  private final boolean salvage;
+  private volatile dev.coreai.TerrainRuleBook rules;
+  private volatile int maximumRadius = 48;
+
+  public void rules(dev.coreai.TerrainRuleBook rules, int maximum) {
+    this.rules = rules;
+    maximumRadius = Math.clamp(maximum, 20, 48);
+  }
+
+  public int radiusFor(String worker) {
+    return rules == null ? radius : rules.radius(worker, radius, maximumRadius);
+  }
+
+  public int maximumRadius() {
+    return maximumRadius;
+  }
+
+  public NavigationService(
+      RegionSnapshots snapshots,
+      Executor executor,
+      NavigationArchive archive,
+      int radius,
+      boolean salvage) {
+    this.snapshots = snapshots;
+    this.executor = executor;
+    this.archive = archive;
+    this.radius = radius;
+    this.salvage = salvage;
+    archive.loadMemory().entrySet().stream()
+        .limit(128)
+        .forEach(
+            e -> {
+              RouteMemory m = new RouteMemory();
+              m.restore(e.getValue(), System.currentTimeMillis());
+              memories.put(e.getKey(), m);
+            });
+  }
+
+  private synchronized RouteMemory memory(String village) {
+    if (!memories.containsKey(village) && memories.size() >= 128)
+      memories.remove(memories.keys().nextElement());
+    return memories.computeIfAbsent(village, k -> new RouteMemory());
+  }
+
+  public CompletableFuture<Plan> request(
+      World world, Settlement village, String worker, Pos from, Pos target, int reach2) {
+    if (!admission.tryAcquire())
+      return CompletableFuture.failedFuture(
+          new RejectedExecutionException("navigation_search_queue_full"));
+    try {
+      int searchRadius = radiusFor(worker);
+      Set<Pos> protectedBlocks = new HashSet<>(village.layoutOccupancy());
+      village
+          .snapshot()
+          .playerBlocks
+          .forEach(
+              s -> {
+                String[] xyz = s.split(",");
+                if (xyz.length == 3)
+                  try {
+                    protectedBlocks.add(
+                        new Pos(
+                            Integer.parseInt(xyz[0]),
+                            Integer.parseInt(xyz[1]),
+                            Integer.parseInt(xyz[2])));
+                  } catch (NumberFormatException ignored) {
+                  }
+              });
+      RouteMemory memory = memory(village.id());
+      return snapshots
+          .capture(world, from, searchRadius)
+          .thenApplyAsync(
+              terrain -> {
+                NavigationMap map =
+                    NavigationTerrain.capture(
+                        terrain, from, searchRadius, protectedBlocks, rules, worker);
+                Set<TerrainRouteSearch.Edge> rejected =
+                    memory.blocked(map, System.currentTimeMillis());
+                TerrainRouteSearch.Result route =
+                    TerrainRouteSearch.search(
+                        map, from, target, reach2, rejected, 0, searchBudget(searchRadius));
+                if (route.steps().isEmpty() && !route.reached() && salvage)
+                  route =
+                      TerrainRouteSearch.search(
+                          map, from, target, reach2, rejected, 4, searchBudget(searchRadius));
+                String id = UUID.randomUUID().toString(),
+                    file = archive.save(id, village.id(), worker, map, route);
+                return new Plan(id, file, map, route, target, reach2);
+              },
+              executor)
+          .whenComplete((p, error) -> admission.release());
+    } catch (RuntimeException error) {
+      admission.release();
+      throw error;
+    }
+  }
+
+  public void reject(String village, TerrainRouteSearch.Edge edge, NavigationMap map, long now) {
+    memory(village).reject(edge, map, now);
+    persist();
+  }
+
+  private void persist() {
+    Map<String, List<RouteMemory.Saved>> values = new HashMap<>();
+    long now = System.currentTimeMillis();
+    memories.forEach(
+        (k, v) -> {
+          var entries = v.snapshot(now);
+          if (!entries.isEmpty()) values.put(k, entries);
+        });
+    archive.saveMemory(Map.copyOf(values));
+  }
+
+  public static int searchBudget(int radius) {
+    return Math.clamp(radius * radius * 30, 12000, 48000);
+  }
+
+  public int radius() {
+    return radiusFor("");
+  }
+
+  public long droppedMaps() {
+    return archive.dropped();
+  }
+
+  public void close() {
+    persist();
+    archive.close();
+    memories.clear();
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "sections": {
+    "navigation": "Terrain search, obstacle safety, route memory and route-policy integration",
+    "crafting": "Current recipes, ingredient conservation, mining tiers and stored prerequisites",
+    "storage": "Chest selection, transfers, donations and whole-task surplus rules",
+    "design": "Surveys, layouts, protection, construction prerequisites and repairs",
+    "tasks": "Claims, task order, recovery budgets, commitments and completion receipts",
+    "settlements": "Discovery policy, village connections, merging and saved state",
+    "inference": "Local request queue, response validation and recovery/model routing",
+    "runtime": "Local process ownership, ports, archives, logs and restart backoff",
+    "coreai": "Policy interpreter, replay/promotion, rollback and host adapters",
+    "diagnostics": "Failure classification, journal persistence and outcome evidence"
+  },
+  "source_rules": [
+    {"patterns": ["*/WorkerTuning.java", "*/WorkPose.java"], "sections": ["coreai", "navigation", "design", "tasks"]},
+    {"patterns": ["*/WorkerSkillTrial.java", "*/SkillRuleActions.java", "*/BlockObservation.java", "*/SkillContext.java", "*/RecoveryExperiments.java"], "sections": ["coreai", "navigation", "inference"]},
+    {"patterns": ["CoreAI/**"], "sections": ["coreai"]},
+    {"patterns": ["*/navigation/*", "*/WorkerNavigation.java", "*/Navigation*.java", "*/RouteClearance.java", "*/WorkMovementControl.java"], "sections": ["navigation"]},
+    {"patterns": ["*/CraftingBook.java", "*/ServerRecipes.java", "*/ToolActions.java", "*/ToolRecipes.java", "*/WorkerStations.java", "*/MiningTools.java"], "sections": ["crafting"]},
+    {"patterns": ["*/InventoryOps.java", "*/ChestSupplies.java", "*/Storage*.java", "*/TransferReceipts.java", "*/DonationPolicy.java", "*/SupplyRequests.java", "*/RecipeCatalog.java"], "sections": ["storage", "crafting"]},
+    {"patterns": ["*/design/*", "*/Planner.java", "*/VillageRepairs.java", "*/BuildingActions.java", "*/ClearingActions.java", "*/SiteMaterials.java"], "sections": ["design"]},
+    {"patterns": ["*/Task*.java", "*/WorkerPlan.java", "*/RecoveryPolicy.java", "*/VillageThinkingBudget.java", "*/VillageNeeds.java"], "sections": ["tasks"]},
+    {"patterns": ["*/Settlement.java", "*/StateStore.java", "*/VillageKnowledge.java", "*/VillageConnections.java", "*/LoadedVillagerDiscovery.java"], "sections": ["settlements", "tasks", "storage"]},
+    {"patterns": ["*/ai/Local*.java", "*/ai/Runtime*.java"], "sections": ["runtime"]},
+    {"patterns": ["*/ai/*"], "sections": ["inference"]},
+    {"patterns": ["*/learning/*"], "sections": ["coreai", "inference"]},
+    {"patterns": ["*/DebugJournal.java", "*/Failure*.java", "*/inspect_navigation.py"], "sections": ["diagnostics"]},
+    {"patterns": ["*/RegionSnapshots.java", "*/Terrain.java", "*/BlockRules.java"], "sections": ["navigation", "design"]}
+  ],
+  "physical_scenarios": {
+    "rule-learning": "Actual workers classify and clear clutter, finish two repairs, then reuse the rule without another model request",
+    "live-skill": "Fake proposal through actual Folia support placement, walking and persisted outcome",
+    "navigation": "Solid-wall detour, natural clearing, multi-map travel and verified repair; no station follow-up",
+    "crafting": "Only inaccessible-table recovery, real local station and stone pickaxe",
+    "repair": "Simple recorded-damage repair baseline; use instead of navigation when terrain is irrelevant",
+    "autonomy": "Empty inventory to nearby wood, crafting and repair, with competing villager POI",
+    "inference-busy": "Work continues while a fake model backend is deliberately held pending",
+    "workflow": "Inventory/crafting/building physical interactions",
+    "observations": "Local resources and real chest/inventory observations",
+    "connections": "Physical village membership and merging",
+    "discovery": "Loaded-chunk enrollment without a player",
+    "manual-village": "Explicit exploratory full village; not a pass/fail release gate"
+  }
+}

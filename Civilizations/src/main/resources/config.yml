@@ -1,0 +1,130 @@
+# Civilizations 2: a separate replacement for Hearth 1.x.
+# Latest verified Folia: 26.2 build 7 BETA, Java 25 (2026-09-14).
+villagers:
+  # This is an enrollment limit, not a boundary that creates another village.
+  per-village: 20
+  max-villages: 4
+  auto-discover: true
+  # Automatically enroll adult villagers in loaded chunks, even without players.
+  # Existing workers always reconnect; no chunks are force-loaded by discovery.
+  discovery-chunks-per-tick: 16
+  movement-speed: 0.6
+  work-interval-ticks: 20
+  think-interval-seconds: 30
+village:
+  # Same-world villager proximity links are transitive. Existing nearby groups
+  # combine without moving items; their chests, projects and members are kept.
+  repair-existing-structures: true
+  connection-distance: 48
+  connection-height: 16
+  initial-radius: 12
+  maximum-radius: 24
+  scan-radius: 48
+  wall-height: 3
+  # Recorded player placements and planned structure blocks are protected.
+  # Repair is limited to this plugin's recorded structures.
+  mine-depth: 12
+  mine-length: 12
+  auto-expand: true
+  lights: true
+  design:
+    # Local AI proposes layouts from a terrain map; exact validation creates jobs.
+    # Existing projects remain. False restores fixed-template planning.
+    enabled: true
+    interval-seconds: 180
+    # One extra supply-mine slot can unblock otherwise unfunded projects.
+    max-active-projects: 2
+ai:
+  enabled: true
+  # managed starts the downloaded local runtime. endpoint connects to an
+  # already-running LOCAL compatible server. Both keep inference on this host.
+  backend: managed
+  endpoint: 'http://127.0.0.1:8642/v1'
+  model-id: civilizations-local
+  timeout-seconds: 45
+  max-output-tokens: 180
+  queue-capacity: 32
+  # Routine job choice, movement, gathering and crafting execute without inference.
+  routine-decisions: false
+  thinking: false
+  # Automatic recovery after repeated
+  # failures / 90 seconds without task progress using this separate switch.
+  thinking-when-stuck: true
+  recovery-cooldown-seconds: 120
+  # Reserve output space for a final actionable answer.
+  reasoning-budget-tokens: 768
+  thinking-output-tokens: 2048
+  thinking-timeout-seconds: 60
+  temperature: 0.2
+  runtime:
+    release: b10948
+    # auto selects Vulkan on Windows/Linux x64, CPU fallback on startup failure.
+    # cuda is opt-in on Windows x64 and installs BOTH runtime packages.
+    accelerator: auto
+    port: 8642
+    threads: 4
+    context-size: 8192
+    startup-timeout-seconds: 240
+  model:
+    # Unsloth supplies this quantization of Qwen's open model.
+    # Pin the revision and SHA-256; change these together when swapping models.
+    url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf'
+    file: 'Qwen3.5-4B-Q4_K_M.gguf'
+    sha256: '00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4'
+    bytes: 2740937888
+    # Only send Qwen's chat template option to compatible models. Set false
+    # for a replacement model/runtime that does not accept enable_thinking.
+    supports-thinking-option: true
+
+  # Independent local reasoning engine. Recovery goes here directly; failed Qwen
+  # designs escalate once. Inference remains serialized; both models occupy memory.
+  deep-thinking:
+    enabled: true
+    backend: managed
+    model-id: civilizations-deep
+    timeout-seconds: 120
+    thinking-timeout-seconds: 120
+    reasoning-budget-tokens: 768
+    thinking-output-tokens: 4096
+    thinking: true
+    temperature: 0.6
+    runtime:
+      release: b10948
+      accelerator: auto
+      port: 8652
+      threads: 4
+      context-size: 8192
+      startup-timeout-seconds: 300
+    model:
+      url: 'https://huggingface.co/unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF/resolve/eb48357c179d34dbf515983f798dfb8752a0f261/DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf'
+      file: 'DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf'
+      sha256: 'a86349a4180c4e6bb43f874c29c404fa2be3f90b15509bd6d86f697dba724ec1'
+      bytes: 5027785216
+      supports-thinking-option: false
+
+# Structured outcomes and concise observations, never model private reasoning.
+debug:
+  enabled: true
+  # Active file plus four rotated files.
+  file-megabytes: 4
+# CoreAI runs bounded decision programs locally. Model calls occur only after repeated failures,
+# on an otherwise idle inference queue, at most once per interval across the whole server.
+# Data and policy versions live in plugins/Civilizations/CoreAI/.
+core-ai:
+  enabled: true
+  adapt: true
+  interval-seconds: 600
+  # Ranking changes first receive a one-worker live trial; replay is advisory.
+  live-trials:
+    enabled: true
+  # On route failure, generate finite walking/clearing/support-placement programs.
+  # One active pilot, actual materials, observed arrival, remembered outcomes.
+  live-skills:
+    enabled: true
+
+# Bounded local terrain search, with no forced chunk loads.
+navigation:
+  search-radius: 20
+  # AI may trial a wider or narrower loaded map and keep a verified search policy.
+  max-adaptive-search-radius: 48
+  clear-natural-obstacles: true

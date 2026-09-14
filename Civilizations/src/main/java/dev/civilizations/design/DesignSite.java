@@ -1,0 +1,116 @@
+package dev.civilizations.design;
+
+import dev.civilizations.core.*;
+import dev.civilizations.world.*;
+import java.util.*;
+import java.util.function.Predicate;
+
+/** Exact, pure validation and job compilation; never reads a live world. */
+final class DesignSite {
+  final Terrain terrain;
+  final Pos center;
+  final String project;
+  final Predicate<Pos> occupied;
+  final List<Job> jobs = new ArrayList<>();
+  final Set<Pos> reserved = new HashSet<>();
+  final Map<Pos, String> placed = new HashMap<>();
+
+  DesignSite(Terrain terrain, Pos center, String project, Predicate<Pos> occupied) {
+    this.terrain = terrain;
+    this.center = center;
+    this.project = project;
+    this.occupied = occupied;
+  }
+
+  void require(boolean yes, String error) {
+    if (!yes) throw new IllegalArgumentException(error);
+  }
+
+  Pos ground(int x, int z) {
+    require(
+        Math.abs((long) x) <= 24 && Math.abs((long) z) <= 24,
+        "Design exceeds +/-24 block map bounds");
+    int wx = center.x() + x, wz = center.z() + z;
+    require(terrain.available(wx, wz), "Unloaded terrain at " + x + "," + z);
+    Pos ground = new Pos(wx, terrain.groundHeight(wx, wz), wz);
+    while ("AIR".equals(placed.get(ground))) ground = ground.add(0, -1, 0);
+    return ground;
+  }
+
+  String type(Pos p) {
+    return placed.getOrDefault(p, terrain.type(p));
+  }
+
+  boolean clear(Pos p) {
+    return placed.containsKey(p)
+        ? Set.of("AIR", "TORCH").contains(placed.get(p))
+        : terrain.clear(p);
+  }
+
+  boolean solid(Pos p) {
+    return placed.containsKey(p)
+        ? Set.of("COBBLESTONE", "OAK_PLANKS", "DIRT_PATH").contains(placed.get(p))
+        : terrain.natural(p) || Set.of("FARMLAND", "DIRT_PATH").contains(terrain.type(p));
+  }
+
+  void reserve(Pos p) {
+    require(
+        Math.abs((long) p.x() - center.x()) <= 26 && Math.abs((long) p.z() - center.z()) <= 26,
+        "Access extends beyond map");
+    require(!terrain.type(p).equals("UNKNOWN"), "Unknown block at " + p.key());
+    require(
+        !occupied.test(p), "Existing structure, reserved access, or player block at " + p.key());
+    reserved.add(p);
+  }
+
+  void open(Pos p) {
+    reserve(p);
+    require(clear(p), "Obstructed space at " + p.key());
+  }
+
+  Pos standNear(Pos target) {
+    for (int dy : new int[] {0, -1, 1, -2, -3})
+      for (int[] d : new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+        Pos p = target.add(d[0], dy, d[1]);
+        if (clear(p)
+            && clear(p.add(0, 1, 0))
+            && solid(p.add(0, -1, 0))
+            && !occupied.test(p)
+            && !occupied.test(p.add(0, -1, 0))
+            && terrain.dry(p)) return p;
+      }
+    throw new IllegalArgumentException("No supported working position near " + target.key());
+  }
+
+  void add(Job.Kind kind, Pos target, Pos stand, String material, String data, int phase) {
+    require(jobs.size() < 512, "Design exceeds 512 block actions");
+    require(
+        target.distance2(stand) <= 21 && Math.abs(target.y() - stand.y()) <= 3,
+        "Block is beyond ordinary villager reach");
+    reserve(target);
+    reserve(stand);
+    reserve(stand.add(0, 1, 0));
+    reserve(stand.add(0, -1, 0));
+    require(
+        clear(stand) && clear(stand.add(0, 1, 0)) && solid(stand.add(0, -1, 0)),
+        "Unusable work position " + stand.key());
+    require(
+        !placed.containsKey(target) || (kind == Job.Kind.PLACE && "AIR".equals(placed.get(target))),
+        "Two actions occupy " + target.key());
+    if (kind == Job.Kind.PLACE) {
+      require(clear(target), "Build space is occupied at " + target.key());
+      require(terrain.dry(target), "Water or unavailable surroundings at " + target.key());
+      // House roofs may span between already built walls; all other blocks require support.
+      if (!material.equals("OAK_PLANKS"))
+        require(solid(target.add(0, -1, 0)), "Missing support at " + target.key());
+    }
+    Job j = new Job(kind, project, target, stand, material, terrain.type(target), data);
+    j.phase = phase;
+    jobs.add(j);
+    placed.put(
+        target,
+        (kind == Job.Kind.MINE || kind == Job.Kind.CLEAR)
+            ? "AIR"
+            : kind == Job.Kind.PATH ? "DIRT_PATH" : material);
+  }
+}

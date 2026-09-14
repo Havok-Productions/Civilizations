@@ -1,0 +1,9 @@
+name: CivFixture
+main: test.Fixture
+version: '1'
+api-version: '26.1.2'
+folia-supported: true
+depend: [Civilizations]
+commands:
+  fixtest:
+    permission: op
