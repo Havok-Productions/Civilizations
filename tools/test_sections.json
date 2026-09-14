@@ -12,6 +12,9 @@
     "diagnostics": "Failure classification, journal persistence and outcome evidence"
   },
   "source_rules": [
+    {"patterns": ["*/FarmingActions.java"], "sections": ["crafting", "tasks", "design"]},
+    {"patterns": ["*/SmeltingActions.java", "*/SmeltingFuel.java"], "sections": ["crafting", "storage", "tasks"]},
+    {"patterns": ["*/ResourceSurvey.java", "*/GatheringActions.java", "*/NearbyResources.java", "*/MaterialSources.java"], "sections": ["navigation", "crafting"]},
     {"patterns": ["CoreAI/src/main/java/dev/coreai/reasoning/*"], "sections": ["coreai", "inference"]},
     {"patterns": ["*/VillagerMind.java"], "sections": ["coreai", "tasks", "diagnostics"]},
     {"patterns": ["*/WorkerTuning.java", "*/WorkPose.java", "*/WorkPositions.java"], "sections": ["coreai", "navigation", "design", "tasks"]},
@@ -41,6 +44,7 @@
     "observations": "Local resources and real chest/inventory observations",
     "connections": "Physical village membership and merging",
     "discovery": "Loaded-chunk enrollment without a player",
-    "manual-village": "Explicit exploratory full village; not a pass/fail release gate"
+    "manual-village": "Explicit exploratory full village; not a pass/fail release gate",
+    "progress": "One disposable-world case: expanded recovery map, real dirt clearance, sand gathering, furnace crafting and native smelting, glass placement"
   }
 }

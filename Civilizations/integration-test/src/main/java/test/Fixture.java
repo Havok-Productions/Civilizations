@@ -25,6 +25,10 @@ public class Fixture extends JavaPlugin {
       return;
     }
     switch (scenario) {
+      case PROGRESS -> {
+        new ProgressChecks(this).start();
+        return;
+      }
       case RULE_LEARNING -> {
         new RuleLearningChecks(this).start();
         return;

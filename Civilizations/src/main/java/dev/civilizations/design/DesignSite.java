@@ -29,7 +29,9 @@ final class DesignSite {
   Pos ground(int x, int z) {
 
     int wx = Math.addExact(center.x(), x), wz = Math.addExact(center.z(), z);
-    require(terrain.available(wx, wz), "Unloaded terrain at " + x + "," + z);
+    require(
+        terrain.available(wx, wz),
+        "Terrain not observed at " + x + "," + z + "; consult snapshot coverage and retry");
     Pos ground = new Pos(wx, terrain.groundHeight(wx, wz), wz);
     while ("AIR".equals(placed.get(ground))) ground = ground.add(0, -1, 0);
     return ground;

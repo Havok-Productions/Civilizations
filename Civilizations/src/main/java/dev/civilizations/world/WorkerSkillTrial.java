@@ -23,9 +23,14 @@ public final class WorkerSkillTrial {
   private final BiConsumer<Boolean, String> completed;
   private RecoveryExperiments.Trial trial;
   private SkillProgram program;
+  private final WorkerNavigation instructionNavigation;
+  private NavigationMap instructionMap;
+  private java.util.concurrent.CompletableFuture<NavigationService.Plan> observation;
+  private long nextObservation;
+  private Pos lastProgress;
   private int index, placed, cleared;
   private long deadline, stepStarted, nextAction;
-  private boolean observing, moving, siteGoal;
+  private boolean observing, siteGoal;
 
   public WorkerSkillTrial(
       CivilizationsPlugin plugin,
@@ -37,6 +42,15 @@ public final class WorkerSkillTrial {
     this.village = village;
     this.completed = completed;
     clearance = new RouteClearance(plugin, actor, village);
+    instructionNavigation =
+        new WorkerNavigation(
+            plugin,
+            actor,
+            village,
+            (now, reason) -> {
+              if (trial != null) finish(false, "instruction_route: " + reason);
+            },
+            false);
     ruleActions = new SkillRuleActions(plugin, actor);
     workPose = new WorkPose(plugin, actor);
   }
@@ -96,6 +110,10 @@ public final class WorkerSkillTrial {
     trial =
         plugin.experiments().request(village.id(), actor.getUniqueId().toString(), context, now);
     if (trial == null) return false;
+    instructionMap = map;
+    observation = null;
+    nextObservation = 0;
+    lastProgress = here();
     siteGoal = site;
     deadline = now + 185_000;
     workPose.reset();
@@ -103,7 +121,6 @@ public final class WorkerSkillTrial {
     placed = 0;
     cleared = 0;
     observing = false;
-    moving = false;
     program = null;
     stepStarted = 0;
     nextAction = 0;
@@ -121,6 +138,8 @@ public final class WorkerSkillTrial {
       plugin.experiments().cancel(trial, reason);
       trial = null;
       program = null;
+      instructionNavigation.stop();
+      observation = null;
       actor.getPathfinder().stopPathfinding();
     }
   }
@@ -132,6 +151,12 @@ public final class WorkerSkillTrial {
       return;
     }
     Pos at = here();
+    // Long, productive travel must not time out merely because the final goal is distant.
+    if (at.distance2(lastProgress) >= 4) {
+      lastProgress = at;
+      deadline = now + 90_000;
+      stepStarted = now;
+    }
     if (siteGoal) {
       if (observing
           && Bukkit.isOwnedByCurrentRegion(location(trial.context.goal()), 1)
@@ -158,7 +183,9 @@ public final class WorkerSkillTrial {
       try {
         program = trial.program.join();
       } catch (Exception error) {
-        finish(false, "proposal_rejected_or_unavailable: " + error.getClass().getSimpleName());
+        Throwable cause = error;
+        while (cause.getCause() != null) cause = cause.getCause();
+        finish(false, "proposal_rejected_or_unavailable: " + cause);
         return true;
       }
       deadline = now + 90_000;
@@ -196,56 +223,37 @@ public final class WorkerSkillTrial {
       finish(false, "instruction_timeout: " + step.op());
       return true;
     }
-    if (!Bukkit.isOwnedByCurrentRegion(location(p), 3)) return true;
-    if (!trial.context.map().contains(p)
-        || trial.context.map().cell(p).kind() == NavigationMap.Kind.UNKNOWN) {
-      finish(false, "instruction_outside_known_map");
+    // Walk through successive locally observed maps; never reject a coordinate just because
+    // it lies outside the immutable proposal context. Navigation can clear natural obstacles.
+    if (step.op() == SkillProgram.Op.WALK) {
+      if (here().x() == p.x() && here().z() == p.z() && Math.abs(here().y() - p.y()) <= 1) {
+        advance(now, step, p);
+      } else instructionNavigation.walkExact(p, 0, now);
+      return true;
+    }
+    if (here().distance2(p) > 12 || !Bukkit.isOwnedByCurrentRegion(location(p), 3)) {
+      instructionNavigation.walkExact(p, 12, now);
+      return true;
+    }
+    if (!ensureObserved(p, now)) return true;
+    if (step.op() == SkillProgram.Op.CLEAR && location(p).getBlock().getType().isAir()) {
+      advance(now, step, p);
       return true;
     }
     if (step.op() == SkillProgram.Op.CLASSIFY) {
       try {
-        ruleActions.execute(trial, step, p, program.explanation());
+        ruleActions.execute(trial, step, p, program.explanation(), instructionMap);
         advance(now, step, p);
       } catch (IllegalArgumentException error) {
         finish(false, "classification_probe_failed: " + error.getMessage());
       }
       return true;
     }
-    if (step.op() == SkillProgram.Op.WALK) {
-      Pos at = here();
-      if (at.x() == p.x() && at.z() == p.z() && Math.abs(at.y() - p.y()) <= 1) {
-        advance(now, step, p);
-        return true;
-      }
-      if (moving && actor.getPathfinder().hasPath()) return true;
-      Block b = location(p).getBlock();
-      if (!b.isPassable()
-          || !b.getRelative(BlockFace.UP).isPassable()
-          || !BlockRules.dry(b)
-          || !b.getRelative(BlockFace.DOWN).getType().isSolid()) {
-        finish(false, "walk_target_not_dry_supported_space");
-        return true;
-      }
-      var path = actor.getPathfinder().findPath(location(p));
-      if (path == null
-          || path.getFinalPoint() == null
-          || path.getFinalPoint().distanceSquared(location(p)) > 2
-          || !safePath(path)) {
-        finish(false, "native_skill_path_unavailable_or_unsafe");
-        return true;
-      }
-      if (!actor.getPathfinder().moveTo(path, plugin.speed())) {
-        finish(false, "native_skill_move_rejected");
-        return true;
-      }
-      moving = true;
-      return true;
-    }
     if ((step.op() == SkillProgram.Op.CLEAR || step.op() == SkillProgram.Op.PLACE_SUPPORT)
         && !workPose.ready(location(p).getBlock(), now)) return true;
     if (step.op() == SkillProgram.Op.CLEAR) {
-      if (trial.context.map().cell(p).kind() != NavigationMap.Kind.SOFT
-          && trial.context.map().cell(p).kind() != NavigationMap.Kind.CLEARABLE
+      if (instructionMap.cell(p).kind() != NavigationMap.Kind.SOFT
+          && instructionMap.cell(p).kind() != NavigationMap.Kind.CLEARABLE
           && !BlockObservation.learnedClear(
               plugin.experiments().rules(), trial.worker, location(p).getBlock())) {
         finish(false, "clear_target_not_observed_natural_material");
@@ -254,7 +262,7 @@ public final class WorkerSkillTrial {
       var result =
           clearance.prepare(
               new TerrainRouteSearch.Step(p, List.of(p), List.of()),
-              trial.context.map(),
+              instructionMap,
               now,
               siteGoal ? trial.context.goal() : null);
       if (!result.failure().isEmpty()) {
@@ -276,6 +284,42 @@ public final class WorkerSkillTrial {
     placed++;
     advance(now, step, p);
     return true;
+  }
+
+  private boolean ensureObserved(Pos p, long now) {
+    if (instructionMap != null
+        && instructionMap.contains(p)
+        && instructionMap.cell(p).kind() != NavigationMap.Kind.UNKNOWN) return true;
+    if (observation == null) {
+      if (now < nextObservation) return false;
+      observation = plugin.navigation().request(actor.getWorld(), village, trial.worker, p, p, 0);
+      plugin.debug(
+          village.id(),
+          trial.worker,
+          "recovery_map_extension",
+          Map.of(
+              "target",
+              p,
+              "origin",
+              trial.context.origin(),
+              "action",
+              "observe next instruction area"));
+    }
+    if (!observation.isDone()) return false;
+    try {
+      instructionMap = observation.join().map();
+    } catch (RuntimeException error) {
+      plugin.debug(
+          village.id(),
+          trial.worker,
+          "recovery_map_wait",
+          Map.of("target", p, "reason", error.toString()));
+    }
+    observation = null;
+    nextObservation = now + 3000;
+    return instructionMap != null
+        && instructionMap.contains(p)
+        && instructionMap.cell(p).kind() != NavigationMap.Kind.UNKNOWN;
   }
 
   private String place(Pos p, String material) {
@@ -315,34 +359,6 @@ public final class WorkerSkillTrial {
     return null;
   }
 
-  private boolean safePath(com.destroystokyo.paper.entity.Pathfinder.PathResult path) {
-    boolean exiting = actor.getLocation().getBlock().getType() == Material.WATER;
-    int water = 0;
-    for (Location node : path.getPoints()) {
-      if (!Bukkit.isOwnedByCurrentRegion(node, 2)) return false;
-      Block feet = node.getBlock(), head = feet.getRelative(BlockFace.UP);
-      if (feet.getType() == Material.WATER && exiting && ++water <= 3 && head.getType().isAir())
-        continue;
-      exiting = false;
-      if (!BlockRules.dry(feet)) return false;
-      for (Block b : List.of(feet, head, feet.getRelative(BlockFace.DOWN)))
-        if (Set.of(
-                "FIRE",
-                "SOUL_FIRE",
-                "MAGMA_BLOCK",
-                "TNT",
-                "WITHER_ROSE",
-                "CACTUS",
-                "CAMPFIRE",
-                "SOUL_CAMPFIRE",
-                "POWDER_SNOW",
-                "SWEET_BERRY_BUSH",
-                "COBWEB")
-            .contains(b.getType().name())) return false;
-    }
-    return true;
-  }
-
   private void advance(long now, SkillProgram.Step step, Pos position) {
     plugin
         .experiments()
@@ -362,13 +378,17 @@ public final class WorkerSkillTrial {
                 "verified",
                 true));
     workPose.reset();
+    instructionNavigation.stop();
+    instructionMap = null;
+    observation = null;
     index++;
     stepStarted = 0;
-    moving = false;
     nextAction = now + WorkerTuning.value(plugin, actor, "construction.interval_ms");
   }
 
   private void finish(boolean success, String reason) {
+    instructionNavigation.stop();
+    observation = null;
     var done = trial;
     trial = null;
     program = null;

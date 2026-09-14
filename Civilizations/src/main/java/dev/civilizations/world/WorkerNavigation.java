@@ -17,6 +17,12 @@ public final class WorkerNavigation {
   private final BiConsumer<Long, String> failed;
   private Pos lastDestination;
   private long nextMove;
+  private long progressAt;
+
+  public long progressAt() {
+    return progressAt;
+  }
+
   private String reportState = "no route requested";
   private CoreAiCoordinator.Ticket policyTicket;
   private final WorkerSkillTrial skillTrial;
@@ -24,7 +30,8 @@ public final class WorkerNavigation {
   private long nextSiteTrial;
 
   public boolean recoverSite(Pos target, long now) {
-    if (skillTrial.active() || pending) return true;
+    if (skillTrial == null) return false;
+    if (experimentActive() || pending) return true;
     if (now < nextSiteTrial) return false;
     nextSiteTrial = now + 30_000;
     pending = true;
@@ -62,19 +69,19 @@ public final class WorkerNavigation {
   }
 
   public boolean experimentTick(long now) {
-    return skillTrial.tick(now);
+    return skillTrial != null && skillTrial.tick(now);
   }
 
   public void damage(String reason) {
-    skillTrial.failedVerification("damage_event: " + reason);
+    if (skillTrial != null) skillTrial.failedVerification("damage_event: " + reason);
   }
 
   public boolean experimentActive() {
-    return skillTrial.active();
+    return skillTrial != null && skillTrial.active();
   }
 
   public String status() {
-    return skillTrial.active()
+    return experimentActive()
         ? skillTrial.status()
         : pending ? "waiting for terrain snapshot" : reportState;
   }
@@ -84,27 +91,39 @@ public final class WorkerNavigation {
       Villager actor,
       Settlement village,
       BiConsumer<Long, String> failed) {
+    this(plugin, actor, village, failed, true);
+  }
+
+  WorkerNavigation(
+      CivilizationsPlugin plugin,
+      Villager actor,
+      Settlement village,
+      BiConsumer<Long, String> failed,
+      boolean trials) {
     this.plugin = plugin;
     this.actor = actor;
     this.village = village;
     this.failed = failed;
     this.clearance = new RouteClearance(plugin, actor, village);
     skillTrial =
-        new WorkerSkillTrial(
-            plugin,
-            actor,
-            village,
-            (success, reason) -> {
-              plan = null;
-              selected = null;
-              nextPlan = 0;
-              recoveryAttempts = 0;
-              requestStarted = 0;
-              if (success) {
-                if (lastDestination != null)
-                  village.knowledge().clear("route:" + lastDestination.key());
-              } else failed.accept(System.currentTimeMillis(), "Live recovery failed: " + reason);
-            });
+        !trials
+            ? null
+            : new WorkerSkillTrial(
+                plugin,
+                actor,
+                village,
+                (success, reason) -> {
+                  plan = null;
+                  selected = null;
+                  nextPlan = 0;
+                  recoveryAttempts = 0;
+                  requestStarted = 0;
+                  if (success) {
+                    if (lastDestination != null)
+                      village.knowledge().clear("route:" + lastDestination.key());
+                  } else
+                    failed.accept(System.currentTimeMillis(), "Live recovery failed: " + reason);
+                });
   }
 
   private Location location(Pos p) {
@@ -117,7 +136,7 @@ public final class WorkerNavigation {
   }
 
   public void stop() {
-    skillTrial.cancel("navigation_cancelled_or_target_changed");
+    if (skillTrial != null) skillTrial.cancel("navigation_cancelled_or_target_changed");
     generation++;
     pending = false;
     plan = null;
@@ -133,6 +152,14 @@ public final class WorkerNavigation {
 
   public void walk(Pos destination, long now) {
     walk(destination, destination, 12, now);
+  }
+
+  public void walkExact(Pos target, int reach, long now) {
+    walk(target, target, reach, now);
+  }
+
+  public dev.civilizations.navigation.NavigationMap observedMap() {
+    return observedMap;
   }
 
   public void walkWork(Pos stand, Pos target, long now) {
@@ -253,7 +280,7 @@ public final class WorkerNavigation {
       plannedTarget = target;
       nextPlan = 0;
     }
-    if (skillTrial.active()) requestStarted = now;
+    if (experimentActive()) requestStarted = now;
     if (requestStarted == 0) requestStarted = now;
     if (now - requestStarted > 90_000) {
       event(
@@ -282,6 +309,7 @@ public final class WorkerNavigation {
                       "reached planned terrain-route step"));
         policyTicket = null;
         index = selectedIndex + 1;
+        progressAt = now;
         selected = null;
         requestStarted = now;
         clearanceStarted = 0;
@@ -316,7 +344,7 @@ public final class WorkerNavigation {
                             if (token != generation) return;
                             pending = false;
                             if (error != null) {
-                              if (skillTrial.active())
+                              if (experimentActive())
                                 skillTrial.failedVerification(
                                     "map_execution_failed: " + error.getMessage());
                               nextPlan = System.currentTimeMillis() + 3000;
@@ -368,7 +396,8 @@ public final class WorkerNavigation {
                                 requestStarted = 0;
                                 return;
                               }
-                              if (!skillTrial.active()
+                              if (skillTrial != null
+                                  && !experimentActive()
                                   && skillTrial.start(
                                       answer.map(),
                                       target,
@@ -380,7 +409,7 @@ public final class WorkerNavigation {
                                 nextPlan = 0;
                                 return;
                               }
-                              if (skillTrial.active()) {
+                              if (experimentActive()) {
                                 skillTrial.failedVerification(
                                     "route_still_blocked: " + answer.route().reason());
                                 return;
@@ -411,6 +440,10 @@ public final class WorkerNavigation {
     var step = plan.route().steps().get(index);
     if (clearanceStarted == 0) clearanceStarted = now;
     var prepared = clearance.prepare(step, plan.map(), now);
+    if (prepared.changed()) {
+      progressAt = now;
+      requestStarted = now;
+    }
     if (!prepared.failure().isEmpty()) {
       rejectStep(now, prepared.failure(), java.util.Map.of("step", step));
       return;
@@ -438,7 +471,7 @@ public final class WorkerNavigation {
                 .rank(
                     CoreAiCoordinator.Scope.ROUTES,
                     VillagerPolicies.routes(candidates, at, candidates.getLast()),
-                    skillTrial.active() ? null : actor.getUniqueId().toString());
+                    experimentActive() ? null : actor.getUniqueId().toString());
     if (choice != null) candidates = VillagerPolicies.ordered(candidates, choice, Pos::key);
     for (Pos candidate : candidates) {
       if (!Bukkit.isOwnedByCurrentRegion(location(candidate), 1)) {
@@ -555,10 +588,11 @@ public final class WorkerNavigation {
     nextPlan = now + 1500;
     clearanceStarted = 0;
     if (++recoveryAttempts >= WorkerTuning.value(plugin, actor, "navigation.recovery_attempts")) {
-      if (!skillTrial.active()
+      if (skillTrial != null
+          && !experimentActive()
           && observedMap != null
           && skillTrial.start(observedMap, plannedTarget, 12, reason, now)) return;
-      if (skillTrial.active()) {
+      if (experimentActive()) {
         skillTrial.failedVerification(reason);
         return;
       }

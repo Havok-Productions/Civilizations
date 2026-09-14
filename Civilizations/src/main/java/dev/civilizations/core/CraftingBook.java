@@ -5,7 +5,16 @@ import java.util.*;
 /** Immutable snapshot of server crafting recipes; planning never accesses a world or inventory. */
 public final class CraftingBook {
   public record Recipe(
-      String key, String output, int amount, List<List<String>> slots, boolean table) {
+      String key,
+      String output,
+      int amount,
+      List<List<String>> slots,
+      boolean table,
+      boolean furnace) {
+    public Recipe(String key, String output, int amount, List<List<String>> slots, boolean table) {
+      this(key, output, amount, slots, table, false);
+    }
+
     public Recipe {
       slots = slots.stream().map(List::copyOf).toList();
     }
@@ -65,8 +74,16 @@ public final class CraftingBook {
     return recipes.values().stream().flatMap(List::stream).toList();
   }
 
+  public List<Recipe> furnaceRecipes(String output) {
+    return recipes.getOrDefault(output, List.of()).stream().filter(Recipe::furnace).toList();
+  }
+
   public Step next(String output, Map<String, Integer> inventory, boolean table) {
-    return resolve(output, 1, inventory, table, new HashSet<>(), 0);
+    return next(output, inventory, table, true);
+  }
+
+  public Step next(String output, Map<String, Integer> inventory, boolean table, boolean furnace) {
+    return resolve(output, 1, inventory, table, furnace, new HashSet<>(), 0);
   }
 
   private Step resolve(
@@ -74,6 +91,7 @@ public final class CraftingBook {
       int amount,
       Map<String, Integer> inv,
       boolean table,
+      boolean furnace,
       Set<String> path,
       int depth) {
     if (inv.getOrDefault(output, 0) >= amount)
@@ -83,6 +101,11 @@ public final class CraftingBook {
     // Prefer recipes whose actual ingredients we have, then basic raw-resource recipes.
     Recipe best = choices.stream().min(Comparator.comparingInt(r -> score(r, inv))).orElse(null);
     if (best == null) return gather(output, amount);
+    if (best.furnace() && !furnace) {
+      if (inv.getOrDefault("FURNACE", 0) > 0)
+        return new Step("place_station", "FURNACE", 1, Map.of("FURNACE", 1), "", false);
+      return resolve("FURNACE", 1, inv, table, false, new HashSet<>(path), depth + 1);
+    }
     Map<String, Integer> cost = cost(best, inv);
     if (Set.of("COAL", "COBBLESTONE").contains(output)
         && cost.entrySet().stream().anyMatch(e -> inv.getOrDefault(e.getKey(), 0) < e.getValue()))
@@ -91,11 +114,18 @@ public final class CraftingBook {
       if (inv.getOrDefault("CRAFTING_TABLE", 0) > 0)
         return new Step(
             "place_station", "CRAFTING_TABLE", 1, Map.of("CRAFTING_TABLE", 1), "", false);
-      return resolve("CRAFTING_TABLE", 1, inv, false, new HashSet<>(path), depth + 1);
+      return resolve("CRAFTING_TABLE", 1, inv, false, furnace, new HashSet<>(path), depth + 1);
     }
     for (var e : cost.entrySet())
       if (inv.getOrDefault(e.getKey(), 0) < e.getValue())
-        return resolve(e.getKey(), e.getValue(), inv, table, new HashSet<>(path), depth + 1);
+        return resolve(
+            e.getKey(), e.getValue(), inv, table, furnace, new HashSet<>(path), depth + 1);
+    if (best.furnace()) {
+      String fuel = SmeltingFuel.choose(inv, cost);
+      if (fuel == null) return gather("OAK_LOG", cost.getOrDefault("OAK_LOG", 0) + 1);
+      cost.merge(fuel, 1, Integer::sum);
+      return new Step("smelt", output, best.amount(), Map.copyOf(cost), best.key(), false);
+    }
     return new Step("craft", output, best.amount(), Map.copyOf(cost), best.key(), best.table());
   }
 

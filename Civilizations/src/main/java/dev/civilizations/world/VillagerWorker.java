@@ -45,8 +45,7 @@ public final class VillagerWorker {
   }
 
   private Map<String, Integer> needed(Job candidate) {
-    return WorkerPlan.needed(
-        plugin.recipes(), candidate, inventory(), village.craftingTable() != null);
+    return tools.needed(candidate, inventory(), here(), System.currentTimeMillis());
   }
 
   private void debug(String type, Map<String, ?> data) {
@@ -322,6 +321,7 @@ public final class VillagerWorker {
         reset();
       }
       if (navigation.experimentActive()) recovery.pause(now);
+      if (now - navigation.progressAt() < 1000) recovery.pause(now);
       if (!awaiting && job != null && plugin.thinkingWhenStuck() && recovery.stalled(now)) {
         fail(now, recovery.problem(now));
         recovery.observedStall(now);
@@ -524,6 +524,7 @@ public final class VillagerWorker {
       for (String r : List.of("COBBLESTONE", "COAL", "LOG", "OAK_LOG", "WHEAT_SEEDS"))
         sites.put(r, plugin.resources(village.id(), r).size());
       report.put("resource_sites", sites);
+      report.put("material_sources", MaterialSources.knowledge());
       report.put("current_project", village.taskProject(id));
       report.put("deposit_allowed", village.mayShareSurplus(id) && village.chest() != null);
       report.put("recent_results", village.memories(id));

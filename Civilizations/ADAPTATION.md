@@ -1,5 +1,21 @@
 # Controller adaptation and activity recovery
 
+## Alpha.20: observed progress blockers
+
+Alpha.20 uses CoreAI 0.2.1, Java 25 and Folia 26.1.2. Recovery instructions now use successive observed terrain maps instead of treating the immutable proposal map as the execution boundary. A distant WALK uses the shared mapped navigator, including natural obstacle clearance; a subsequent CLEAR or CLASSIFY obtains fresh local observations. SEARCH still updates the trial's editable search policy. Verified route transitions and actual clearance keep productive travel alive without claiming that its construction goal has completed. Navigation clearance work is now an exposed proposal parameter. Missing chunks remain unknown until observed; this does not generate arbitrary remote terrain or remove structures to satisfy a model claim.
+
+Snapshot reports distinguish chunks that were not loaded, scheduler errors, snapshot errors and timeouts. Architect surveys refresh the inhabited focus and wait for actual observations instead of asking the model to design from an entirely unknown focus. Blueprints can explicitly declare `coordinate_space=relative` or `world`; world coordinates are converted using the captured survey origin. Existing blueprints default to relative coordinates. Invalid wall geometry is reported before allocating a potentially enormous survey. When a model response is invalid, an observed feasible candidate can undergo fresh validation and proceed while retaining the model's feedback. Examples remain suggestions; valid model designs are not limited to those examples.
+
+Furnace recipes are captured from the running server alongside crafting recipes. Glass prerequisites can therefore lead through a crafting table, eight cobblestone for a furnace, observed sand and real fuel. `SmeltingActions` deposits inputs into an actual furnace, lets Minecraft perform its cooking/burning, and collects only real output. It does not grant glass after a timer. The adapter uses the [Paper furnace inventory and cooking API](https://jd.papermc.io/paper/26.1.2/org/bukkit/block/Furnace.html). Fuel selection reserves recipe input first, so making charcoal cannot consume the same log twice. In-progress compatible furnace work can be adopted after interruption.
+
+`MaterialSources` shares source knowledge and matching rules. Sand surveys look for real sand rather than glass blocks; dry top layers above water are usable when mining them would not release adjacent water or falling blocks. `ResourceSurvey` samples successive local tiles instead of repeating the same empty scan. Unknown distant terrain is reported rather than assumed empty. Gathering, furnace work and farm preparation retain actual items. A dandelion on a hydrated farm plot no longer blocks wheat planting: the worker keeps its drop and consumes a seed. One safe soil layer can also be graded at the assigned plot.
+
+Recovery errors preserve their underlying cause instead of reporting only `CompletionException`. Failed-program reuse keys include the host release so a fixed executor can retry a program rejected by an earlier version. Successful rules continue to persist independently.
+
+The final focused selection passed 121 JVM cases. The disposable `progress` scenario physically verified walking beyond an initial radius-four map, SEARCH32, real dirt clearance and retained drops, then sand gathering, a crafted/placed furnace, native smelting, and a glass repair. Eight cobblestone and one fuel log were consumed; the spare log and cleared dirt remained. A separate `progress` run with `-Dcivilizations.test.farm-preparation=true` verified a real worker clearing/retaining a dandelion and planting wheat using one seed. These are executor checks with a deterministic recovery teacher, not a fresh Qwen/DeepSeek capability benchmark or a full-village/wall run.
+
+## Earlier alpha.18 changes and evidence
+
 Civilizations alpha.18 uses Java 25 and Folia 26.1.2. Build both modules with `mvn -f pom.xml package`; install only the Civilizations JAR. Run focused checks with `python tools/test_sections.py coreai navigation design tasks`, then package with `-DskipTests` when a JAR is needed.
 
 ## Proposals and actual execution

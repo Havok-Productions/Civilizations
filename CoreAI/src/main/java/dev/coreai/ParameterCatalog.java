@@ -27,6 +27,12 @@ public final class ParameterCatalog {
           "navigation.recovery_attempts",
               new Spec(
                   "navigation", 6, "Failed route transitions before asking for a recovery program"),
+          "navigation.clearance_blocks",
+              new Spec(
+                  "navigation",
+                  16,
+                  "Natural obstacle blocks permitted in one salvage route; later route segments"
+                      + " continue the excavation"),
           "recovery.instruction_ms",
               new Spec("recovery", 12000, "Time allowed per executable skill instruction"),
           "observation.probe_limit",

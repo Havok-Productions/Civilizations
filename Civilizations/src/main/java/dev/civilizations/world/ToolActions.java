@@ -20,6 +20,9 @@ public final class ToolActions {
   private final BiConsumer<Long, String> failure;
   private long nextCraft;
   private final WorkerStations stations;
+  private final SmeltingActions smelting;
+  private long stationCheck;
+  private boolean tableKnown, furnaceKnown;
 
   public ToolActions(
       CivilizationsPlugin plugin,
@@ -33,6 +36,18 @@ public final class ToolActions {
     this.navigation = navigation;
     this.failure = failure;
     stations = new WorkerStations(actor, village, navigation);
+    smelting = new SmeltingActions(plugin, actor, village, navigation, failure);
+  }
+
+  public Map<String, Integer> needed(Job job, Map<String, Integer> inventory, Pos at, long now) {
+    if (job != null && smelting.processing(job.material)) return Map.of();
+    // Ranking asks about many candidates per tick; share observations, not repeated world scans.
+    if (now >= stationCheck) {
+      stationCheck = now + 1000;
+      tableKnown = stations.choose(at, now) != null;
+      furnaceKnown = smelting.available(at, now);
+    }
+    return WorkerPlan.needed(plugin.recipes(), job, inventory, tableKnown, furnaceKnown);
   }
 
   private Location location(Pos p) {
@@ -61,6 +76,9 @@ public final class ToolActions {
                     "CRAFTING_TABLE",
                     "WOODEN_PICKAXE",
                     "STONE_PICKAXE",
+                    "FURNACE",
+                    "GLASS",
+                    "CHARCOAL",
                     "TORCH",
                     "STICK",
                     "BREAD",
@@ -73,12 +91,14 @@ public final class ToolActions {
   public Preparation prepareItem(String outputItem, long now, Pos at) {
     Map<String, Integer> inventory = InventoryOps.summary(actor.getInventory());
     if (inventory.getOrDefault(outputItem, 0) > 0) return new Preparation(true, "");
+    if (smelting.resume(outputItem, at, now)) return new Preparation(false, "");
     if (now < nextCraft) return new Preparation(false, "");
     Pos table = stations.choose(at, now);
     if (ChestSupplies.obtain(
         plugin, actor, village, navigation, outputItem, inventory, table != null, at, now))
       return new Preparation(false, "");
-    CraftingBook.Step step = plugin.recipes().next(outputItem, inventory, table != null);
+    CraftingBook.Step step =
+        plugin.recipes().next(outputItem, inventory, table != null, smelting.available(at, now));
     String worker = actor.getUniqueId().toString();
     village
         .knowledge()
@@ -157,7 +177,12 @@ public final class ToolActions {
       }
     }
     if (step.action().equals("place_station")) {
-      placeTable(at, now);
+      if (step.item().equals("FURNACE")) smelting.place(at, now);
+      else placeTable(at, now);
+      return new Preparation(false, "");
+    }
+    if (step.action().equals("smelt")) {
+      smelting.start(step, at, now);
       return new Preparation(false, "");
     }
     if (!step.action().equals("craft")) return new Preparation(false, "");

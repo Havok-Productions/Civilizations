@@ -112,7 +112,15 @@ public final class NavigationService implements AutoCloseable {
                 if (route.steps().isEmpty() && !route.reached() && salvage)
                   route =
                       TerrainRouteSearch.search(
-                          map, from, target, reach2, rejected, 4, searchBudget(searchRadius));
+                          map,
+                          from,
+                          target,
+                          reach2,
+                          rejected,
+                          rules == null
+                              ? 16
+                              : rules.parameter(worker, "navigation.clearance_blocks", 16),
+                          searchBudget(searchRadius));
                 String id = UUID.randomUUID().toString(),
                     file = archive.save(id, village.id(), worker, map, route);
                 return new Plan(id, file, map, route, target, reach2);

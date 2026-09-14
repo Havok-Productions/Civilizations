@@ -20,6 +20,8 @@ public final class GatheringActions {
   private final String id;
   private final WorkerNavigation navigation;
   private final RecoveryPolicy recovery;
+  private final WorkPose pose;
+  private final ResourceSurvey survey;
   private final BiConsumer<Long, String> failure;
   private String resource = "";
   private Pos target;
@@ -39,6 +41,8 @@ public final class GatheringActions {
     this.village = village;
     this.navigation = navigation;
     this.recovery = recovery;
+    pose = new WorkPose(plugin, entity);
+    survey = new ResourceSurvey(plugin, entity, village);
     this.failure = failure;
     id = entity.getUniqueId().toString();
   }
@@ -79,7 +83,7 @@ public final class GatheringActions {
       gatherWool(now, at);
       return;
     }
-    if (!Set.of("COBBLESTONE", "COAL", "LOG", "WHEAT_SEEDS").contains(resource)
+    if (!Set.of("COBBLESTONE", "COAL", "LOG", "WHEAT_SEEDS", "SAND", "RED_SAND").contains(resource)
         && !resource.endsWith("_LOG")) {
       fail(now, "No supported local gathering method for " + resource);
       return;
@@ -103,6 +107,17 @@ public final class GatheringActions {
               .findFirst()
               .orElse(null);
       if (target == null) {
+        List<Pos> expanded = survey.search(resource, at, now);
+        target =
+            expanded.stream()
+                .filter(p -> !village.gatherProtected(p) && !plugin.playerProtected(village, p))
+                .filter(p -> !village.knowledge().blocked("route:" + p.key(), now))
+                .sorted(Comparator.comparingLong(at::distance2))
+                .filter(p -> village.reserveGather(p, id, now))
+                .findFirst()
+                .orElse(null);
+        if (target != null) return;
+        expanded.forEach(survey::exhausted);
         plugin.debug(
             village.id(),
             id,
@@ -124,7 +139,7 @@ public final class GatheringActions {
                     .count(),
                 "result",
                 "No unreserved, unprotected candidate with an unblocked route"));
-        needsSupply = true;
+        needsSupply = !Set.of("SAND", "RED_SAND").contains(resource);
         return;
       }
     }
@@ -163,8 +178,23 @@ public final class GatheringActions {
                 && (resource.equals("LOG") || block.getType().name().equals(resource))
             : resource.equals("COAL")
                 ? Set.of(Material.COAL_ORE, Material.DEEPSLATE_COAL_ORE).contains(block.getType())
-                : block.getType() == Material.STONE;
-    if (!match || !dry(block) || !safeMining(block) || !plugin.mayChange(entity, block, "GATHER")) {
+                : MaterialSources.matches(resource, block.getType().name());
+    boolean sand = resource.equals("SAND") || resource.equals("RED_SAND");
+    boolean safe = sand ? drySand(block) : dry(block);
+    if (!match || !safe || !safeMining(block)) {
+      plugin.debug(
+          village.id(),
+          id,
+          "resource_rejected",
+          Map.of(
+              "resource",
+              resource,
+              "target",
+              target,
+              "actual",
+              block.getType().name(),
+              "reason",
+              !match ? "source_changed" : !safe ? "would_expose_fluid" : "falling_block_above"));
       exhausted(target);
       target = null;
       return;
@@ -181,6 +211,12 @@ public final class GatheringActions {
     if (!room(actualDrop, 1, now)) return;
     if (!MiningTools.has(entity.getInventory(), block.getType().name())) {
       fail(now, "Gathering " + resource + " requires a crafted pickaxe");
+      return;
+    }
+    if (!pose.ready(block, now)) return;
+    if (!plugin.mayChange(entity, block, "GATHER")) {
+      exhausted(target);
+      target = null;
       return;
     }
     String mined = block.getType().name();
@@ -206,10 +242,24 @@ public final class GatheringActions {
     village.remember(id, "Gathered " + actualDrop + " at " + target.key(), true);
     exhausted(target);
     target = null;
+    pose.reset();
     nextWork = now + plugin.workMillis();
   }
 
+  private static boolean drySand(Block block) {
+    // Water below a dry bank is harmless; exposing water beside or above the mined cell is not.
+    for (BlockFace face :
+        List.of(BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)) {
+      Block n = block.getRelative(face);
+      if (n.isLiquid()
+          || n.getBlockData() instanceof org.bukkit.block.data.Waterlogged w && w.isWaterlogged())
+        return false;
+    }
+    return true;
+  }
+
   private void exhausted(Pos p) {
+    survey.exhausted(p);
     plugin.exhausted(village.id(), p);
     nearbySites = nearbySites.stream().filter(site -> !site.equals(p)).toList();
   }

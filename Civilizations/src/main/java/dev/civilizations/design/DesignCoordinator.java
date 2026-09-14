@@ -74,8 +74,7 @@ public final class DesignCoordinator implements AutoCloseable {
       Settlement v, World world, Terrain terrain, Map<String, Integer> resourceSites) {
     try {
       Pos focus = DesignFocus.select(v);
-      if (focus.equals(v.center())) considerReady(v, world, focus, terrain, resourceSites);
-      else if (!closed
+      if (!closed
           && !pending.contains(v.id())
           && System.currentTimeMillis() >= next.getOrDefault(v.id(), 0L))
         snapshots
@@ -101,11 +100,26 @@ public final class DesignCoordinator implements AutoCloseable {
     Set<String> kinds = DesignNeeds.allowed(v, activeLimit);
     if (closed || now < next.getOrDefault(v.id(), 0L) || kinds.isEmpty() || !pending.add(v.id()))
       return;
+    observer.accept(
+        v.id(),
+        Map.of(
+            "stage", "survey_coverage", "origin", origin, "coverage", terrain.observationReport()));
+    if (!terrain.available(origin.x(), origin.z())) {
+      pending.remove(v.id());
+      next.put(v.id(), now + 5000);
+      statuses.put(v.id(), "Waiting for fresh observations at inhabited focus; retrying survey");
+      return;
+    }
     var viewData = v.snapshot();
     viewData.center = origin;
     Settlement view = new Settlement(viewData);
     Map<String, Object> report = new LinkedHashMap<>();
     report.put("survey_origin", origin);
+    report.put("snapshot_coverage", terrain.observationReport());
+    report.put(
+        "coordinate_example",
+        Map.of(
+            "world_position", origin.add(6, 0, -6), "blueprint_offset", Map.of("x", 6, "z", -6)));
     report.put(
         "defense_scope",
         "Local defenses may protect a bed/chest neighborhood; one wall need not enclose every"
@@ -119,6 +133,7 @@ public final class DesignCoordinator implements AutoCloseable {
     report.put("community_chests", v.chests().stream().map(p -> relative(view, p)).toList());
     report.put("stock", v.stock());
     report.put("local_resource_sites", resourceSites);
+    report.put("material_sources", MaterialSources.knowledge());
     report.put("stock_age_seconds", Math.min(9999, v.stockAge(now) / 1000));
     report.put("feedback", v.designFeedback());
     report.put("supply_requests", v.supplyNeeds(now));
@@ -195,7 +210,7 @@ public final class DesignCoordinator implements AutoCloseable {
             ReasoningMode.DESIGN,
             schema,
             now + 180_000,
-            Blueprint::parse,
+            text -> Blueprint.parse(text, origin),
             blueprint -> {
               if (closed) {
                 pending.remove(v.id());
@@ -206,7 +221,7 @@ public final class DesignCoordinator implements AutoCloseable {
                 feedback(
                     v,
                     "Model did not return a valid blueprint; see /civ ai for the inference error");
-                pending.remove(v.id());
+                useObservedAlternative(v, world, origin, examples, "invalid model response");
                 return;
               }
               if (blueprint.kind().equals("wait")) {
@@ -224,6 +239,20 @@ public final class DesignCoordinator implements AutoCloseable {
                       origin,
                       "status",
                       "received; awaiting physical validation"));
+              try {
+                blueprint.validateGeometry();
+              } catch (IllegalArgumentException invalid) {
+                feedback(
+                    v,
+                    "Invalid geometry: "
+                        + invalid.getMessage()
+                        + ". Relative coordinates use offsets from "
+                        + origin.key()
+                        + "; e.g. x=6,z=-6. Set coordinate_space=world when supplying absolute"
+                        + " coordinates.");
+                useObservedAlternative(v, world, origin, examples, "invalid proposed geometry");
+                return;
+              }
               snapshots
                   .capture(world, origin, blueprint.surveyRadius())
                   .thenAcceptAsync(fresh -> accept(v, blueprint, origin, fresh), executor)
@@ -239,6 +268,40 @@ public final class DesignCoordinator implements AutoCloseable {
       next.put(v.id(), now + 30_000);
       statuses.put(v.id(), "waiting for local model/queue");
     }
+  }
+
+  private void useObservedAlternative(
+      Settlement v, World world, Pos origin, List<Map<String, Object>> examples, String reason) {
+    Blueprint alternative =
+        examples.stream()
+            .map(e -> (Blueprint) e.get("blueprint"))
+            .min(
+                Comparator.comparingInt(
+                    b -> b.kind().equals("wall") ? 0 : b.kind().equals("mine") ? 1 : 2))
+            .orElse(null);
+    if (alternative == null) {
+      pending.remove(v.id());
+      return;
+    }
+    observer.accept(
+        v.id(),
+        Map.of(
+            "stage",
+            "local_fallback",
+            "reason",
+            reason,
+            "blueprint",
+            alternative,
+            "basis",
+            "observed feasible candidate; requires fresh validation"));
+    snapshots
+        .capture(world, origin, alternative.surveyRadius())
+        .thenAcceptAsync(t -> accept(v, alternative, origin, t), executor)
+        .whenComplete(
+            (unused, error) -> {
+              if (error != null) feedback(v, "Alternative survey failed: " + error.getMessage());
+              pending.remove(v.id());
+            });
   }
 
   private synchronized void accept(Settlement v, Blueprint blueprint, Pos origin, Terrain terrain) {
@@ -342,7 +405,7 @@ public final class DesignCoordinator implements AutoCloseable {
 
   static final String SYSTEM =
       """
-      You are the village architect. Propose one useful project from supported kinds using observations, needs, resources and prior failures. Return a JSON blueprint. Coordinates are offsets from survey_origin, which is an inhabited work area rather than necessarily the old settlement center. Examples are optional suggestions, not a whitelist: you may change coordinates, dimensions and routes. There are no configured numeric proposal ranges. World checks validate actual support, access, resources, collision and protected blocks. Larger work may need independently buildable stages when execution resources are exhausted; explain the useful first stage rather than claiming a whole village is finished.
+      You are the village architect. Propose one useful project from supported kinds using observations, needs, resources and prior failures. Return a JSON blueprint. Declare coordinate_space: relative for offsets from survey_origin or world for absolute world positions. The host converts explicitly declared world coordinates to offsets before validation. Prefer relative offsets. Survey_origin is an inhabited work area rather than necessarily the old settlement center. Examples are optional suggestions, not a whitelist: you may change coordinates, dimensions and routes. There are no configured numeric proposal ranges. World checks validate actual support, access, resources, collision and protected blocks. Larger work may need independently buildable stages when execution resources are exhausted; explain the useful first stage rather than claiming a whole village is finished.
       Respond wait if no physically meaningful project is available. Recent hostile mobs and missing defenses are urgent: propose a local wall protecting an inhabited bed/storage area even when other houses remain unfinished. A merged village can have multiple local defenses. A wall need not include every distant chest or the historic village center. Do not build a wall around nothing. Avoid repeating the same failed geometry. site_rejections provides actual reasons candidates failed.
       house: x/z minimum corner, width/depth footprint, height walls, direction entrance, optional points bed feet facing south. Leave headroom and room for the two-block beds. wall: simple closed axis-aligned polygon points, x/z a gate point on a straight segment, height positive, direction gate orientation. path: ordered axis-aligned points and width1. farm: x/z footprint, width/depth; needs soil and existing water. lights: points with support. mine: x/z entrance, direction staircase, depth descending steps and width horizontal continuation. Workers need actual tools and materials. Survey observations, not model recollection, determine what exists. A zero-coal mine is exploration, not guaranteed fuel. End with the final blueprint; never attest completed world work.
       """;

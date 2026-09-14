@@ -38,6 +38,8 @@ The runner prints chosen classes and method counts. `test-results/last-run.json`
 
 ## Slow checks are separate
 
+Alpha.20 adds `progress`: a deterministic recovery beyond the original map followed by actual sand gathering, furnace crafting/placement, native smelting and glass repair. For changes confined to farm clutter, run that scenario with `-Dcivilizations.test.farm-preparation=true`; it skips the recovery/glass setup and checks the dandelion-to-wheat action with real drops and a consumed seed. These selectors never start automatically during section checks.
+
 Folia scenarios must use a disposable world, never the live server. Build the fixture only when a relevant physical check is needed. Select exactly one scenario:
 
 ```powershell

@@ -9,6 +9,11 @@ public final class WorkerPlan {
 
   public static Map<String, Integer> needed(
       CraftingBook recipes, Job job, Map<String, Integer> inv, boolean table) {
+    return needed(recipes, job, inv, table, true);
+  }
+
+  public static Map<String, Integer> needed(
+      CraftingBook recipes, Job job, Map<String, Integer> inv, boolean table, boolean furnace) {
     if (job == null || job.kind == Job.Kind.CLEAR || job.kind == Job.Kind.PATH) return Map.of();
     if (job.kind == Job.Kind.FARM)
       return inv.getOrDefault("WHEAT_SEEDS", 0) > 0 ? Map.of() : Map.of("WHEAT_SEEDS", 1);
@@ -18,12 +23,12 @@ public final class WorkerPlan {
       if (ToolRecipes.tier(inv) >= tier) return Map.of();
       output = tier >= 2 && ToolRecipes.tier(inv) > 0 ? "STONE_PICKAXE" : "WOODEN_PICKAXE";
     }
-    CraftingBook.Step step = recipes.next(output, inv, table);
+    CraftingBook.Step step = recipes.next(output, inv, table, furnace);
     if (step.action().equals("gather")
         && Set.of("COAL", "COBBLESTONE").contains(step.item())
         && ToolRecipes.tier(inv) == 0) {
       output = "WOODEN_PICKAXE";
-      step = recipes.next(output, inv, table);
+      step = recipes.next(output, inv, table, furnace);
     }
     if (!step.action().equals("gather")) return Map.of();
     String resource = ToolActions.gatheringMaterial(output, step.item());

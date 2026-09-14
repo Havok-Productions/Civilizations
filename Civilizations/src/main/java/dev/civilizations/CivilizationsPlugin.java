@@ -686,6 +686,13 @@ public final class CivilizationsPlugin extends JavaPlugin
                       sources.put("COBBLESTONE", plan.stone());
                       sources.put("COAL", plan.coal());
                       sources.put("WHEAT_SEEDS", plan.seeds());
+                      sources.put("SAND", plan.sand());
+                      sources.put("RED_SAND", plan.redSand());
+                      debug(
+                          v.id(),
+                          "",
+                          "survey_coverage",
+                          Map.of("origin", survey, "coverage", terrain.observationReport()));
                       sources.put("LOG", plan.logs());
                       for (Pos log : plan.logs())
                         sources.computeIfAbsent(terrain.type(log), k -> new ArrayList<>()).add(log);

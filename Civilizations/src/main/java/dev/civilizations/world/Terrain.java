@@ -14,6 +14,10 @@ public interface Terrain {
 
   boolean available(int x, int z);
 
+  default java.util.Map<String, ?> observationReport() {
+    return java.util.Map.of();
+  }
+
   default boolean matureWheat(Pos p) {
     return false;
   }

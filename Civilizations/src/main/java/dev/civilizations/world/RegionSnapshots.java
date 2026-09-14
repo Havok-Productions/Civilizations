@@ -31,29 +31,30 @@ public final class RegionSnapshots {
           new RejectedExecutionException(
               "snapshot_resource_budget_exceeded; retain proposal and survey it in sections"));
     Map<Long, CompletableFuture<ChunkSnapshot>> calls = new HashMap<>();
+    Map<Long, String> missing = new ConcurrentHashMap<>();
     for (int x = (center.x() - radius) >> 4; x <= (center.x() + radius) >> 4; x++)
       for (int z = (center.z() - radius) >> 4; z <= (center.z() + radius) >> 4; z++) {
         int cx = x, cz = z;
         CompletableFuture<ChunkSnapshot> f = new CompletableFuture<>();
         calls.put(key(x, z), f);
+        Runnable acquire =
+            () -> {
+              try {
+                if (!world.isChunkLoaded(cx, cz)) missing.put(key(cx, cz), "chunk_not_loaded");
+                f.complete(
+                    world.isChunkLoaded(cx, cz)
+                        ? world.getChunkAt(cx, cz).getChunkSnapshot(true, false, false)
+                        : null);
+              } catch (Exception e) {
+                missing.put(key(cx, cz), "snapshot_error: " + e);
+                f.complete(null);
+              }
+            };
         try {
-          Bukkit.getRegionScheduler()
-              .execute(
-                  plugin,
-                  world,
-                  cx,
-                  cz,
-                  () -> {
-                    try {
-                      f.complete(
-                          world.isChunkLoaded(cx, cz)
-                              ? world.getChunkAt(cx, cz).getChunkSnapshot(true, false, false)
-                              : null);
-                    } catch (Exception e) {
-                      f.complete(null);
-                    }
-                  });
+          if (Bukkit.isOwnedByCurrentRegion(world, cx, cz)) acquire.run();
+          else Bukkit.getRegionScheduler().execute(plugin, world, cx, cz, acquire);
         } catch (Exception e) {
+          missing.put(key(cx, cz), "scheduler_error: " + e);
           f.complete(null);
         }
         f.completeOnTimeout(null, 4, TimeUnit.SECONDS);
@@ -66,12 +67,15 @@ public final class RegionSnapshots {
                   (k, f) -> {
                     ChunkSnapshot snapshot = f.getNow(null);
                     if (snapshot != null) chunks.put(k, snapshot);
+                    else missing.putIfAbsent(k, "snapshot_timeout");
                   });
               return new Captured(
                   Map.copyOf(chunks),
                   world.getMinHeight(),
                   world.getMaxHeight(),
-                  rules == null ? Map.of() : rules.view(""));
+                  rules == null ? Map.of() : rules.view(""),
+                  Map.copyOf(missing),
+                  calls.size());
             },
             executor);
   }
@@ -84,8 +88,35 @@ public final class RegionSnapshots {
       Map<Long, ChunkSnapshot> chunks,
       int min,
       int max,
-      Map<String, dev.coreai.TerrainRuleBook.Rule> learned)
+      Map<String, dev.coreai.TerrainRuleBook.Rule> learned,
+      Map<Long, String> missing,
+      int requested)
       implements Terrain {
+    public Map<String, ?> observationReport() {
+      Map<String, Long> reasons = new TreeMap<>();
+      missing.values().forEach(reason -> reasons.merge(reason, 1L, Long::sum));
+      return Map.of(
+          "requested_chunks",
+          requested,
+          "observed_chunks",
+          chunks.size(),
+          "missing_reasons",
+          reasons,
+          "missing_chunks",
+          missing.entrySet().stream()
+              .limit(32)
+              .map(
+                  e ->
+                      Map.of(
+                          "x",
+                          (int) (e.getKey() >> 32),
+                          "z",
+                          e.getKey().intValue(),
+                          "reason",
+                          e.getValue()))
+              .toList());
+    }
+
     public boolean clear(Pos p) {
       if (Terrain.super.clear(p)) return true;
       String type = type(p), state = blockData(p);

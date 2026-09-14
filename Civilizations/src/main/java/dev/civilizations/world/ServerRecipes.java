@@ -16,8 +16,12 @@ public final class ServerRecipes {
             recipe -> {
               if (!(recipe instanceof Keyed keyed) || recipe.getResult().hasItemMeta()) return;
               List<RecipeChoice> slots = new ArrayList<>();
+              boolean furnace = recipe instanceof FurnaceRecipe;
               boolean table;
-              if (recipe instanceof ShapedRecipe shaped) {
+              if (recipe instanceof FurnaceRecipe cooking) {
+                slots.add(cooking.getInputChoice());
+                table = false;
+              } else if (recipe instanceof ShapedRecipe shaped) {
                 String[] shape = shaped.getShape();
                 table = shape.length > 2 || Arrays.stream(shape).anyMatch(row -> row.length() > 2);
                 for (String row : shape)
@@ -47,7 +51,8 @@ public final class ServerRecipes {
                         recipe.getResult().getType().name(),
                         recipe.getResult().getAmount(),
                         choices,
-                        table));
+                        table,
+                        furnace));
             });
     return new CraftingBook(result);
   }

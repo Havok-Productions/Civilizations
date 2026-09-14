@@ -44,12 +44,27 @@ public final class FarmingActions {
       actor.swingMainHand();
       return new Result(true, "Harvested mature wheat and replanted with a real seed");
     }
-    if (!Set.of(Material.AIR, Material.CAVE_AIR, Material.SHORT_GRASS, Material.TALL_GRASS)
-        .contains(crop.getType())) return new Result(false, "Farm plot obstructed");
+    boolean clutter =
+        BlockRules.replaceable(crop)
+            || plugin.experiments() != null
+                && BlockObservation.learnedClear(
+                    plugin.experiments().rules(), actor.getUniqueId().toString(), crop);
+    boolean grade =
+        Set.of(Material.DIRT, Material.GRASS_BLOCK).contains(crop.getType())
+            && crop.getRelative(BlockFace.UP).isPassable()
+            && BlockRules.dry(crop);
+    if (!clutter && !grade) return new Result(false, "Farm plot obstructed by " + crop.getType());
     if (!Set.of(Material.DIRT, Material.GRASS_BLOCK, Material.FARMLAND).contains(soil.getType()))
       return new Result(false, "Farm soil changed");
     if (InventoryOps.count(actor.getInventory(), Material.WHEAT_SEEDS) < 1)
       return new Result(false, "Missing WHEAT_SEEDS");
+    List<ItemStack> clearingDrops =
+        crop.getType().isAir()
+            ? List.of()
+            : List.copyOf(crop.getDrops(new ItemStack(Material.AIR), actor));
+    if (!InventoryOps.canExchange(actor.getInventory(), Map.of("WHEAT_SEEDS", 1), clearingDrops))
+      return new Result(false, "No inventory space for farm preparation drops; plot retained");
+    String cleared = crop.getType().name();
     BlockState oldSoil = soil.getState(), oldCrop = crop.getState();
     try {
       Farmland data = (Farmland) Material.FARMLAND.createBlockData();
@@ -62,6 +77,24 @@ public final class FarmingActions {
       return new Result(false, "Planting failed; seed retained");
     }
     InventoryOps.remove(actor.getInventory(), Material.WHEAT_SEEDS, 1);
+    clearingDrops.forEach(item -> actor.getInventory().addItem(item));
+    plugin.debug(
+        "",
+        actor.getUniqueId().toString(),
+        "farm_preparation",
+        Map.of(
+            "cleared",
+            cleared,
+            "position",
+            new dev.civilizations.core.Pos(crop.getX(), crop.getY(), crop.getZ()),
+            "drops",
+            clearingDrops.stream()
+                .map(i -> Map.of("item", i.getType().name(), "amount", i.getAmount()))
+                .toList(),
+            "actual_crop",
+            crop.getType().name(),
+            "verified",
+            crop.getType() == Material.WHEAT));
     actor.swingMainHand();
     return new Result(true, "Planted wheat using one seed");
   }

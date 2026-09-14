@@ -17,7 +17,11 @@ final class RouteDesign {
       if ((a.x() == z.x()) == (a.z() == z.z()))
         throw new IllegalArgumentException("Route segments must be nonzero and axis aligned");
       int dx = Integer.compare(z.x(), a.x()), dz = Integer.compare(z.z(), a.z());
-      int length = Math.abs(z.x() - a.x()) + Math.abs(z.z() - a.z());
+      long distance = Math.abs((long) z.x() - a.x()) + Math.abs((long) z.z() - a.z());
+      if (distance + result.size() > 8192)
+        throw new IllegalArgumentException(
+            "Route compilation capacity exceeded; split the route into buildable stages");
+      int length = (int) distance;
       for (int n = 1; n <= length; n++)
         result.add(new Blueprint.Point(a.x() + dx * n, a.z() + dz * n));
       if (result.size() > 8192)

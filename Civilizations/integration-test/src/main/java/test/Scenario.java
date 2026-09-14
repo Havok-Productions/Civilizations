@@ -2,6 +2,7 @@ package test;
 
 /** Physical checks are opt-in and exclusive; no implicit full-village scenario. */
 enum Scenario {
+  PROGRESS,
   LIVE_SKILL,
   RULE_LEARNING,
   NAVIGATION,

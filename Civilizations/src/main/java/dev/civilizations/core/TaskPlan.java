@@ -28,6 +28,12 @@ public final class TaskPlan {
           "Use a wooden pickaxe to collect three cobblestone; craft a stone pickaxe before"
               + " iron/copper ore");
     if (!missing.isEmpty()) steps.add("Obtain remaining ingredients: " + missing);
+    if (job.material.equals("GLASS")) {
+      steps.add("Observe sand on dry riverbanks, beaches or deserts; gather a safe top layer");
+      steps.add(
+          "Use or craft a furnace from cobblestone; load sand and real fuel; collect only actual"
+              + " smelted glass");
+    }
     steps.add("Execute " + job.kind + " at " + job.target.key() + " and verify the world result");
     steps.add("Finish the committed project before depositing surplus; retain tools and food");
     return Map.of("goal", job.project, "job", job.id, "steps", steps, "missing", missing);

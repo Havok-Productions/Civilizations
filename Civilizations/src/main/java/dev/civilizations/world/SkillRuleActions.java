@@ -60,7 +60,7 @@ public final class SkillRuleActions {
                     .getBytes(java.nio.charset.StandardCharsets.UTF_8))
             .toString();
     return new SkillContext(
-        context.key() + ":" + revision,
+        context.key() + ":" + plugin.getPluginMeta().getVersion() + ":" + revision,
         context.map(),
         context.origin(),
         context.goal(),
@@ -72,6 +72,15 @@ public final class SkillRuleActions {
 
   public void execute(
       RecoveryExperiments.Trial trial, SkillProgram.Step step, Pos p, String explanation) {
+    execute(trial, step, p, explanation, trial.context.map());
+  }
+
+  public void execute(
+      RecoveryExperiments.Trial trial,
+      SkillProgram.Step step,
+      Pos p,
+      String explanation,
+      dev.civilizations.navigation.NavigationMap observed) {
     var rules = plugin.experiments().rules();
     Map<String, Object> receipt;
     if (step.op() == SkillProgram.Op.TUNE) {
@@ -102,7 +111,7 @@ public final class SkillRuleActions {
               "trial_scoped_rule_edit");
     } else {
       var facts = BlockObservation.capture(location(p).getBlock());
-      if (!facts.material().equals(trial.context.map().cell(p).material()))
+      if (!facts.material().equals(observed.cell(p).material()))
         throw new IllegalArgumentException("Classification target changed since observation");
       var proposed =
           rules.stage(trial.id, trial.worker, facts, step.material(), explanation, trial.teacher);

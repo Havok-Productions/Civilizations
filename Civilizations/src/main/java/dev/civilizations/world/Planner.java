@@ -15,7 +15,9 @@ public final class Planner {
       List<Pos> stone,
       List<Pos> logs,
       List<Pos> coal,
-      List<Pos> seeds) {}
+      List<Pos> seeds,
+      List<Pos> sand,
+      List<Pos> redSand) {}
 
   public Result plan(Terrain t, Pos center, int radius, int wallHeight, int depth, int length) {
     return plan(t, center, radius, wallHeight, depth, length, p -> true);
@@ -45,7 +47,9 @@ public final class Planner {
         stone = new ArrayList<>(),
         logs = new ArrayList<>(),
         coal = new ArrayList<>(),
-        seeds = new ArrayList<>();
+        seeds = new ArrayList<>(),
+        sand = new ArrayList<>(),
+        redSand = new ArrayList<>();
     Pos chest = null;
     for (int x = center.x() - 30; x <= center.x() + 30; x++)
       for (int z = center.z() - 30; z <= center.z() + 30; z++) {
@@ -63,6 +67,9 @@ public final class Planner {
           if (Set.of("COAL_ORE", "DEEPSLATE_COAL_ORE").contains(m) && exposed(t, p)) coal.add(p);
           if (m.endsWith("_LOG") && !m.startsWith("STRIPPED_") && tree(t, p)) logs.add(p);
           if (Set.of("SHORT_GRASS", "TALL_GRASS").contains(m)) seeds.add(p);
+          if ((m.equals("SAND") || m.equals("RED_SAND"))
+              && (t.clear(p.add(0, 1, 0)) || exposed(t, p)))
+            (m.equals("SAND") ? sand : redSand).add(p);
         }
       }
     Comparator<Pos> closest = Comparator.comparingLong(p -> p.distance2(center));
@@ -85,7 +92,9 @@ public final class Planner {
         stone,
         logs,
         coal,
-        seeds);
+        seeds,
+        List.copyOf(sand),
+        List.copyOf(redSand));
   }
 
   public List<Job> wall(Terrain t, Pos c, int r, int height) {
