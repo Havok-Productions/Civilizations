@@ -17,7 +17,7 @@ public final class DesignCoordinator implements AutoCloseable {
   private final InferenceQueue inference;
   private final VillageConnections connections;
 
-  private final RegionSnapshots snapshots;
+  private final TerrainSurvey snapshots;
   private final Executor executor;
   private final Supplier<Collection<Settlement>> settlements;
   private final Consumer<String> log;
@@ -37,7 +37,7 @@ public final class DesignCoordinator implements AutoCloseable {
   public DesignCoordinator(
       InferenceQueue inference,
       VillageConnections connections,
-      RegionSnapshots snapshots,
+      TerrainSurvey snapshots,
       Executor executor,
       Supplier<Collection<Settlement>> settlements,
       Path directory,
@@ -86,7 +86,8 @@ public final class DesignCoordinator implements AutoCloseable {
               .orElse(null);
       if (retry != null) {
         next.put(v.id(), now + interval);
-        survey(v, world, retry);
+        if (retry.needsSalvage()) salvageSurvey(v, world, retry, resourceSites);
+        else survey(v, world, retry);
         return;
       }
       Pos focus = DesignFocus.select(v);
@@ -109,12 +110,54 @@ public final class DesignCoordinator implements AutoCloseable {
 
   private void considerReady(
       Settlement v, World world, Pos origin, Terrain terrain, Map<String, Integer> resourceSites) {
+    considerReady(v, world, origin, terrain, resourceSites, null);
+  }
+
+  private void salvageSurvey(
+      Settlement v, World world, DesignProposal proposal, Map<String, Integer> resourceSites) {
+    // A failed distant/oversized survey must not prevent the model from repairing its coordinates.
+    snapshots
+        .capture(world, proposal.origin(), 32)
+        .thenAcceptAsync(
+            t -> considerReady(v, world, proposal.origin(), t, resourceSites, proposal), executor)
+        .exceptionally(
+            error -> {
+              deferred(v, proposal, "Fresh survey unavailable: " + error.getMessage());
+              pending.remove(v.id());
+              return null;
+            });
+  }
+
+  private void considerReady(
+      Settlement v,
+      World world,
+      Pos origin,
+      Terrain terrain,
+      Map<String, Integer> resourceSites,
+      DesignProposal salvage) {
     long now = System.currentTimeMillis();
     Set<String> kinds = DesignNeeds.allowed(v, activeLimit);
+    if (salvage != null) kinds = kinds.contains(salvage.kind()) ? Set.of(salvage.kind()) : Set.of();
     if (closed || v.paused() || kinds.isEmpty()) {
       pending.remove(v.id());
       next.put(v.id(), now + interval);
       return;
+    }
+    if (salvage != null && ProposalSalvage.geometryValid(salvage)) {
+      // Terrain may have changed since failure. Keep the original layout if it now works.
+      DesignProposal recheck =
+          salvage.status().equals("needs_revision")
+              ? salvage.revised(
+                  salvage.blueprint(),
+                  "awaiting_validation",
+                  "Rechecking the retained site after earlier salvage failed",
+                  now)
+              : salvage;
+      var fresh = accept(v, recheck, terrain);
+      if (fresh == null || fresh.accepted() || !fresh.proposal().needsSalvage()) {
+        pending.remove(v.id());
+        return;
+      }
     }
     observer.accept(
         v.id(),
@@ -152,11 +195,27 @@ public final class DesignCoordinator implements AutoCloseable {
     report.put("material_sources", MaterialSources.knowledge());
     report.put("stock_age_seconds", Math.min(9999, v.stockAge(now) / 1000));
     report.put("feedback", v.designFeedback());
+    if (salvage != null) report.put("salvage_existing_proposal", ProposalSalvage.context(salvage));
     report.put(
         "retained_proposals",
         v.proposals().stream()
             .sorted(Comparator.comparingLong(DesignProposal::retryAt))
             .limit(6)
+            .map(
+                p ->
+                    Map.of(
+                        "id",
+                        p.id(),
+                        "kind",
+                        p.kind(),
+                        "origin",
+                        p.origin(),
+                        "blueprint",
+                        p.blueprint(),
+                        "status",
+                        p.status(),
+                        "reason",
+                        p.reason()))
             .toList());
     report.put("supply_requests", v.supplyNeeds(now));
     report.put("shared_facts", v.knowledge().report(now));
@@ -223,7 +282,11 @@ public final class DesignCoordinator implements AutoCloseable {
             .toList());
     write(v, "map", report);
     next.put(v.id(), now + interval);
-    statuses.put(v.id(), "local AI mapping/designing");
+    statuses.put(
+        v.id(),
+        salvage == null
+            ? "local AI mapping/designing"
+            : "salvaging retained " + salvage.kind() + " proposal " + salvage.id());
     boolean submitted =
         inference.submit(
             "design:" + v.id(),
@@ -236,6 +299,10 @@ public final class DesignCoordinator implements AutoCloseable {
             blueprint -> {
               if (closed) {
                 pending.remove(v.id());
+                return;
+              }
+              if (salvage != null) {
+                salvageResponse(v, world, salvage, blueprint, examples);
                 return;
               }
               if (blueprint == null) {
@@ -254,10 +321,91 @@ public final class DesignCoordinator implements AutoCloseable {
               receive(v, world, blueprint, origin);
             });
     if (!submitted) {
-      pending.remove(v.id());
       next.put(v.id(), now + 30_000);
-      statuses.put(v.id(), "waiting for local model/queue");
+      if (salvage != null) salvageResponse(v, world, salvage, null, examples);
+      else {
+        pending.remove(v.id());
+        statuses.put(v.id(), "waiting for local model/queue");
+      }
     }
+  }
+
+  private void salvageResponse(
+      Settlement v,
+      World world,
+      DesignProposal proposal,
+      Blueprint response,
+      List<Map<String, Object>> examples) {
+    boolean usable = ProposalSalvage.usable(proposal, response);
+    Blueprint revision = usable ? response : ProposalSalvage.alternative(proposal, examples);
+    if (revision == null) {
+      connections.read(
+          () -> {
+            Settlement current = current(v);
+            if (current == null || closed) return;
+            DesignProposal saved =
+                current.proposals().stream()
+                    .filter(p -> p.id().equals(proposal.id()))
+                    .findFirst()
+                    .orElse(null);
+            if (saved == null) return;
+            String why =
+                "No usable model revision or observed alternative yet; preserve this goal. Prior"
+                    + " blocker: "
+                    + proposal.reason();
+            // Keep the original reason stable; the failed salvage is recorded separately for
+            // inspection.
+            var waiting =
+                saved.waiting(
+                    "needs_revision", saved.reason(), System.currentTimeMillis() + 2 * interval);
+            current.proposal(waiting);
+            write(current, "salvage", Map.of("proposal", waiting, "result", why));
+            feedback(current, why);
+          });
+      pending.remove(v.id());
+      return;
+    }
+    java.util.concurrent.atomic.AtomicReference<DesignProposal> revised =
+        new java.util.concurrent.atomic.AtomicReference<>();
+    connections.read(
+        () -> {
+          Settlement current = current(v);
+          if (current == null || closed) return;
+          DesignProposal saved =
+              current.proposals().stream()
+                  .filter(p -> p.id().equals(proposal.id()))
+                  .findFirst()
+                  .orElse(null);
+          if (saved == null)
+            return; // Late model response after another callback admitted the proposal.
+          write(
+              current,
+              "salvage-response",
+              Map.of(
+                  "proposal_id",
+                  saved.id(),
+                  "model_response",
+                  response == null ? "No model output available" : response,
+                  "selected_revision",
+                  revision,
+                  "source",
+                  usable ? "model" : "validated local alternative"));
+          var candidate =
+              ProposalSalvage.revise(
+                  saved,
+                  revision,
+                  usable
+                      ? "Model salvage of retained proposal"
+                      : "Observed local salvage of retained proposal",
+                  System.currentTimeMillis() + 2 * interval);
+          current.proposal(candidate);
+          revised.set(candidate);
+          write(current, "salvage", candidate);
+          feedback(current, "Trying salvaged " + candidate.kind() + ": " + candidate.reason());
+        });
+    DesignProposal candidate = revised.get();
+    if (candidate == null || candidate.status().equals("needs_revision")) pending.remove(v.id());
+    else survey(v, world, candidate);
   }
 
   private void useObservedAlternative(
@@ -350,7 +498,10 @@ public final class DesignCoordinator implements AutoCloseable {
         });
   }
 
-  private synchronized void accept(Settlement previous, DesignProposal proposal, Terrain terrain) {
+  private synchronized DesignProposals.Admission accept(
+      Settlement previous, DesignProposal proposal, Terrain terrain) {
+    java.util.concurrent.atomic.AtomicReference<DesignProposals.Admission> admission =
+        new java.util.concurrent.atomic.AtomicReference<>();
     connections.read(
         () -> {
           Settlement v = current(previous);
@@ -363,6 +514,7 @@ public final class DesignCoordinator implements AutoCloseable {
                   occupied(v),
                   activeLimit,
                   System.currentTimeMillis() + 2 * interval);
+          admission.set(result);
           next.put(v.id(), System.currentTimeMillis() + interval);
           if (!result.accepted()) {
             write(v, "proposal", result.proposal());
@@ -396,6 +548,7 @@ public final class DesignCoordinator implements AutoCloseable {
                     + result.design().materials());
           }
         });
+    return admission.get();
   }
 
   private Map<String, Integer> relative(Settlement v, Pos p) {

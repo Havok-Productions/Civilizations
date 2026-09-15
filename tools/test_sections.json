@@ -13,6 +13,7 @@
   },
   "source_rules": [
     {"patterns": ["*/DesignProposal.java"], "sections": ["design", "settlements"]},
+    {"patterns": ["*/TerrainSurvey.java"], "sections": ["design", "navigation"]},
     {"patterns": ["*/Job.java", "*/TaskCheckpoint.java", "*/TaskContinuity.java"], "sections": ["tasks", "settlements"]},
     {"patterns": ["*/VillagerWorker.java"], "sections": ["tasks", "storage", "crafting", "coreai"]},
     {"patterns": ["*/DeliveryBoard.java", "*/DeliveryActions.java", "*/NearbyWork.java"], "sections": ["storage", "tasks", "crafting"]},

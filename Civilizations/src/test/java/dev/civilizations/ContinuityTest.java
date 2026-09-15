@@ -251,7 +251,8 @@ class ContinuityTest {
             List.of(DesignTest.p(0, 0), DesignTest.p(3, 3)));
     var p = DesignProposals.retain(v, diagonal, v.center(), 100);
     assertEquals("needs_revision", p.status());
-    assertFalse(p.due(Long.MAX_VALUE));
+    assertTrue(p.due(100));
+    assertTrue(p.needsSalvage());
     assertEquals(diagonal, Blueprint.parse(p.original()));
     assertEquals(p, v.proposals().getFirst());
   }

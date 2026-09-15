@@ -7,7 +7,7 @@ import org.bukkit.*;
 import org.bukkit.plugin.Plugin;
 
 /** No blocking waits and no forced chunk loads. Snapshot acquisition owns each chunk. */
-public final class RegionSnapshots {
+public final class RegionSnapshots implements TerrainSurvey {
   private final Plugin plugin;
   private final Executor executor;
   private volatile dev.coreai.TerrainRuleBook rules;
