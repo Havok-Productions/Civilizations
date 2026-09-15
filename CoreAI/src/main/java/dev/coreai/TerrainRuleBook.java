@@ -6,7 +6,7 @@ import java.nio.file.*;
 import java.util.*;
 
 /**
- * Editable environment rules. Probes test hypotheses; only a completed live trial publishes them.
+ * Measured block classifications survive unrelated failures. Behavior edits require goal evidence.
  */
 public final class TerrainRuleBook {
   public record Facts(
@@ -80,6 +80,9 @@ public final class TerrainRuleBook {
       throw new IllegalArgumentException("Measured danger/fluid cannot be relabeled as harmless");
     if (category.equals("PASSABLE") && !facts.passable())
       throw new IllegalArgumentException("Classification contradicts observed collision");
+    if (category.equals("OBSTACLE") && facts.passable())
+      throw new IllegalArgumentException(
+          "Obstacle classification contradicts observed passability");
     if (category.equals("CLEARABLE") && (!facts.removable() || facts.solid() || facts.container()))
       throw new IllegalArgumentException("No evidence for nonstructural removal");
   }
@@ -146,12 +149,14 @@ public final class TerrainRuleBook {
     pilots.remove(trial);
   }
 
-  /** Called only on the learning IO thread. Failed/interrupted candidates do not become rules. */
+  /**
+   * Called on the learning IO thread. Preserve validated facts independently of behavior success.
+   */
   public State finish(String trial, boolean success) throws IOException {
     State state;
     synchronized (this) {
       Pilot p = pilots.get(trial);
-      if (p == null || !success) {
+      if (p == null || (!success && p.rules.isEmpty())) {
         pilots.remove(trial);
         return snapshot();
       }
@@ -163,10 +168,12 @@ public final class TerrainRuleBook {
           });
       while (next.size() > 256) next.remove(next.keySet().iterator().next());
       var nextParameters = new LinkedHashMap<>(parameters);
-      nextParameters.putAll(p.parameters);
+      if (success) nextParameters.putAll(p.parameters);
       state =
           new State(
-              List.copyOf(next.values()), p.radius == 0 ? searchRadius : p.radius, nextParameters);
+              List.copyOf(next.values()),
+              !success || p.radius == 0 ? searchRadius : p.radius,
+              nextParameters);
       while (new Gson().toJson(state).length() > 900000 && next.size() > 1) {
         next.remove(next.keySet().iterator().next());
         state = new State(List.copyOf(next.values()), state.searchRadius(), state.parameters());

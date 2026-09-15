@@ -124,7 +124,7 @@ public final class SkillRuleActions {
               "proposed_rule",
               proposed,
               "status",
-              "probe_passed; awaiting live outcome");
+              "classification_verified_by_live_facts; retained_independently_of_route_outcome");
     }
     plugin.experiments().step(trial, receipt);
     plugin.debug(trial.village, trial.worker, "learning_rule_trial", receipt);

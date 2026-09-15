@@ -598,19 +598,57 @@ public final class Settlement {
   }
 
   public synchronized boolean done(String id, String worker) {
+    return done(id, worker, "verified_step");
+  }
+
+  public synchronized boolean done(String id, String worker, String effect) {
     Job j = find(id);
-    if (j == null || !worker.equals(j.owner)) return false;
+    if (j == null || j.complete || !worker.equals(j.owner)) return false;
     j.complete = true;
     data.agents
         .values()
         .forEach(a -> TaskContinuity.completed(a.taskCheckpoints, id, System.currentTimeMillis()));
     j.everBuilt = j.kind != Job.Kind.CLEAR;
     j.owner = null;
-    remember(worker, "Completed " + j.project + " at " + j.target.key(), true);
+    boolean projectComplete = allComplete(j.project);
+    long total = data.jobs.stream().filter(step -> step.project.equals(j.project)).count();
+    long completed =
+        data.jobs.stream().filter(step -> step.project.equals(j.project) && step.complete).count();
+    remember(
+        worker,
+        "Step "
+            + completed
+            + "/"
+            + total
+            + " of "
+            + j.project
+            + " at "
+            + j.target.key()
+            + "; "
+            + effect
+            + (projectComplete ? "; project complete" : "; project unfinished"),
+        !effect.equals("already_satisfied"));
+    observer.accept(
+        worker,
+        Map.of(
+            "progress_type",
+            "job_step",
+            "job",
+            j.id,
+            "project",
+            j.project,
+            "effect",
+            effect,
+            "completed_steps",
+            completed,
+            "total_steps",
+            total,
+            "project_complete",
+            projectComplete));
     knowledge.progress(
         worker,
         j.project,
-        allComplete(j.project) ? "Project complete" : "Next validated project step",
+        projectComplete ? "Project complete" : "Next validated project step",
         "",
         "Completed " + j.kind + " at " + j.target.key(),
         System.currentTimeMillis());

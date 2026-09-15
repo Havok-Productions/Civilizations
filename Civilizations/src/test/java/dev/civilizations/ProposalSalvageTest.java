@@ -18,6 +18,113 @@ import org.junit.jupiter.api.io.TempDir;
 class ProposalSalvageTest {
   @TempDir Path directory;
 
+  @Test
+  @Tag("design")
+  @Tag("inference")
+  @Tag("interaction")
+  void retainedWallOutsideOriginalContextGetsCompleteSurveyBeforeRevalidation() throws Exception {
+    Settlement v = CoreTest.village();
+    v.enroll("worker", 5);
+    Pos origin = v.center().add(26, 0, 52);
+    Blueprint b =
+        new Blueprint(
+            "wall",
+            "Protect existing work center",
+            -26,
+            -56,
+            0,
+            0,
+            2,
+            "north",
+            List.of(
+                DesignTest.p(-30, -56),
+                DesignTest.p(-22, -56),
+                DesignTest.p(-22, -48),
+                DesignTest.p(-30, -48)));
+    var saved =
+        DesignProposals.retain(v, b, origin, 0)
+            .waiting("needs_revision", "Terrain not observed at -26,-52", 0);
+    v.proposal(saved);
+    v.beds(List.of(v.center()));
+    List<Integer> radii = new CopyOnWriteArrayList<>();
+    Backend backend = new Backend();
+    try (var queue = new InferenceQueue(backend, 4);
+        var coordinator =
+            new DesignCoordinator(
+                queue,
+                new VillageConnections(),
+                (world, center, radius) -> {
+                  radii.add(radius);
+                  return CompletableFuture.completedFuture(
+                      new CoreTest.Flat() {
+                        public boolean available(int x, int z) {
+                          return Math.abs(x - center.x()) <= radius
+                              && Math.abs(z - center.z()) <= radius;
+                        }
+
+                        public String type(Pos p) {
+                          return available(p.x(), p.z()) ? super.type(p) : "UNKNOWN";
+                        }
+                      });
+                },
+                Runnable::run,
+                () -> List.of(v),
+                directory,
+                1000,
+                2,
+                message -> {})) {
+      coordinator.consider(v, null, new CoreTest.Flat(), Map.of());
+      assertEquals(List.of(b.surveyRadius()), radii);
+      assertTrue(v.proposals().isEmpty(), v.designFeedback().toString());
+      assertEquals(DesignProposals.project(saved), v.designs().getFirst().project());
+      assertNull(backend.request.get());
+    }
+  }
+
+  @Test
+  @Tag("design")
+  @Tag("inference")
+  @Tag("interaction")
+  void exhaustedFullSurveyUsesSmallMapOnlyForRevisionWithoutOverwritingRealFailure() {
+    Settlement v = CoreTest.village();
+    v.enroll("worker", 5);
+    Blueprint b = DesignTest.house(4100, 1200, 5, 5, "north");
+    var saved =
+        DesignProposals.retain(v, b, v.center(), 0)
+            .waiting("needs_revision", "snapshot_resource_budget_exceeded", 0);
+    v.proposal(saved);
+    List<Integer> radii = new ArrayList<>();
+    try (var queue = new InferenceQueue(new Backend(), 4);
+        var coordinator =
+            new DesignCoordinator(
+                queue,
+                new VillageConnections(),
+                (world, center, radius) -> {
+                  radii.add(radius);
+                  if (radius > 32)
+                    return CompletableFuture.failedFuture(
+                        new RejectedExecutionException("snapshot_resource_budget_exceeded"));
+                  return CompletableFuture.completedFuture(
+                      new CoreTest.Flat() {
+                        public String type(Pos p) {
+                          return p.y() == 64 ? "WATER" : super.type(p);
+                        }
+                      });
+                },
+                Runnable::run,
+                () -> List.of(v),
+                directory,
+                1000,
+                2,
+                message -> {})) {
+      coordinator.consider(v, null, new CoreTest.Flat(), Map.of());
+      assertEquals(List.of(b.surveyRadius(), 32), radii);
+      assertTrue(v.jobs().isEmpty());
+      assertTrue(v.proposals().getFirst().reason().contains("snapshot_resource_budget_exceeded"));
+      assertFalse(v.proposals().getFirst().reason().contains("Terrain not observed"));
+    }
+  }
+
   private static class Backend implements ModelBackend {
     boolean online;
     Blueprint answer;

@@ -167,16 +167,53 @@ public final class WorkerNavigation {
     if (!target.equals(workTarget)) {
       rejectedWorkPositions.clear();
       workTarget = target;
+      workApproach = null;
     }
     int reach = WorkerTuning.value(plugin, actor, "construction.reach_squared");
-    walk(
-        WorkPositions.choose(actor, stand, target, reach, rejectedWorkPositions),
-        target,
-        reach,
-        now);
+    if (workApproach != null
+        && Bukkit.isOwnedByCurrentRegion(location(target), 1)
+        && Bukkit.isOwnedByCurrentRegion(location(workApproach), 1)
+        && !WorkPositions.usable(actor, workApproach, target, reach)) {
+      rejectedWorkPositions.add(workApproach);
+      event(
+          "work_position_occluded_or_changed",
+          java.util.Map.of(
+              "stand",
+              workApproach,
+              "target",
+              target,
+              "next_action",
+              "retain another approach until arrival; do not reselect this failed stand"),
+          true);
+      workApproach = null;
+    }
+    if (workApproach == null || rejectedWorkPositions.contains(workApproach))
+      workApproach = WorkPositions.choose(actor, stand, target, reach, rejectedWorkPositions);
+    if (workApproach == null) {
+      event(
+          "no_visible_supported_work_position",
+          java.util.Map.of(
+              "target",
+              target,
+              "rejected_stands",
+              java.util.Set.copyOf(rejectedWorkPositions),
+              "next_action",
+              "retain task and request recovery observations"),
+          true);
+      failed.accept(
+          now,
+          "No observed supported work position can see target "
+              + target.key()
+              + "; preparation or scaffolding needed");
+      return;
+    }
+    // Ranking again on every movement tick makes a corner's center-visible cell win as soon as
+    // the actor leaves it, cancelling the longer route to a genuinely visible working position.
+    walk(workApproach, target, reach, now);
   }
 
   private Pos workTarget;
+  private Pos workApproach;
   private final java.util.Set<Pos> rejectedWorkPositions = new java.util.HashSet<>();
 
   private NavigationService.Plan plan;
@@ -634,6 +671,7 @@ public final class WorkerNavigation {
     selected = null;
     clearanceStarted = 0;
     rejectedWorkPositions.clear();
+    workApproach = null;
     nextPlan = now;
   }
 

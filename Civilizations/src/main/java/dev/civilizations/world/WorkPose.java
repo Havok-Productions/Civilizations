@@ -9,6 +9,7 @@ import org.bukkit.entity.Villager;
 
 /** Turn toward a specific block, let the pose be visible, then verify facing before work. */
 public final class WorkPose {
+  static final double EYE_REACH = 5;
   private final CivilizationsPlugin plugin;
   private final Villager actor;
   private Pos target;
@@ -23,7 +24,7 @@ public final class WorkPose {
     Location eye = actor.getEyeLocation(), center = block.getLocation().add(.5, .5, .5);
     var delta = center.toVector().subtract(eye.toVector());
     double distance = delta.length();
-    if (distance > 5) return false;
+    if (distance > EYE_REACH) return false;
     if (distance < .001) return true;
     var hit =
         actor

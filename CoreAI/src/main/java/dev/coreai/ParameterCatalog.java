@@ -11,7 +11,7 @@ public final class ParameterCatalog {
           "construction.reach_squared",
               new Spec(
                   "construction",
-                  12,
+                  21,
                   "Squared block distance before approaching a work target; physical reach and"
                       + " visibility still apply"),
           "construction.interval_ms",

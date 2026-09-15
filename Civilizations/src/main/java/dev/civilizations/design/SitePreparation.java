@@ -24,10 +24,34 @@ final class SitePreparation {
   }
 
   static void route(DesignSite s, List<Blueprint.Point> points, int height) {
+    List<Pos> ground = points.stream().map(p -> s.ground(p.x(), p.z())).toList();
+    int[] levels = ground.stream().mapToInt(Pos::y).toArray();
+    // Grade soil humps into one-block rises. Open path endpoints are not adjacent contour columns.
+    boolean changed;
+    do {
+      changed = false;
+      for (int i = 0; i < levels.length; i++) {
+        int j = (i + 1) % levels.length;
+        Pos a = ground.get(i), b = ground.get(j);
+        if (Math.abs((long) a.x() - b.x()) + Math.abs((long) a.z() - b.z()) != 1) continue;
+        if ((long) levels[i] > (long) levels[j] + 1) {
+          levels[i] = levels[j] + 1;
+          changed = true;
+        }
+        if ((long) levels[j] > (long) levels[i] + 1) {
+          levels[j] = levels[i] + 1;
+          changed = true;
+        }
+      }
+    } while (changed);
     Set<Pos> targets = new HashSet<>();
-    for (Blueprint.Point point : points) {
-      Pos ground = s.ground(point.x(), point.z());
-      for (int y = 1; y <= height; y++) targets.add(ground.add(0, y, 0));
+    for (int i = 0; i < points.size(); i++) {
+      Pos column = ground.get(i), foundation = new Pos(column.x(), levels[i], column.z());
+      s.require(
+          s.terrain.natural(foundation) && s.terrain.dry(foundation),
+          "Route grading lacks dry natural support at " + foundation.key());
+      for (int y = levels[i] + 1; y <= column.y() + height; y++)
+        targets.add(new Pos(column.x(), y, column.z()));
     }
     clear(s, targets);
   }

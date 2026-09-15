@@ -13,7 +13,7 @@ class ExportTest(unittest.TestCase):
             receipt = {"schema": 1, "time": 1, "trial": "one", "worker": "w",
                        "village": "v", "context": "map", "event": "outcome",
                        "data": {"basis": "executor observation", "success": False,
-                                "observation": {"inventory": {}}, "program": {"steps": []},
+                                "observation": {"inventory": {}}, "program_observation": {"inventory": {"DIRT": 2}, "failure": "fresh failed walk"}, "program": {"steps": []},
                                 "evidence": {"reason": "material missing"}, "teacher": "fixture"}}
             rows = [receipt, receipt, dict(receipt, event="proposed", trial="two"),
                     dict(receipt, event="cancelled", trial="three")]
@@ -23,6 +23,8 @@ class ExportTest(unittest.TestCase):
             saved = json.loads(destination.read_text(encoding="utf-8"))
             self.assertFalse(saved["success"])
             self.assertEqual("NAVIGATION_SKILL", saved["scope"])
+            self.assertEqual({"DIRT": 2}, saved["observation"]["inventory"])
+            self.assertEqual({}, saved["original_goal_observation"]["inventory"])
             with self.assertRaises(FileExistsError):
                 export(root, destination)
 

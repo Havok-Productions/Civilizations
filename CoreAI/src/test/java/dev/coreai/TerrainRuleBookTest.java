@@ -68,14 +68,22 @@ class TerrainRuleBookTest {
 
   @org.junit.jupiter.api.Tag("coreai")
   @Test
-  void failedAndCancelledEditsRevertWithoutLosingOlderKnowledge() throws Exception {
+  void verifiedFactsSurviveFailedBehaviorEditsAndReloadWithoutPublishingParameters()
+      throws Exception {
     var book = new TerrainRuleBook(root);
     book.stage("a", "one", clutter, "PASSABLE", "test", "fixture");
     book.finish("a", true);
-    book.stage("b", "one", clutter, "OBSTACLE", "test revision", "fixture");
+    book.stage("b", "one", clutter, "CLEARABLE", "Measured removable clutter", "fixture");
     book.stageRadius("b", "one", 48);
+    book.stageParameter("b", "one", "navigation.retry_ms", 200);
     book.finish("b", false);
-    assertEquals("PASSABLE", book.rule("one", clutter.material(), clutter.state()).category());
+    assertEquals(
+        "CLEARABLE",
+        new TerrainRuleBook(root).rule("other", clutter.material(), clutter.state()).category());
+    assertEquals(15000, book.parameter("one", "navigation.retry_ms", 15000));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> book.stage("bad", "one", clutter, "OBSTACLE", "Contradicts probe", "fixture"));
     assertEquals(20, book.radius("one", 20, 48));
     book.stageRadius("c", "one", 40);
     book.cancel("c");

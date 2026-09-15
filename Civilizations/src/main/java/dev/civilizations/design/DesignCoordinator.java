@@ -115,14 +115,34 @@ public final class DesignCoordinator implements AutoCloseable {
 
   private void salvageSurvey(
       Settlement v, World world, DesignProposal proposal, Map<String, Integer> resourceSites) {
-    // A failed distant/oversized survey must not prevent the model from repairing its coordinates.
+    if (!ProposalSalvage.geometryValid(proposal)) {
+      salvageContext(v, world, proposal, resourceSites);
+      return;
+    }
+    // A retained layout gets the same complete survey as a new layout. A small context map
+    // must never overwrite its failure with an artificial "terrain not observed" rejection.
     snapshots
-        .capture(world, proposal.origin(), 32)
+        .capture(world, proposal.origin(), Blueprint.parse(proposal.blueprint()).surveyRadius())
         .thenAcceptAsync(
             t -> considerReady(v, world, proposal.origin(), t, resourceSites, proposal), executor)
         .exceptionally(
             error -> {
               deferred(v, proposal, "Fresh survey unavailable: " + error.getMessage());
+              salvageContext(v, world, proposal, resourceSites);
+              return null;
+            });
+  }
+
+  private void salvageContext(
+      Settlement v, World world, DesignProposal proposal, Map<String, Integer> resourceSites) {
+    snapshots
+        .capture(world, proposal.origin(), 32)
+        .thenAcceptAsync(
+            t -> considerReady(v, world, proposal.origin(), t, resourceSites, proposal, false),
+            executor)
+        .exceptionally(
+            error -> {
+              deferred(v, proposal, "Salvage context unavailable: " + error.getMessage());
               pending.remove(v.id());
               return null;
             });
@@ -135,6 +155,17 @@ public final class DesignCoordinator implements AutoCloseable {
       Terrain terrain,
       Map<String, Integer> resourceSites,
       DesignProposal salvage) {
+    considerReady(v, world, origin, terrain, resourceSites, salvage, true);
+  }
+
+  private void considerReady(
+      Settlement v,
+      World world,
+      Pos origin,
+      Terrain terrain,
+      Map<String, Integer> resourceSites,
+      DesignProposal salvage,
+      boolean completeSurvey) {
     long now = System.currentTimeMillis();
     Set<String> kinds = DesignNeeds.allowed(v, activeLimit);
     if (salvage != null) kinds = kinds.contains(salvage.kind()) ? Set.of(salvage.kind()) : Set.of();
@@ -143,7 +174,7 @@ public final class DesignCoordinator implements AutoCloseable {
       next.put(v.id(), now + interval);
       return;
     }
-    if (salvage != null && ProposalSalvage.geometryValid(salvage)) {
+    if (salvage != null && completeSurvey && ProposalSalvage.geometryValid(salvage)) {
       // Terrain may have changed since failure. Keep the original layout if it now works.
       DesignProposal recheck =
           salvage.status().equals("needs_revision")
@@ -158,6 +189,7 @@ public final class DesignCoordinator implements AutoCloseable {
         pending.remove(v.id());
         return;
       }
+      salvage = fresh.proposal();
     }
     observer.accept(
         v.id(),
@@ -175,6 +207,11 @@ public final class DesignCoordinator implements AutoCloseable {
     Map<String, Object> report = new LinkedHashMap<>();
     report.put("survey_origin", origin);
     report.put("snapshot_coverage", terrain.observationReport());
+    report.put(
+        "survey_scope",
+        completeSurvey
+            ? "full proposed footprint"
+            : "local revision context only; full footprint survey failed");
     report.put(
         "coordinate_example",
         Map.of(
@@ -232,6 +269,7 @@ public final class DesignCoordinator implements AutoCloseable {
             + " or a local wall when useful. Exact terrain and work-position checks follow. Explain"
             + " how you address recorded site failures.");
     String schema = Blueprint.SCHEMA;
+    final DesignProposal retainedSalvage = salvage;
     if (examples.isEmpty())
       observer.accept(
           v.id(),
@@ -301,8 +339,8 @@ public final class DesignCoordinator implements AutoCloseable {
                 pending.remove(v.id());
                 return;
               }
-              if (salvage != null) {
-                salvageResponse(v, world, salvage, blueprint, examples);
+              if (retainedSalvage != null) {
+                salvageResponse(v, world, retainedSalvage, blueprint, examples);
                 return;
               }
               if (blueprint == null) {

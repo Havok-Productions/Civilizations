@@ -20,6 +20,82 @@ class RecoveryExperimentsTest {
   @org.junit.jupiter.api.Tag("inference")
   @org.junit.jupiter.api.Tag("interaction")
   @Test
+  void failedInstructionCanBeRevisedInSameTrialWithFreshEvidenceAndCorrectLearningAttribution()
+      throws Exception {
+    String old =
+        "{\"explanation\":\"Walk\",\"steps\":[{\"op\":\"WALK\",\"x\":2,\"y\":0,\"z\":0,\"material\":\"\"}]}";
+    String revised =
+        "{\"explanation\":\"Clear accessible clutter"
+            + " first\",\"steps\":[{\"op\":\"CLEAR\",\"x\":1,\"y\":0,\"z\":0,\"material\":\"\"}]}";
+    var answer = new java.util.concurrent.atomic.AtomicReference<>(old);
+    var request = new java.util.concurrent.atomic.AtomicReference<String>();
+    ModelBackend backend =
+        new ModelBackend() {
+          public boolean ready() {
+            return true;
+          }
+
+          public String status() {
+            return "fixture";
+          }
+
+          public void close() {}
+
+          public String complete(String system, String report) {
+            request.set(report);
+            return answer.get();
+          }
+        };
+    Pos origin = new Pos(0, 1, 0), goal = new Pos(4, 1, 0);
+    var map = new NavigationMap(origin, 8, 3, Map.of());
+    var context = SkillContext.create(map, origin, goal, 1, Map.of(), "blocked");
+    var fresh =
+        SkillContext.create(
+            map, origin, goal, 1, Map.of(), "instruction_route: no_connected_route");
+    try (var queue = new InferenceQueue(backend, 4);
+        var experiments = new RecoveryExperiments(root, queue, () -> "fixture", s -> fail(s))) {
+      long now = System.currentTimeMillis();
+      var trial = experiments.request("v", "worker", context, now);
+      trial.program.get(2, TimeUnit.SECONDS);
+      answer.set(revised);
+      assertEquals(
+          SkillProgram.parse(revised),
+          experiments
+              .revise(trial, fresh, Map.of("failed_index", 0, "reason", "no_connected_route"), now)
+              .get(2, TimeUnit.SECONDS));
+      assertTrue(request.get().contains("failed_execution"));
+      assertTrue(request.get().contains("original") || request.get().contains("original_goal"));
+      experiments.finish(trial, true, "fixture goal receipt", Map.of("position", goal));
+      await(
+          () -> {
+            try {
+              return Files.readString(root.resolve("data/experiments.jsonl"))
+                  .contains("\"event\":\"outcome\"");
+            } catch (Exception e) {
+              return false;
+            }
+          });
+      var library = new SkillLibrary(root.resolve("skills"));
+      assertNull(
+          library.reusable(context.key()),
+          "Failed original instructions cannot be taught as successful");
+      assertEquals(SkillProgram.parse(revised), library.reusable(fresh.key()));
+      var second = experiments.request("v", "worker", context, now + 31000);
+      second.program.get(2, TimeUnit.SECONDS);
+      assertThrows(
+          ExecutionException.class,
+          () ->
+              experiments
+                  .revise(second, context, Map.of("reason", "same failure"), now + 31000)
+                  .get(2, TimeUnit.SECONDS));
+      experiments.cancel(second, "fixture_end");
+    }
+  }
+
+  @org.junit.jupiter.api.Tag("coreai")
+  @org.junit.jupiter.api.Tag("inference")
+  @org.junit.jupiter.api.Tag("interaction")
+  @Test
   void queueCachesOnlyObservedSuccessAndSuspendsFailedReuse() throws Exception {
     AtomicInteger calls = new AtomicInteger();
     String source =

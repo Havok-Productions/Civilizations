@@ -528,4 +528,59 @@ class DesignTest {
     assertTrue(rows.contains("#"));
     assertEquals(3, map.get("cell_size"));
   }
+
+  @org.junit.jupiter.api.Tag("design")
+  @org.junit.jupiter.api.Tag("tasks")
+  @org.junit.jupiter.api.Tag("interaction")
+  @Test
+  void steepSoilOnWallContourGetsRealPreparationButStructuresArePreserved() {
+    var terrain =
+        new CoreTest.Flat() {
+          public int height(int x, int z) {
+            return x == 3 && z == 3 ? 67 : 64;
+          }
+        };
+    Pos hump = new Pos(3, 65, 3);
+    for (int dy = 0; dy < 3; dy++) terrain.overrides.put(hump.add(0, dy, 0), "DIRT");
+    Blueprint wall =
+        new Blueprint(
+            "wall",
+            "Protect work center",
+            0,
+            -3,
+            0,
+            0,
+            3,
+            "north",
+            List.of(p(-3, -3), p(3, -3), p(3, 3), p(-3, 3)));
+    var compiled =
+        new DesignCompiler()
+            .compile(wall, terrain, new Pos(0, 65, 0), "graded-wall", q -> false, List.of());
+    var clearing = compiled.jobs().stream().filter(j -> j.kind == Job.Kind.CLEAR).toList();
+    assertEquals(
+        Set.of(hump.add(0, 1, 0), hump.add(0, 2, 0)),
+        clearing.stream().map(j -> j.target).collect(java.util.stream.Collectors.toSet()));
+    assertTrue(
+        compiled.jobs().stream()
+            .filter(j -> j.kind == Job.Kind.PLACE)
+            .allMatch(j -> j.phase > clearing.stream().mapToInt(c -> c.phase).max().orElseThrow()));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            new DesignCompiler()
+                .compile(
+                    wall,
+                    terrain,
+                    new Pos(0, 65, 0),
+                    "protected",
+                    q -> q.equals(hump.add(0, 2, 0)),
+                    List.of()));
+    terrain.overrides.put(hump.add(0, 2, 0), "OAK_PLANKS");
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            new DesignCompiler()
+                .compile(
+                    wall, terrain, new Pos(0, 65, 0), "existing-structure", q -> false, List.of()));
+  }
 }

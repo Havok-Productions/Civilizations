@@ -87,7 +87,6 @@ public record SkillContext(
     Map<String, Object> report = new LinkedHashMap<>();
     report.put("failure", failure);
     report.put("search_radius", map.radius);
-    report.put("max_adaptive_search_radius", 48);
     report.put("goal_relative", delta);
     report.put("inventory", Map.copyOf(inventory));
     report.put("reach_squared", reach2);

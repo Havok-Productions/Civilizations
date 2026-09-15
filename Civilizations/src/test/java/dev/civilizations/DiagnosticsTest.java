@@ -11,6 +11,32 @@ import org.junit.jupiter.api.io.TempDir;
 class DiagnosticsTest {
   @TempDir Path folder;
 
+  @Tag("diagnostics")
+  @Tag("tasks")
+  @Tag("interaction")
+  @Test
+  void completionReceiptsSeparateSatisfiedStepsFromWholeProjectAndWorldChanges() {
+    Settlement v = CoreTest.village();
+    v.enroll("worker", 5);
+    Job a = CoreTest.job(new Pos(1, 65, 1)), b = CoreTest.job(new Pos(2, 65, 1));
+    v.addProject(a.project, List.of(a, b));
+    List<Map<String, ?>> receipts = new ArrayList<>();
+    v.observe(
+        (worker, event) -> {
+          if (event.containsKey("progress_type")) receipts.add(event);
+        });
+    assertTrue(v.claim(a.id, "worker", 100));
+    assertTrue(v.done(a.id, "worker", "already_satisfied"));
+    assertEquals(false, receipts.getFirst().get("project_complete"));
+    assertEquals("already_satisfied", receipts.getFirst().get("effect"));
+    assertTrue(v.claim(b.id, "worker", 100));
+    assertTrue(v.done(b.id, "worker", "world_changed"));
+    assertEquals(true, receipts.getLast().get("project_complete"));
+    assertEquals(2L, receipts.getLast().get("completed_steps"));
+    assertFalse(v.done(b.id, "worker", "world_changed"));
+    assertEquals(2, receipts.size());
+  }
+
   @org.junit.jupiter.api.Tag("diagnostics")
   @Test
   void debugRotationRetainsValidJsonAndFlushesQueuedEvents() throws Exception {

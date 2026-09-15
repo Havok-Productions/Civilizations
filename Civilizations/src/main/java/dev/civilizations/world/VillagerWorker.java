@@ -769,9 +769,38 @@ public final class VillagerWorker {
     nextWork = now + 5000;
   }
 
+  private String workBlockBefore = "";
+
   private void complete(long now) {
     workPose.reset();
-    boolean committed = village.done(job.id, id);
+    String after = location(job.target).getBlock().getBlockData().getAsString();
+    boolean changed = !after.equals(workBlockBefore);
+    String effect = changed ? "world_changed" : "already_satisfied";
+    boolean committed = village.done(job.id, id, effect);
+    if (committed)
+      plugin.debug(
+          village.id(),
+          id,
+          "job_progress",
+          Map.of(
+              "job",
+              job.id,
+              "project",
+              job.project,
+              "kind",
+              job.kind,
+              "target",
+              job.target,
+              "block_before",
+              workBlockBefore,
+              "block_after",
+              after,
+              "world_changed",
+              changed,
+              "project_complete",
+              village.allComplete(job.project),
+              "inventory_after",
+              inventory()));
     if (committed && job.project.startsWith("storage-") && job.material.equals("CHEST"))
       plugin.placeChest(village, entity.getWorld(), job.target);
     if (supplyFor == null) {
@@ -786,7 +815,9 @@ public final class VillagerWorker {
                 "inventory_after",
                 inventory(),
                 "observed_block",
-                location(job.target).getBlock().getType().name()));
+                location(job.target).getBlock().getType().name(),
+                "effect",
+                effect));
       else mind.cancel("job_claim_no_longer_owned");
     }
     if (policyTicket != null && policyTicket.selected().equals(job.id) && committed) {
@@ -803,7 +834,7 @@ public final class VillagerWorker {
                   "target",
                   job.target,
                   "executor_result",
-                  "verified task step complete",
+                  effect,
                   "inventory",
                   inventory()));
       policyTicket = null;
@@ -911,6 +942,7 @@ public final class VillagerWorker {
       return;
     }
     Block block = location(job.target).getBlock();
+    workBlockBefore = block.getBlockData().getAsString();
     if ((job.kind == Job.Kind.MINE || job.kind == Job.Kind.CLEAR) && block.getType().isAir()) {
       complete(now);
       return;

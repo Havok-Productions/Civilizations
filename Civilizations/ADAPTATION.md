@@ -1,5 +1,25 @@
 # Controller adaptation and activity recovery
 
+## Alpha.26: complete surveys, recovery revisions and construction receipts
+
+Retained layouts now receive the same footprint-sized survey used for new proposals. A failed full survey can still fall back to a small map for asking the architect to revise its coordinates; that small map is never used to revalidate the distant footprint. Fresh validation failures are included in the next model request. A layout extending 52 blocks from its origin no longer loops against a 32-block survey merely because its geometry was unchanged.
+
+Wall and path preparation grades removable soil humps into supported one-block rises before construction. Clearing is compiled into actual prerequisite jobs, preserving natural support, protected blocks and existing structures. Trees still require observed natural-tree evidence. This does not make unobserved terrain, structures or water removable.
+
+Construction searches its existing physical work envelope, including positions farther back from a wall where its lower blocks do not occlude upper placements. It retains its selected approach while travelling. An arrived cell whose actual eye position cannot see the target is remembered for that target, so it cannot immediately win the distance ranking again when the worker leaves it. Changed route terrain permits a fresh choice. If no visible supported position exists, it reports that preparation/scaffolding is needed instead of repeatedly selecting a rejected stand. This addresses repeated corner-to-corner movement while reporting valid routes.
+
+The default `construction.reach_squared` is now 21, matching the compiler's supported work-distance contract instead of rejecting alternatives beyond the old worker default of 12. The existing five-block eye reach, facing, visibility and physical support checks still apply, and the parameter remains editable through proposals.
+
+When an instruction or goal verification fails, `RecoveryRevision` obtains a fresh local map and supplies the exact failure, remaining instructions, original goal and current inventory to the recovery model. Revised coordinates use the newly observed feet origin. The same worker retains its committed task while trying the replacement program. An unchanged instruction sequence on the same observed terrain/origin is recorded as a repeated failed approach. Damage terminates the trial; proposal and execution deadlines still report actual failed attempts. Model output remains a proposal until the host verifies the original goal.
+
+Live-probed block classifications persist independently of an unrelated route failure or interruption. A classification contradicting measured collision/passability is refused. Search and timing edits still need a completed trial to become shared behavior. Abandoned programs receive failure evidence separately from their replacements; the dataset exporter pairs a replacement program with its fresh observations, retaining the original goal observations separately.
+
+`job_progress` records actual before/after block state, inventory after execution and whether the project is complete. `result` records completed and total job steps with `world_changed` or `already_satisfied`. Step completion messages no longer claim a whole project was completed. Movement waypoints remain navigation evidence, not construction totals.
+
+Validation uses the focused `design tasks settlements navigation diagnostics coreai inference` contracts, a targeted soil-grading follow-up and the dataset exporter contract. The opt-in physical case combines `rule-learning`, `wall-work` and `recovery-revision`: a deliberately failed walk, a fresh deterministic revision, resumed repairs, learned-rule reuse, soil/tree preparation and a full wall supplied from a real chest. It checks actual blocks, facing and retained/consumed items. It does not benchmark Qwen/DeepSeek reasoning or establish live-server village productivity.
+
+The final Folia 26.1.2 run passed: all 75 wall preparation/construction steps, both repairs and the roof placement completed. Recorded world changes include 73 placements and five clearance actions; an additional already-satisfied placement receipt is kept separate. All wall blocks were checked in the world, facing was verified, and exactly two logs, two dirt and two string remained after the construction materials were consumed. The deterministic teacher supplied one initial program and one revision. Focused verification passed 153 distinct JVM checks across the affected sections and follow-ups, plus the Python dataset contract.
+
 ## Alpha.25: changing routes and precise failure evidence
 
 Recovery diagnostics accept and retain a null final instruction when a proposal fails before execution. That logging path no longer throws `NullPointerException` before the worker's recovery callback. Missing instructions and executed instructions remain distinguishable.

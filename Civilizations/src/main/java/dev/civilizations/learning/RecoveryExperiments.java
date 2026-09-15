@@ -20,11 +20,14 @@ public final class RecoveryExperiments implements AutoCloseable {
     public final CompletableFuture<SkillProgram> program = new CompletableFuture<>();
     public volatile String teacher = "unknown";
     private volatile SkillProgram source;
+    private volatile SkillContext sourceContext;
+    private final Set<String> attempted = new HashSet<>();
 
     private Trial(String village, String worker, SkillContext context) {
       this.village = village;
       this.worker = worker;
       this.context = context;
+      this.sourceContext = context;
     }
   }
 
@@ -182,6 +185,98 @@ public final class RecoveryExperiments implements AutoCloseable {
         () -> record(trial, "step", Map.of("evidence", new Gson().fromJson(json, Object.class))));
   }
 
+  /**
+   * Revise a stalled program using a fresh map while retaining the same worker and original goal.
+   */
+  public CompletableFuture<SkillProgram> revise(
+      Trial trial, SkillContext fresh, Map<String, ?> failure, long now) {
+    var result = new CompletableFuture<SkillProgram>();
+    String evidence = new Gson().toJson(failure);
+    if (!enqueue(
+        () -> {
+          if (closed || active.get() != trial) {
+            result.completeExceptionally(new CancellationException("trial_no_longer_active"));
+            return;
+          }
+          var report = new LinkedHashMap<String, Object>(fresh.observation());
+          report.put("failed_execution", new Gson().fromJson(evidence, Object.class));
+          report.put("previous_program", trial.source);
+          report.put(
+              "instruction",
+              "Repair the failed approach using these fresh observations. Coordinates now use the"
+                  + " new feet origin. Preserve the original goal. Clear accessible obstructions or"
+                  + " place available support before trying a blocked WALK. Returning the same"
+                  + " instructions is not a new attempt.");
+          if (trial.source != null) {
+            trial.attempted.add(attemptKey(trial.sourceContext, trial.source));
+            try {
+              library.outcome(
+                  trial.sourceContext.key(), trial.source, trial.teacher, false, evidence, now);
+            } catch (IOException error) {
+              warning.accept("Recovery revision evidence: " + error);
+            }
+          }
+          trial.source = null; // The abandoned source already received its failure outcome.
+          record(trial, "revision_requested", report);
+          boolean accepted =
+              inference.submit(
+                  "skill-revision:" + trial.id,
+                  SYSTEM,
+                  new Gson().toJson(report),
+                  ReasoningMode.RECOVERY,
+                  SCHEMA,
+                  now + 180_000,
+                  text -> new Proposed(SkillProgram.parse(text), teacher.get()),
+                  proposal -> {
+                    if (!enqueue(
+                        () -> {
+                          if (closed || active.get() != trial) {
+                            result.completeExceptionally(
+                                new CancellationException("trial_no_longer_active"));
+                            return;
+                          }
+                          if (proposal == null
+                              || trial.attempted.contains(attemptKey(fresh, proposal.program()))) {
+                            String reason =
+                                proposal == null
+                                    ? "revision_unavailable"
+                                    : "unchanged_failed_recovery_instructions";
+                            record(trial, "revision_rejected", Map.of("reason", reason));
+                            result.completeExceptionally(new IllegalArgumentException(reason));
+                            return;
+                          }
+                          trial.source = proposal.program();
+                          trial.sourceContext = fresh;
+                          trial.teacher = proposal.teacher();
+                          record(
+                              trial,
+                              "revision_proposed",
+                              Map.of(
+                                  "program",
+                                  trial.source,
+                                  "observation",
+                                  fresh.observation(),
+                                  "teacher",
+                                  trial.teacher));
+                          result.complete(trial.source);
+                        }))
+                      result.completeExceptionally(
+                          new IllegalStateException("revision_io_unavailable"));
+                  });
+          if (!accepted)
+            result.completeExceptionally(new IllegalStateException("revision_queue_busy"));
+        })) result.completeExceptionally(new IllegalStateException("revision_io_unavailable"));
+    return result;
+  }
+
+  private static String attemptKey(SkillContext context, SkillProgram program) {
+    return context.map().fingerprint
+        + ":"
+        + context.origin()
+        + ":"
+        + new Gson().toJson(program.steps());
+  }
+
   public void finish(Trial trial, boolean success, String reason, Map<String, ?> evidence) {
     if (!active.compareAndSet(trial, null)) return;
     String json = new Gson().toJson(evidence);
@@ -207,6 +302,7 @@ public final class RecoveryExperiments implements AutoCloseable {
           }
           result.put("basis", "executor observation");
           result.put("observation", trial.context.observation());
+          result.put("program_observation", trial.sourceContext.observation());
           if (trial.source != null) result.put("program", trial.source);
           result.put("teacher", trial.teacher);
           result.put("reason", reason);
@@ -216,7 +312,7 @@ public final class RecoveryExperiments implements AutoCloseable {
               result.put(
                   "learning",
                   library.outcome(
-                      trial.context.key(),
+                      trial.sourceContext.key(),
                       trial.source,
                       trial.teacher,
                       success,
@@ -236,19 +332,24 @@ public final class RecoveryExperiments implements AutoCloseable {
   }
 
   public void cancel(Trial trial, String reason) {
-    rules.cancel(trial.id);
     if (!active.compareAndSet(trial, null)) return;
     trial.program.completeExceptionally(new CancellationException(reason));
     enqueue(
-        () ->
-            record(
-                trial,
-                "cancelled",
-                Map.of(
-                    "reason",
-                    reason,
-                    "basis",
-                    "interrupted; neither success nor learned failure")));
+        () -> {
+          try {
+            rules.finish(trial.id, false);
+          } catch (IOException error) {
+            warning.accept("Interrupted trial facts not persisted: " + error);
+          }
+          record(
+              trial,
+              "cancelled",
+              Map.of(
+                  "reason",
+                  reason,
+                  "basis",
+                  "interrupted; verified classifications retained, behavior edits discarded"));
+        });
   }
 
   private void record(Trial trial, String event, Map<String, ?> data) {
@@ -298,7 +399,7 @@ public final class RecoveryExperiments implements AutoCloseable {
 
   private static final String SYSTEM =
       """
-      You are a Minecraft villager's local skill programmer. A real route attempt failed. Write a small executable recovery program, not advice or a claim of success. You may CLASSIFY observed blocks using supplied physical_block_probes, SEARCH with a new radius, WALK to observed relative feet coordinates, CLEAR natural dirt/trees or classified removable clutter, PLACE_SUPPORT using actual available inventory to make a short step or dry crossing, then VERIFY. You may detour away from the goal first. Try a different approach from a previous failed attempt and use its actual evidence. Do not repeat unchanged failed instructions. Use relative coordinates from the supplied origin. The host observes instruction areas as needed and WALK travels through successive local maps, clearing feasible natural obstacles along the way. Unavailable space is unknown, not air; observation failures are reported for replanning. Walk before actions that are out of reach. Do not remove buildings or player-protected blocks, enter hazards or create unsupported falling blocks. CLASSIFY is an executable rewrite of your terrain rule table. Its x/y/z select an observed block relative to origin, material is PASSABLE, CLEARABLE or OBSTACLE. Physical collision, fluid, damage and nonstructural-removal probes test the proposed classification. Prefer PASSABLE for harmless non-colliding ground cover; CLEARABLE for removable obstacles that actually block the goal. An unknown/unobserved chunk is not an unknown block type and cannot be made into air. A classification is trial-scoped and saved only after observed goal arrival. SEARCH uses x=desired horizontal radius, y=z=0,material="". It rewrites search radius for this trial; VERIFY requests a new map and native route under your changes. Use it when a detour exceeds the present map, or reduce it if search work is excessive. Example: SEARCH radius32 followed by VERIFY, with no walking instruction required. Do not use bigger distances without a reason in the map/failure evidence. Existing successful rules and verified programs are reused locally. WALK uses normal native movement; the host may permit a short exit from existing shallow water to dry land. PLACE_SUPPORT consumes one named inventory item, requires air, dry nearby support and clear space above, and can never replace a block. CLEAR retains actual drops. Proposals have no configured numeric ranges. Use finite instructions; execution obtains observations and reports actual world or resource constraints instead of silently clamping a proposed value. End with VERIFY x=0,y=0,z=0,material=""; the host checks arrival at the ORIGINAL goal after continuing normal navigation if needed. If verification_goal is CLEAR_SITE, the original target block must actually become AIR; arrival does not count, and you can finish CLEAR then VERIFY without moving. VERIFY is never a model assertion of success. TUNE edits named controller parameters from tunable_parameters: material=key,x=integer value,y=z=0. Explain which observed failure each change addresses. Current values, units and purposes are supplied without allowed ranges; keys identify implemented consumers. Parameter changes first apply to this worker, persist only after verified completion, and can be revised in later trials. Do not change timing without evidence, or claim a speed improvement merely because a task completes. Other instructions except CLASSIFY, TUNE and PLACE_SUPPORT use material="".  Return only the JSON program: explanation and steps [{op,x,y,z,material}].
+      You are a Minecraft villager's local skill programmer. A real route attempt failed. Write a small executable recovery program, not advice or a claim of success. You may CLASSIFY observed blocks using supplied physical_block_probes, SEARCH with a new radius, WALK to observed relative feet coordinates, CLEAR natural dirt/trees or classified removable clutter, PLACE_SUPPORT using actual available inventory to make a short step or dry crossing, then VERIFY. You may detour away from the goal first. Try a different approach from a previous failed attempt and use its actual evidence. Do not repeat unchanged failed instructions. Use relative coordinates from the supplied origin. The host observes instruction areas as needed and WALK travels through successive local maps, clearing feasible natural obstacles along the way. Unavailable space is unknown, not air; observation failures are reported for replanning. Walk before actions that are out of reach. Do not remove buildings or player-protected blocks, enter hazards or create unsupported falling blocks. CLASSIFY is an executable rewrite of your terrain rule table. Its x/y/z select an observed block relative to origin, material is PASSABLE, CLEARABLE or OBSTACLE. Physical collision, fluid, damage and nonstructural-removal probes test the proposed classification. Prefer PASSABLE for harmless non-colliding ground cover; CLEARABLE for removable obstacles that actually block the goal. An unknown/unobserved chunk is not an unknown block type and cannot be made into air. A classification that matches a live physical probe is saved independently even if a later route instruction fails. Search and parameter edits remain trial-scoped until verified goal completion. SEARCH uses x=desired horizontal radius, y=z=0,material="". It rewrites search radius for this trial; VERIFY requests a new map and native route under your changes. Use it when a detour exceeds the present map, or reduce it if search work is excessive. Example: SEARCH radius32 followed by VERIFY, with no walking instruction required. Do not use bigger distances without a reason in the map/failure evidence. Existing successful rules and verified programs are reused locally. WALK uses normal native movement; the host may permit a short exit from existing shallow water to dry land. PLACE_SUPPORT consumes one named inventory item, requires air, dry nearby support and clear space above, and can never replace a block. CLEAR retains actual drops. Proposals have no configured numeric ranges. Use finite instructions; execution obtains observations and reports actual world or resource constraints instead of silently clamping a proposed value. End with VERIFY x=0,y=0,z=0,material=""; the host checks arrival at the ORIGINAL goal after continuing normal navigation if needed. If verification_goal is CLEAR_SITE, the original target block must actually become AIR; arrival does not count, and you can finish CLEAR then VERIFY without moving. VERIFY is never a model assertion of success. TUNE edits named controller parameters from tunable_parameters: material=key,x=integer value,y=z=0. Explain which observed failure each change addresses. Current values, units and purposes are supplied without allowed ranges; keys identify implemented consumers. Parameter changes first apply to this worker, persist only after verified completion, and can be revised in later trials. Do not change timing without evidence, or claim a speed improvement merely because a task completes. Other instructions except CLASSIFY, TUNE and PLACE_SUPPORT use material="".  Return only the JSON program: explanation and steps [{op,x,y,z,material}].
       """;
   public static final String SCHEMA = SkillProgram.schema();
 }

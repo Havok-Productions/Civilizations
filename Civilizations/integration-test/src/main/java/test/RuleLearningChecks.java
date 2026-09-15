@@ -79,6 +79,7 @@ final class RuleLearningChecks {
           (CivilizationsPlugin) Bukkit.getPluginManager().getPlugin("Civilizations");
       int y = world.getHighestBlockYAt(0, 0) + 1;
       boolean wallCase = Boolean.getBoolean("civilizations.test.wall-work");
+      boolean revisionCase = Boolean.getBoolean("civilizations.test.recovery-revision");
       for (int x = -8; x <= (wallCase ? 28 : 12); x++)
         for (int z = -8; z <= 8; z++)
           for (int dy = -1; dy <= 3; dy++)
@@ -133,6 +134,14 @@ final class RuleLearningChecks {
       village.addProject("learning-repair", List.of(first, second));
       List<Job> construction = new ArrayList<>();
       if (wallCase) {
+        if (revisionCase) {
+          world.getBlockAt(13, y - 1, -3).setType(Material.DIRT, false);
+          world.getBlockAt(13, y, -3).setType(Material.OAK_LOG, false);
+          world.getBlockAt(13, y + 1, -3).setType(Material.OAK_LOG, false);
+          world.getBlockAt(13, y + 2, -3).setType(Material.OAK_LEAVES, false);
+          for (int dy = 0; dy < 3; dy++)
+            world.getBlockAt(19, y + dy, 3).setType(Material.DIRT, false);
+        }
         Job roof =
             new Job(
                 Job.Kind.PLACE,
@@ -147,7 +156,7 @@ final class RuleLearningChecks {
         Terrain floor =
             new Terrain() {
               public int height(int x, int z) {
-                return y - 1;
+                return revisionCase ? world.getHighestBlockYAt(x, z) : y - 1;
               }
 
               public boolean available(int x, int z) {
@@ -155,6 +164,10 @@ final class RuleLearningChecks {
               }
 
               public String type(Pos p) {
+                if (revisionCase)
+                  return available(p.x(), p.z())
+                      ? world.getBlockAt(p.x(), p.y(), p.z()).getType().name()
+                      : "UNKNOWN";
                 return p.y() == y - 1 ? "GRASS_BLOCK" : p.y() < y - 1 ? "STONE" : "AIR";
               }
             };
@@ -204,7 +217,12 @@ final class RuleLearningChecks {
       }
       AtomicInteger calls = new AtomicInteger();
       AtomicInteger firstCalls = new AtomicInteger(-1);
-      Path evidence = plugin.getDataFolder().toPath().resolve("CoreAI-rule-fixture");
+      Path evidence =
+          plugin
+              .getDataFolder()
+              .toPath()
+              .resolve("CoreAI-rule-fixture")
+              .resolve(world.getUID().toString());
       Files.createDirectories(evidence);
       boolean real = System.getenv("CIV_TEST_MODEL_TOKEN") != null;
       String replayPath = System.getProperty("civilizations.test.rule-program");
@@ -234,6 +252,31 @@ final class RuleLearningChecks {
               if (!report.contains("physical_block_probes"))
                 throw new IllegalStateException("Missing physical probes");
               if (replay != null) return replay;
+              if (revisionCase) {
+                if (calls.get() == 1)
+                  return """
+                  {"explanation":"First classify the measured clutter, then attempt an impossible underground walk to exercise recovery revision.","steps":[
+                  {"op":"CLASSIFY","x":2,"y":0,"z":0,"material":"PASSABLE"},
+                  {"op":"WALK","x":2,"y":-2,"z":0,"material":""},
+                  {"op":"CLEAR","x":2,"y":0,"z":0,"material":""}]}
+                  """;
+                var data = com.google.gson.JsonParser.parseString(report).getAsJsonObject();
+                if (!data.has("failed_execution"))
+                  throw new AssertionError("Revision missing exact failed execution");
+                var target = data.getAsJsonObject("goal_relative");
+                String source =
+                    "{\"explanation\":\"The underground walk failed. Clear the original site"
+                        + " directly from supported ground, preserving the"
+                        + " task.\",\"steps\":[{\"op\":\"CLEAR\",\"x\":"
+                        + target.get("x")
+                        + ",\"y\":"
+                        + target.get("y")
+                        + ",\"z\":"
+                        + target.get("z")
+                        + ",\"material\":\"\"}]}";
+                Files.writeString(evidence.resolve("revision-request.json"), report);
+                return source;
+              }
               if (real) {
                 try {
                   String source = LocalRuleTeacher.complete(system, report, schema, deadline);
@@ -314,11 +357,12 @@ final class RuleLearningChecks {
                       }
                     }
                     for (Job built : construction)
-                      if (world
-                              .getBlockAt(built.target.x(), built.target.y(), built.target.z())
-                              .getType()
-                          != Material.valueOf(built.material))
-                        throw new AssertionError("Unbuilt construction target " + built.target);
+                      if (built.kind == Job.Kind.PLACE)
+                        if (world
+                                .getBlockAt(built.target.x(), built.target.y(), built.target.z())
+                                .getType()
+                            != Material.valueOf(built.material))
+                          throw new AssertionError("Unbuilt construction target " + built.target);
                     if (wallCase
                         && (InventoryOps.count(actor.getInventory(), Material.COBBLESTONE) != 0
                             || InventoryOps.count(actor.getInventory(), Material.OAK_FENCE_GATE)
@@ -329,7 +373,8 @@ final class RuleLearningChecks {
                               + poseFailure.get()
                               + " actions="
                               + facedActions.get());
-                    if (!real
+                    if (!revisionCase
+                        && !real
                         && replay == null
                         && service.rules().parameter("another-worker", "construction.face_ms", 250)
                             != (wallCase ? 125 : 500))
@@ -348,10 +393,29 @@ final class RuleLearningChecks {
                             .rules()
                             .rule("another-worker", observed.material(), observed.state())
                         == null) throw new AssertionError("No published classification");
-                    if (!real
+                    if (!revisionCase
+                        && !real
                         && replay == null
                         && plugin.navigation().radiusFor("another-worker") != (wallCase ? 64 : 32))
                       throw new AssertionError("Search edit not learned");
+                    if (revisionCase) {
+                      if (calls.get() != 2)
+                        throw new AssertionError(
+                            "Expected failed program and one fresh revision; got " + calls);
+                      if (InventoryOps.count(actor.getInventory(), Material.OAK_LOG) != 2
+                          || InventoryOps.count(actor.getInventory(), Material.DIRT) != 2)
+                        throw new AssertionError(
+                            "Construction preparation drops lost: "
+                                + InventoryOps.summary(actor.getInventory()));
+                      fixture
+                          .getLogger()
+                          .info(
+                              "RECOVERY WORKFLOW PASS: failed underground WALK revised with fresh"
+                                  + " observations; original repair resumed; learned clutter rule"
+                                  + " reused; full wall built after tree/dirt clearance; shared"
+                                  + " chest supplied exact stone cost; retained two logs, two dirt"
+                                  + " and two string");
+                    }
                     t.cancel();
                     worker.stop();
                     fixture

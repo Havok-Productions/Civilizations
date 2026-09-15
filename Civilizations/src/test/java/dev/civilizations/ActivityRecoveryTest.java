@@ -12,7 +12,7 @@ final class ActivityRecoveryTest {
   @Test
   @Tag("navigation")
   void mapCapacityFailureReturnsToTheWorkerInsteadOfLeavingItPending(
-      @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) {
+      @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
     var archive = new NavigationArchive(directory, message -> {});
     try (var service =
         new dev.civilizations.world.NavigationService(
@@ -26,6 +26,9 @@ final class ActivityRecoveryTest {
         assertTrue(error.getCause().getMessage().contains("snapshot_resource_budget_exceeded"));
       }
     }
+    assertTrue(
+        archive.awaitClosed(2000),
+        "Drain pending memory writes before deleting the test directory");
   }
 
   @Test

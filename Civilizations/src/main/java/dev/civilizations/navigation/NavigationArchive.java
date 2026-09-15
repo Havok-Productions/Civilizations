@@ -123,4 +123,8 @@ public final class NavigationArchive implements AutoCloseable {
   public void close() {
     writer.shutdown();
   }
+
+  public boolean awaitClosed(long milliseconds) throws InterruptedException {
+    return writer.awaitTermination(milliseconds, TimeUnit.MILLISECONDS);
+  }
 }

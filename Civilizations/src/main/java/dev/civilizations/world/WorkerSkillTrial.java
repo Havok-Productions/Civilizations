@@ -23,6 +23,9 @@ public final class WorkerSkillTrial {
   private final BiConsumer<Boolean, String> completed;
   private RecoveryExperiments.Trial trial;
   private SkillProgram program;
+  private SkillContext executionContext;
+  private RecoveryRevision revision;
+  private int instructionsCompleted, revisions;
   private final WorkerNavigation instructionNavigation;
   private NavigationMap instructionMap;
   private java.util.concurrent.CompletableFuture<NavigationService.Plan> observation;
@@ -51,7 +54,7 @@ public final class WorkerSkillTrial {
             actor,
             village,
             (now, reason) -> {
-              if (trial != null) finish(false, "instruction_route: " + reason);
+              if (trial != null) revise("instruction_route: " + reason);
             },
             false);
     ruleActions = new SkillRuleActions(plugin, actor);
@@ -59,17 +62,22 @@ public final class WorkerSkillTrial {
   }
 
   public void failedVerification(String reason) {
-    if (trial != null) finish(false, reason);
+    if (trial != null) {
+      if (reason.startsWith("damage_event:")) finish(false, reason);
+      else revise(reason);
+    }
   }
 
   public String status() {
     return trial == null
         ? "idle"
-        : program == null
-            ? "waiting for recovery model"
-            : observing
-                ? "verifying original goal"
-                : "executing " + program.steps().get(index).op();
+        : revision != null
+            ? "observing and revising failed recovery instruction"
+            : program == null
+                ? "waiting for recovery model"
+                : observing
+                    ? "verifying original goal"
+                    : "executing " + program.steps().get(index).op();
   }
 
   public boolean active() {
@@ -114,6 +122,9 @@ public final class WorkerSkillTrial {
         plugin.experiments().request(village.id(), actor.getUniqueId().toString(), context, now);
     if (trial == null) return false;
     instructionMap = map;
+    executionContext = context;
+    revision = null;
+    revisions = instructionsCompleted = 0;
     observation = null;
     nextObservation = 0;
     lastProgress = here();
@@ -145,6 +156,7 @@ public final class WorkerSkillTrial {
       plugin.experiments().cancel(trial, reason);
       trial = null;
       program = null;
+      revision = null;
       instructionNavigation.stop();
       observation = null;
       actor.getPathfinder().stopPathfinding();
@@ -188,6 +200,24 @@ public final class WorkerSkillTrial {
     if (trial == null) return false;
     observe(now);
     if (trial == null) return true;
+    if (revision != null) {
+      try {
+        var replacement = revision.tick(now, ruleActions);
+        if (replacement != null) {
+          program = replacement.program();
+          executionContext = replacement.context();
+          instructionMap = executionContext.map();
+          revision = null;
+          index = 0;
+          stepStarted = nextAction = 0;
+          deadline = now + 90_000;
+          revisions++;
+        }
+      } catch (RuntimeException error) {
+        finish(false, "recovery_revision_failed: " + error);
+      }
+      return true;
+    }
     if (observing) return false;
     if (program == null) {
       if (!trial.program.isDone()) return true;
@@ -212,14 +242,14 @@ public final class WorkerSkillTrial {
     }
     if (step.op() == SkillProgram.Op.SEARCH || step.op() == SkillProgram.Op.TUNE) {
       try {
-        ruleActions.execute(trial, step, trial.context.origin(), program.explanation());
-        advance(now, step, trial.context.origin());
+        ruleActions.execute(trial, step, executionContext.origin(), program.explanation());
+        advance(now, step, executionContext.origin());
       } catch (IllegalArgumentException error) {
-        finish(false, "search_rule_rejected: " + error.getMessage());
+        revise("search_rule_rejected: " + error.getMessage());
       }
       return true;
     }
-    Pos origin = trial.context.origin(), p;
+    Pos origin = executionContext.origin(), p;
     try {
       p =
           new Pos(
@@ -232,7 +262,7 @@ public final class WorkerSkillTrial {
     }
     if (stepStarted == 0) stepStarted = now;
     if (now - stepStarted > WorkerTuning.value(plugin, actor, "recovery.instruction_ms")) {
-      finish(false, "instruction_timeout: " + step.op());
+      revise("instruction_timeout: " + step.op());
       return true;
     }
     // Walk through successive locally observed maps; never reject a coordinate just because
@@ -257,7 +287,7 @@ public final class WorkerSkillTrial {
         ruleActions.execute(trial, step, p, program.explanation(), instructionMap);
         advance(now, step, p);
       } catch (IllegalArgumentException error) {
-        finish(false, "classification_probe_failed: " + error.getMessage());
+        revise("classification_probe_failed: " + error.getMessage());
       }
       return true;
     }
@@ -268,7 +298,7 @@ public final class WorkerSkillTrial {
           && instructionMap.cell(p).kind() != NavigationMap.Kind.CLEARABLE
           && !BlockObservation.learnedClear(
               plugin.experiments().rules(), trial.worker, location(p).getBlock())) {
-        finish(false, "clear_target_not_observed_natural_material");
+        revise("clear_target_not_observed_natural_material");
         return true;
       }
       var result =
@@ -278,7 +308,7 @@ public final class WorkerSkillTrial {
               now,
               siteGoal ? trial.context.goal() : null);
       if (!result.failure().isEmpty()) {
-        finish(false, result.failure());
+        revise(result.failure());
         return true;
       }
       if (result.changed()) cleared++;
@@ -290,7 +320,7 @@ public final class WorkerSkillTrial {
     }
     String failure = place(p, step.material());
     if (failure != null) {
-      finish(false, failure);
+      revise(failure);
       return true;
     }
     placed++;
@@ -394,8 +424,25 @@ public final class WorkerSkillTrial {
     instructionMap = null;
     observation = null;
     index++;
+    instructionsCompleted++;
     stepStarted = 0;
     nextAction = now + WorkerTuning.value(plugin, actor, "construction.interval_ms");
+  }
+
+  private void revise(String reason) {
+    if (revision != null || trial == null) return;
+    if (program == null) {
+      finish(false, reason);
+      return;
+    }
+    instructionNavigation.stop();
+    actor.getPathfinder().stopPathfinding();
+    workPose.reset();
+    observation = null;
+    observing = false;
+    deadline = System.currentTimeMillis() + 185_000;
+    revision =
+        new RecoveryRevision(plugin, actor, village, trial, program, index, reason, siteGoal);
   }
 
   private void finish(boolean success, String reason) {
@@ -407,6 +454,7 @@ public final class WorkerSkillTrial {
         program == null || index >= program.steps().size() ? null : program.steps().get(index);
     trial = null;
     program = null;
+    revision = null;
     actor.getPathfinder().stopPathfinding();
     Map<String, Object> evidence =
         new LinkedHashMap<>(
@@ -420,7 +468,7 @@ public final class WorkerSkillTrial {
                 "goal",
                 done.context.goal(),
                 "instructions_completed",
-                index,
+                instructionsCompleted,
                 "placed",
                 placed,
                 "cleared",
@@ -435,6 +483,7 @@ public final class WorkerSkillTrial {
     evidence.put("execution_ms", executionAt == 0 ? 0 : Math.max(0, finishedAt - executionAt));
     evidence.put("distance_travelled", travelled);
     evidence.put("final_instruction", finalInstruction);
+    evidence.put("revisions_executed", revisions);
     plugin.experiments().finish(done, success, reason, evidence);
     plugin.debug(
         village.id(),

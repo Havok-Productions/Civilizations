@@ -20,18 +20,24 @@ public final class WorkPositions {
     Pos from = new Pos(current.getBlockX(), current.getBlockY(), current.getBlockZ());
     Pos best =
         !rejected.contains(preferred) && usable(actor, preferred, target, reach) ? preferred : null;
+    // A higher block often cannot be seen from the immediately adjacent cell because the lower
+    // wall occludes it. Search the actual work envelope, including positions farther from the wall.
+    int radius =
+        Math.min(
+            (int) Math.ceil(WorkPose.EYE_REACH), (int) Math.ceil(Math.sqrt(Math.max(0, reach))));
     for (int dy : new int[] {0, -1, 1, -2, -3})
-      for (int[] d :
-          new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}}) {
-        Pos candidate = target.add(d[0], dy, d[1]);
-        if (!rejected.contains(candidate)
-            && (best == null || from.distance2(candidate) < from.distance2(best))
-            && usable(actor, candidate, target, reach)) best = candidate;
-      }
-    return best == null ? preferred : best;
+      for (int x = -radius; x <= radius; x++)
+        for (int z = -radius; z <= radius; z++) {
+          if (x == 0 && z == 0) continue;
+          Pos candidate = target.add(x, dy, z);
+          if (!rejected.contains(candidate)
+              && (best == null || from.distance2(candidate) < from.distance2(best))
+              && usable(actor, candidate, target, reach)) best = candidate;
+        }
+    return best;
   }
 
-  private static boolean usable(Villager actor, Pos feet, Pos target, int reach) {
+  static boolean usable(Villager actor, Pos feet, Pos target, int reach) {
     if (feet.distance2(target) > reach || !Bukkit.isOwnedByCurrentRegion(at(actor, feet), 1))
       return false;
     var block = at(actor, feet).getBlock();
@@ -49,7 +55,7 @@ public final class WorkPositions {
     var eye = occupied ? actor.getEyeLocation() : at(actor, feet).add(0, actor.getEyeHeight(), 0);
     var delta = at(actor, target).add(0, .5, 0).toVector().subtract(eye.toVector());
     double distance = delta.length();
-    if (distance > 5 || distance < .001) return false;
+    if (distance > WorkPose.EYE_REACH || distance < .001) return false;
     var hit =
         actor
             .getWorld()
