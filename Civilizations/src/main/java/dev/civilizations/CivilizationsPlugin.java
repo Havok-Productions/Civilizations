@@ -394,9 +394,43 @@ public final class CivilizationsPlugin extends JavaPlugin
   public boolean mayChange(Villager actor, Block block, String action) {
     Pos p = pos(block.getLocation());
     Settlement v = forMember(actor.getUniqueId().toString());
-    if (v == null || v.playerProtected(p)) return false;
+    if (v == null || v.playerProtected(p)) {
+      debug(
+          v == null ? "" : v.id(),
+          actor.getUniqueId().toString(),
+          "work_permission_failure",
+          Map.of(
+              "action",
+              action,
+              "target",
+              p,
+              "material",
+              block.getType().name(),
+              "reason",
+              v == null ? "worker_not_enrolled" : "recorded_player_placement"));
+      return false;
+    }
     WorkEvent event = new WorkEvent(actor, block, action);
     Bukkit.getPluginManager().callEvent(event);
+    if (event.isCancelled())
+      debug(
+          v.id(),
+          actor.getUniqueId().toString(),
+          "work_permission_failure",
+          Map.of(
+              "action",
+              action,
+              "target",
+              p,
+              "material",
+              block.getType().name(),
+              "reason",
+              "work_event_cancelled",
+              "registered_listener_plugins",
+              java.util.Arrays.stream(event.getHandlers().getRegisteredListeners())
+                  .map(listener -> listener.getPlugin().getName())
+                  .distinct()
+                  .toList()));
     return !event.isCancelled();
   }
 

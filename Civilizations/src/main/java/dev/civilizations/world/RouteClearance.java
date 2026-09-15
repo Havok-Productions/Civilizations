@@ -13,7 +13,12 @@ import org.bukkit.inventory.ItemStack;
 
 /** One verified, paid-for obstacle action per work interval. Never excavates arbitrary terrain. */
 public final class RouteClearance {
-  public record Result(boolean ready, boolean changed, String failure) {}
+  public record Result(
+      boolean ready, boolean changed, String failure, Map<String, Object> details) {
+    public Result(boolean ready, boolean changed, String failure) {
+      this(ready, changed, failure, Map.of());
+    }
+  }
 
   private final CivilizationsPlugin plugin;
   private final Villager actor;
@@ -35,16 +40,18 @@ public final class RouteClearance {
   }
 
   public Result prepare(TerrainRouteSearch.Step step, NavigationMap map, long now, Pos buildSite) {
+    boolean opened = false;
     for (Pos p : step.open()) {
-      if (!Bukkit.isOwnedByCurrentRegion(location(p), 2)) return new Result(false, false, "");
+      if (!Bukkit.isOwnedByCurrentRegion(location(p), 2))
+        return waiting("door_region_not_owned", p, map);
       Block b = location(p).getBlock();
       if (!(b.getBlockData() instanceof Openable open))
-        return new Result(false, false, "door_or_gate_changed");
+        return blocked("door_or_gate_changed", p, map);
       if (open.isOpen()) continue;
       if (actor.getLocation().distanceSquared(location(p)) > 16)
-        return new Result(false, false, "door_out_of_reach");
+        return blocked("door_out_of_reach", p, map);
       if (!plugin.mayChange(actor, b, "OPEN_GATE"))
-        return new Result(false, false, "door_opening_protected");
+        return blocked("door_opening_protected", p, map);
       Block other = null;
       Openable second = null;
       if (open instanceof Door door) {
@@ -56,33 +63,50 @@ public final class RouteClearance {
         if (other.getBlockData() instanceof Openable value) {
           second = value;
           if (!plugin.mayChange(actor, other, "OPEN_GATE"))
-            return new Result(false, false, "door_other_half_protected");
+            return blocked("door_other_half_protected", p, map);
         }
       }
+      String before = b.getBlockData().getAsString();
       open.setOpen(true);
       b.setBlockData(open, false);
       if (second != null) {
         second.setOpen(true);
         other.setBlockData(second, false);
       }
+      opened = true;
       plugin.debug(
           village.id(),
           actor.getUniqueId().toString(),
           "navigation_obstacle",
           Map.of(
-              "position", p, "action", "open", "verified", ((Openable) b.getBlockData()).isOpen()));
+              "position",
+              p,
+              "action",
+              "open",
+              "before",
+              before,
+              "after",
+              b.getBlockData().getAsString(),
+              "verified",
+              ((Openable) b.getBlockData()).isOpen()));
     }
     List<Pos> clear =
         step.clear().stream().sorted(java.util.Comparator.comparingInt(Pos::y).reversed()).toList();
     for (Pos p : clear) {
-      if (!Bukkit.isOwnedByCurrentRegion(location(p), 3)) return new Result(false, false, "");
+      if (!Bukkit.isOwnedByCurrentRegion(location(p), 3))
+        return waiting("clearance_region_not_owned", p, map);
       Block b = location(p).getBlock();
       if (b.getType().isAir()) continue;
-      if (now < next) return new Result(false, false, "");
+      if (now < next)
+        return new Result(
+            false,
+            false,
+            "",
+            Map.of("wait_reason", "work_interval", "position", p, "retry_after_ms", next - now));
       if (actor.getLocation().distanceSquared(location(p)) > 16)
-        return new Result(false, false, "natural_obstacle_out_of_reach");
+        return blocked("natural_obstacle_out_of_reach", p, map);
       if (!b.getType().name().equals(map.cell(p).material()))
-        return new Result(false, false, "obstacle_material_changed");
+        return blocked("obstacle_material_changed", p, map);
       boolean learnedClutter =
           plugin.experiments() != null
               && BlockObservation.learnedClear(
@@ -92,7 +116,7 @@ public final class RouteClearance {
               && p.equals(buildSite)
               && village.ownsBuildSite(p, actor.getUniqueId().toString(), now);
       if (village.gatherProtected(p) && !ownSite || plugin.playerProtected(village, p))
-        return new Result(false, false, "obstacle_reserved_or_player_protected");
+        return blocked("obstacle_reserved_or_player_protected", p, map);
       Terrain live =
           new Terrain() {
             public int height(int x, int z) {
@@ -127,18 +151,18 @@ public final class RouteClearance {
                   || NavigationTerrain.architectureNear(live, p, protectedBlocks)))
           || !BlockRules.dry(b)
           || !BlockRules.safeMining(b))
-        return new Result(false, false, "natural_obstacle_no_longer_safe_to_clear");
+        return blocked("natural_obstacle_no_longer_safe_to_clear", p, map);
       if (!plugin.mayChange(actor, b, "CLEAR_ROUTE"))
-        return new Result(false, false, "route_clearance_cancelled_by_protection");
+        return blocked("route_clearance_cancelled_by_protection", p, map);
       if (!b.getType().name().equals(map.cell(p).material())
           || BlockObservation.dangerous(b.getType().name(), b.getBlockData().getAsString()))
-        return new Result(false, false, "clear_target_changed_during_permission_event");
+        return blocked("clear_target_changed_during_permission_event", p, map);
       Collection<ItemStack> drops = b.getDrops(new ItemStack(Material.AIR));
       if (!InventoryOps.canFit(actor.getInventory(), List.copyOf(drops)))
-        return new Result(false, false, "inventory_full_for_obstacle_drops");
+        return blocked("inventory_full_for_obstacle_drops", p, map);
       String material = b.getType().name();
       b.setType(Material.AIR, false);
-      if (!b.getType().isAir()) return new Result(false, false, "obstacle_removal_did_not_persist");
+      if (!b.getType().isAir()) return blocked("obstacle_removal_did_not_persist", p, map);
       drops.forEach(item -> actor.getInventory().addItem(item));
       actor.swingMainHand();
       next = now + plugin.workMillis();
@@ -159,6 +183,24 @@ public final class RouteClearance {
               true));
       return new Result(false, true, "");
     }
-    return new Result(true, false, "");
+    return new Result(true, opened, "");
+  }
+
+  private Map<String, Object> detail(String reason, Pos p, NavigationMap map) {
+    var value = new NavigationObservation(actor).block(p, map);
+    value.put("action_reason", reason);
+    value.put("actor_distance_squared", actor.getLocation().distanceSquared(location(p)));
+    value.put("inventory", InventoryOps.summary(actor.getInventory()));
+    value.put("village_reserved", village.gatherProtected(p));
+    value.put("player_protected", plugin.playerProtected(village, p));
+    return value;
+  }
+
+  private Result blocked(String reason, Pos p, NavigationMap map) {
+    return new Result(false, false, reason, detail(reason, p, map));
+  }
+
+  private Result waiting(String reason, Pos p, NavigationMap map) {
+    return new Result(false, false, "", detail(reason, p, map));
   }
 }

@@ -78,7 +78,7 @@ public final class NavigationTerrain {
               && !architectureNear(terrain, p, protectedBlocks)) kind = NavigationMap.Kind.SOFT;
           else if (material.isSolid()) kind = NavigationMap.Kind.SOLID;
           else kind = NavigationMap.Kind.UNCLASSIFIED;
-          cells.put(p, new NavigationMap.Cell(type, kind));
+          cells.put(p, new NavigationMap.Cell(type, kind, state));
         }
     return new NavigationMap(center, radius, vertical, cells);
   }

@@ -105,6 +105,7 @@ public final class WorkerNavigation {
     this.village = village;
     this.failed = failed;
     this.clearance = new RouteClearance(plugin, actor, village);
+    this.observation = new NavigationObservation(actor);
     skillTrial =
         !trials
             ? null
@@ -180,6 +181,7 @@ public final class WorkerNavigation {
 
   private NavigationService.Plan plan;
   private final RouteClearance clearance;
+  private final NavigationObservation observation;
   private int generation, index, selectedIndex;
   private volatile boolean pending;
   private Pos plannedTarget, selected;
@@ -260,6 +262,7 @@ public final class WorkerNavigation {
       value.put("terrain_fingerprint", plan.map().fingerprint);
       value.put("route_index", index);
       value.put("route_size", plan.route().steps().size());
+      value.put("map_age_ms", Math.max(0, System.currentTimeMillis() - plan.capturedAt()));
     }
     lastEvidence = java.util.Map.copyOf(value);
     reportState = reason;
@@ -290,6 +293,17 @@ public final class WorkerNavigation {
       failed.accept(now, "Navigation could not make progress within 90 seconds");
       return;
     }
+    if (plan != null && index < plan.route().steps().size()) {
+      var changes =
+          dev.civilizations.navigation.RouteChanges.inspect(
+              plan.map(),
+              plan.route().steps().subList(index, Math.min(index + 4, plan.route().steps().size())),
+              observation::cell);
+      if (!changes.isEmpty()) {
+        refresh(now, "route_terrain_changed", java.util.Map.of("changes", changes));
+        return;
+      }
+    }
     if (selected != null) {
       if (at.x() == selected.x()
           && at.z() == selected.z()
@@ -317,7 +331,7 @@ public final class WorkerNavigation {
         rejectStep(
             now,
             "native_movement_stalled",
-            java.util.Map.of("next_step", selected, "wait_ms", now - selectedAt));
+            nativeDetails(selected, java.util.Map.of("wait_ms", now - selectedAt)));
         return;
       } else if (actor.getPathfinder().hasPath()) return;
     }
@@ -372,7 +386,23 @@ public final class WorkerNavigation {
                                     "examples",
                                     answer.route().examples(),
                                     "reached",
-                                    answer.route().reached()),
+                                    answer.route().reached(),
+                                    "remembered_transitions",
+                                    answer.remembered().stream()
+                                        .map(
+                                            v ->
+                                                java.util.Map.of(
+                                                    "edge",
+                                                    v.edge(),
+                                                    "worker",
+                                                    v.worker(),
+                                                    "reason",
+                                                    v.reason(),
+                                                    "observed_at",
+                                                    v.observedAt(),
+                                                    "retry_at",
+                                                    v.until()))
+                                        .toList()),
                                 answer.route().steps().isEmpty() && !answer.route().reached());
                             if (answer.route().steps().isEmpty() && !answer.route().reached()) {
                               if (!destination.equals(target)
@@ -445,7 +475,9 @@ public final class WorkerNavigation {
       requestStarted = now;
     }
     if (!prepared.failure().isEmpty()) {
-      rejectStep(now, prepared.failure(), java.util.Map.of("step", step));
+      if (prepared.failure().contains("changed"))
+        refresh(now, prepared.failure(), prepared.details());
+      else rejectStep(now, prepared.failure(), prepared.details());
       return;
     }
     if (!prepared.ready()) {
@@ -453,16 +485,29 @@ public final class WorkerNavigation {
         rejectStep(
             now,
             "obstacle_action_wait_timeout",
-            java.util.Map.of("step", step, "wait_ms", now - clearanceStarted));
+            java.util.Map.of(
+                "step",
+                step,
+                "wait_ms",
+                now - clearanceStarted,
+                "blocked_action",
+                prepared.details()));
       return;
     }
     // Rank only successive nodes from an already connected path. Never skip an obstacle action.
     java.util.List<Pos> candidates = new java.util.ArrayList<>();
     for (int i = index; i < Math.min(index + 4, plan.route().steps().size()); i++) {
       var candidate = plan.route().steps().get(i);
-      if (i > index && (!candidate.clear().isEmpty() || !candidate.open().isEmpty())) break;
+      if (i > index && !candidate.clear().isEmpty()) break;
+      if (i > index && !candidate.open().isEmpty()) {
+        // Prepare consecutive reachable doorway cells before choosing a landing beyond them.
+        var doorway = clearance.prepare(candidate, plan.map(), now);
+        if (!doorway.ready()) break;
+      }
       candidates.add(candidate.feet());
     }
+    // A doorway is an action location, often a poor native landing. Prefer a clear node beyond it.
+    java.util.Collections.reverse(candidates);
     CoreAiCoordinator.Choice choice =
         plugin.coreAi() == null
             ? null
@@ -470,22 +515,34 @@ public final class WorkerNavigation {
                 .coreAi()
                 .rank(
                     CoreAiCoordinator.Scope.ROUTES,
-                    VillagerPolicies.routes(candidates, at, candidates.getLast()),
+                    VillagerPolicies.routes(candidates, at, destination),
                     experimentActive() ? null : actor.getUniqueId().toString());
     if (choice != null) candidates = VillagerPolicies.ordered(candidates, choice, Pos::key);
+    java.util.List<java.util.Map<String, Object>> attempts = new java.util.ArrayList<>();
+    int nativeAttempts = 0;
     for (Pos candidate : candidates) {
       if (!Bukkit.isOwnedByCurrentRegion(location(candidate), 1)) {
-        event("native_candidate_region_not_owned", java.util.Map.of("candidate", candidate), true);
+        event(
+            "native_candidate_region_not_owned",
+            java.util.Map.of(
+                "candidate", candidate, "next_action", "wait for owning-region observation"),
+            true);
         continue;
       }
       Block feet = location(candidate).getBlock();
       if (feet.isLiquid() || feet.getRelative(BlockFace.UP).isLiquid()) {
-        event("native_candidate_became_liquid", java.util.Map.of("candidate", candidate), true);
-        continue;
+        refresh(
+            now, "native_candidate_became_liquid", nativeDetails(candidate, java.util.Map.of()));
+        return;
       }
+      nativeAttempts++;
       var path = actor.getPathfinder().findPath(location(candidate));
       if (path == null || path.getFinalPoint() == null) {
-        event("native_path_missing", java.util.Map.of("candidate", candidate), true);
+        attempts.add(java.util.Map.of("candidate", candidate, "reason", "native_path_missing"));
+        event(
+            "native_path_missing",
+            nativeDetails(candidate, java.util.Map.of("path_null", path == null)),
+            true);
         continue;
       }
       Location endLocation = path.getFinalPoint();
@@ -493,19 +550,43 @@ public final class WorkerNavigation {
       if (end.distance2(candidate) > 2) {
         event(
             "native_path_endpoint_mismatch",
-            java.util.Map.of("candidate", candidate, "endpoint", end),
+            nativeDetails(
+                candidate,
+                java.util.Map.of(
+                    "endpoint", end, "endpoint_distance_squared", end.distance2(candidate))),
             true);
+        attempts.add(
+            java.util.Map.of(
+                "candidate",
+                candidate,
+                "reason",
+                "native_path_endpoint_mismatch",
+                "endpoint",
+                end));
         continue;
       }
-      if (!nativePathDry(path)) {
+      var pathFailure = observation.pathFailure(path);
+      if (!pathFailure.isEmpty()) {
         event(
             "native_path_contains_hazard_or_unowned_region",
-            java.util.Map.of("candidate", candidate),
+            nativeDetails(candidate, java.util.Map.of("rejected_node", pathFailure)),
             true);
+        attempts.add(
+            java.util.Map.of(
+                "candidate",
+                candidate,
+                "reason",
+                "native_path_unsafe",
+                "rejected_node",
+                pathFailure));
         continue;
       }
       if (!actor.getPathfinder().moveTo(path, plugin.speed())) {
-        event("native_move_rejected", java.util.Map.of("candidate", candidate), true);
+        event(
+            "native_move_rejected",
+            nativeDetails(candidate, java.util.Map.of("endpoint", end)),
+            true);
+        attempts.add(java.util.Map.of("candidate", candidate, "reason", "native_move_rejected"));
         continue;
       }
       if (selected == null) selectedAt = now;
@@ -527,59 +608,74 @@ public final class WorkerNavigation {
           false);
       return;
     }
-    rejectStep(now, "all_native_transitions_rejected", java.util.Map.of("attempted", candidates));
+    rejectStep(
+        now,
+        "all_native_transitions_rejected",
+        java.util.Map.of(
+            "attempted", candidates, "results", attempts, "native_attempts", nativeAttempts));
   }
 
-  private boolean nativePathDry(com.destroystokyo.paper.entity.Pathfinder.PathResult path) {
-    Block current = actor.getLocation().getBlock();
-    boolean exitingWater =
-        current.getType() == org.bukkit.Material.WATER
-            || current.getRelative(BlockFace.DOWN).getType() == org.bukkit.Material.WATER;
-    for (Location node : path.getPoints()) {
-      if (!Bukkit.isOwnedByCurrentRegion(node, 1)) return false;
-      Block b = node.getBlock();
-      if (b.getRelative(BlockFace.UP).getType() == org.bukkit.Material.WATER) return false;
-      for (Block block :
-          java.util.List.of(b, b.getRelative(BlockFace.UP), b.getRelative(BlockFace.DOWN))) {
-        String name = block.getType().name();
-        if (block.isLiquid() && !(exitingWater && block.getType() == org.bukkit.Material.WATER)
-            || java.util.Set.of(
-                    "FIRE",
-                    "SOUL_FIRE",
-                    "MAGMA_BLOCK",
-                    "TNT",
-                    "WITHER_ROSE",
-                    "CACTUS",
-                    "CAMPFIRE",
-                    "SOUL_CAMPFIRE",
-                    "POWDER_SNOW")
-                .contains(name)
-            || block.getBlockData() instanceof org.bukkit.block.data.Waterlogged w
-                && w.isWaterlogged()) return false;
-      }
-      if (b.getType() != org.bukkit.Material.WATER
-          && b.getRelative(BlockFace.DOWN).getType() != org.bukkit.Material.WATER)
-        exitingWater = false;
-    }
-    return true;
+  private java.util.Map<String, Object> nativeDetails(
+      Pos candidate, java.util.Map<String, ?> extra) {
+    var details = observation.failure(candidate, plan == null ? null : plan.map());
+    details.putAll(extra);
+    return details;
+  }
+
+  private void refresh(long now, String reason, java.util.Map<String, ?> details) {
+    var value = new java.util.LinkedHashMap<String, Object>(details);
+    value.put("next_action", "fresh terrain map; detour or prepare observed natural obstruction");
+    value.put("remembered_as_blocked", false);
+    event(reason, value, false);
+    if (policyTicket != null) plugin.coreAi().outcome(policyTicket, false, lastEvidence);
+    policyTicket = null;
+    actor.getPathfinder().stopPathfinding();
+    plan = null;
+    selected = null;
+    clearanceStarted = 0;
+    rejectedWorkPositions.clear();
+    nextPlan = now;
   }
 
   private void rejectStep(long now, String reason, java.util.Map<String, ?> details) {
-    event(reason, details, true);
+    var value = new java.util.LinkedHashMap<String, Object>(details);
+    value.put("remembered_as_blocked", false);
     if (plan != null && index < plan.route().steps().size()) {
+      var step = plan.route().steps().get(index);
+      value.put("step", step);
+      value.put("live_step", observation.block(step.feet(), plan.map()));
       Pos from =
           index == 0
               ? dev.civilizations.navigation.TerrainRouteSearch.start(plan.map(), plan.map().center)
               : plan.route().steps().get(index - 1).feet();
-      plugin
-          .navigation()
-          .reject(
-              village.id(),
-              new dev.civilizations.navigation.TerrainRouteSearch.Edge(
-                  from, plan.route().steps().get(index).feet()),
-              plan.map(),
-              now);
+      // Resource/protection/region waits are not failed terrain edges. Nor is a stall halfway
+      // along a native path evidence that its first edge was blocked.
+      boolean nativeFailure =
+          reason.equals("native_movement_stalled")
+              || reason.equals("all_native_transitions_rejected")
+                  && details.get("native_attempts") instanceof Integer count
+                  && count > 0;
+      if (nativeFailure && here().equals(from)) {
+        var remembered =
+            plugin
+                .navigation()
+                .reject(
+                    village.id(),
+                    actor.getUniqueId().toString(),
+                    new dev.civilizations.navigation.TerrainRouteSearch.Edge(from, step.feet()),
+                    plan.map(),
+                    reason,
+                    now,
+                    WorkerTuning.value(plugin, actor, "navigation.retry_ms"));
+        value.put("remembered_as_blocked", true);
+        value.put("memory_scope", "this_worker_only");
+        value.put("retry_at", remembered.until());
+        value.put("retry_after_ms", Math.max(0, remembered.until() - now));
+      }
     }
+    value.put(
+        "next_action", "fresh map and alternate route; changed geometry invalidates retry memory");
+    event(reason, value, true);
     if (policyTicket != null) plugin.coreAi().outcome(policyTicket, false, lastEvidence);
     policyTicket = null;
     actor.getPathfinder().stopPathfinding();

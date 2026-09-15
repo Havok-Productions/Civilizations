@@ -42,7 +42,10 @@ public class Fixture extends JavaPlugin {
         return;
       }
       case NAVIGATION, REPAIR, AUTONOMY, INFERENCE_BUSY -> {
-        new StallChecks(this, scenario).start();
+        if (scenario == Scenario.NAVIGATION
+            && Boolean.getBoolean("civilizations.test.dynamic-route"))
+          new DynamicNavigationChecks(this).start();
+        else new StallChecks(this, scenario).start();
         return;
       }
       case CRAFTING -> {

@@ -14,7 +14,9 @@ public final class NavigationService implements AutoCloseable {
       NavigationMap map,
       TerrainRouteSearch.Result route,
       Pos target,
-      int reach2) {}
+      int reach2,
+      long capturedAt,
+      List<RouteMemory.Saved> remembered) {}
 
   private final RegionSnapshots snapshots;
   private final Executor executor;
@@ -104,8 +106,10 @@ public final class NavigationService implements AutoCloseable {
                 NavigationMap map =
                     NavigationTerrain.capture(
                         terrain, from, searchRadius, protectedBlocks, rules, worker);
-                Set<TerrainRouteSearch.Edge> rejected =
-                    memory.blocked(map, System.currentTimeMillis());
+                long capturedAt = System.currentTimeMillis();
+                var remembered = memory.active(worker, map, capturedAt);
+                Set<TerrainRouteSearch.Edge> rejected = new HashSet<>();
+                remembered.forEach(v -> rejected.add(v.edge()));
                 TerrainRouteSearch.Result route =
                     TerrainRouteSearch.search(
                         map, from, target, reach2, rejected, 0, searchBudget(searchRadius));
@@ -123,7 +127,7 @@ public final class NavigationService implements AutoCloseable {
                           searchBudget(searchRadius));
                 String id = UUID.randomUUID().toString(),
                     file = archive.save(id, village.id(), worker, map, route);
-                return new Plan(id, file, map, route, target, reach2);
+                return new Plan(id, file, map, route, target, reach2, capturedAt, remembered);
               },
               executor)
           .whenComplete((p, error) -> admission.release());
@@ -134,9 +138,17 @@ public final class NavigationService implements AutoCloseable {
     }
   }
 
-  public void reject(String village, TerrainRouteSearch.Edge edge, NavigationMap map, long now) {
-    memory(village).reject(edge, map, now);
+  public RouteMemory.Saved reject(
+      String village,
+      String worker,
+      TerrainRouteSearch.Edge edge,
+      NavigationMap map,
+      String reason,
+      long now,
+      long retryMillis) {
+    var failure = memory(village).reject(worker, edge, map, reason, now, retryMillis);
     persist();
+    return failure;
   }
 
   private void persist() {

@@ -403,7 +403,8 @@ public final class WorkerSkillTrial {
     observation = null;
     var done = trial;
     long finishedAt = System.currentTimeMillis();
-    var finalInstruction = program == null ? null : program.steps().get(index);
+    var finalInstruction =
+        program == null || index >= program.steps().size() ? null : program.steps().get(index);
     trial = null;
     program = null;
     actor.getPathfinder().stopPathfinding();

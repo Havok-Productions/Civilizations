@@ -182,18 +182,92 @@ class TerrainNavigationTest {
     var map = map(cells);
     var edge = new TerrainRouteSearch.Edge(start, start.add(1, 0, 0));
     var memory = new RouteMemory();
-    memory.reject(edge, map, 1000);
-    assertTrue(memory.blocked(map, 2000).contains(edge));
+    memory.reject("a", edge, map, "native_path_missing", 1000, 15000);
+    assertTrue(memory.blocked("a", map, 2000).contains(edge));
+    assertTrue(memory.blocked("another-villager", map, 2000).isEmpty());
     var route =
-        TerrainRouteSearch.search(map, start, new Pos(4, 1, 0), 0, memory.blocked(map, 2000), 0);
+        TerrainRouteSearch.search(
+            map, start, new Pos(4, 1, 0), 0, memory.blocked("a", map, 2000), 0);
     assertTrue(route.reached());
     assertNotEquals(edge.to(), route.steps().getFirst().feet());
     var restored = new RouteMemory();
     restored.restore(memory.snapshot(2000), 2000);
-    assertTrue(restored.blocked(map, 2000).contains(edge));
+    assertTrue(restored.blocked("a", map, 2000).contains(edge));
     cells.put(edge.to(), new NavigationMap.Cell("DIRT", NavigationMap.Kind.SOFT));
-    assertFalse(memory.blocked(map(cells), 3000).contains(edge));
-    assertTrue(restored.blocked(map, 301001).isEmpty());
+    assertFalse(memory.blocked("a", map(cells), 3000).contains(edge));
+    assertTrue(restored.blocked("a", map, 16001).isEmpty());
+  }
+
+  @org.junit.jupiter.api.Tag("navigation")
+  @org.junit.jupiter.api.Tag("diagnostics")
+  @org.junit.jupiter.api.Tag("interaction")
+  @Test
+  void doorStateAndAdjacentGrowthInvalidateMemoryAndLegacyBansAreNotRestored() {
+    var cells = flat();
+    var door = start.add(1, 0, 0);
+    var edge = new TerrainRouteSearch.Edge(start, door);
+    cells.put(
+        door,
+        new NavigationMap.Cell(
+            "OAK_DOOR", NavigationMap.Kind.OPENABLE, "minecraft:oak_door[open=false,facing=east]"));
+    var closed = map(cells);
+    var memory = new RouteMemory();
+    memory.reject("a", edge, closed, "native_path_missing", 1000, 15000);
+    cells.put(
+        door,
+        new NavigationMap.Cell(
+            "OAK_DOOR", NavigationMap.Kind.OPENABLE, "minecraft:oak_door[open=true,facing=east]"));
+    var open = map(cells);
+    assertNotEquals(closed.fingerprint, open.fingerprint);
+    assertTrue(memory.blocked("a", open, 2000).isEmpty());
+    assertTrue(((List<?>) open.describe().get("block_states")).contains(cells.get(door).state()));
+    memory.reject("a", edge, open, "native_path_missing", 2000, 15000);
+    cells.put(door.add(0, 0, 1), new NavigationMap.Cell("OAK_LEAVES", NavigationMap.Kind.SOFT));
+    assertTrue(memory.blocked("a", map(cells), 3000).isEmpty());
+    var old =
+        new com.google.gson.Gson()
+            .fromJson(
+                "{\"edge\":{\"from\":{\"x\":0,\"y\":1,\"z\":0},\"to\":{\"x\":1,\"y\":1,\"z\":0}},"
+                    + "\"signature\":\"legacy\",\"until\":300000}",
+                RouteMemory.Saved.class);
+    memory.restore(List.of(old), 3000);
+    assertTrue(memory.snapshot(3000).isEmpty());
+  }
+
+  @org.junit.jupiter.api.Tag("navigation")
+  @Test
+  void growingRouteIsResurveyedButOwnClearanceAndOpeningDoNotCauseRemapLoops() {
+    var cells = flat();
+    Pos next = start.add(1, 0, 0);
+    var before = map(cells);
+    var steps = List.of(new TerrainRouteSearch.Step(next, List.of(), List.of()));
+    cells.put(next, new NavigationMap.Cell("OAK_LOG", NavigationMap.Kind.SOFT));
+    var changes = RouteChanges.inspect(before, steps, cells::get);
+    assertEquals(List.of(next), changes.stream().map(RouteChanges.Change::position).toList());
+    var grown = map(cells);
+    assertFalse(grown.passage(next, false).allowed());
+    assertEquals(List.of(next), grown.passage(next, true).clear());
+    var salvage = List.of(new TerrainRouteSearch.Step(next, List.of(next), List.of()));
+    cells.put(next, new NavigationMap.Cell("AIR", NavigationMap.Kind.AIR));
+    assertTrue(RouteChanges.inspect(grown, salvage, cells::get).isEmpty());
+    cells.put(
+        next,
+        new NavigationMap.Cell(
+            "OAK_DOOR", NavigationMap.Kind.OPENABLE, "minecraft:oak_door[open=false,facing=east]"));
+    var door = map(cells);
+    var openStep = List.of(new TerrainRouteSearch.Step(next, List.of(), List.of(next)));
+    cells.put(
+        next,
+        new NavigationMap.Cell(
+            "OAK_DOOR", NavigationMap.Kind.OPENABLE, "minecraft:oak_door[open=true,facing=east]"));
+    assertTrue(RouteChanges.inspect(door, openStep, cells::get).isEmpty());
+    cells.put(
+        next,
+        new NavigationMap.Cell(
+            "OAK_DOOR", NavigationMap.Kind.OPENABLE, "minecraft:oak_door[open=true,facing=north]"));
+    assertEquals(1, RouteChanges.inspect(door, openStep, cells::get).size());
+    cells.put(next.add(0, -1, 0), new NavigationMap.Cell("AIR", NavigationMap.Kind.AIR));
+    assertEquals(2, RouteChanges.inspect(door, openStep, cells::get).size());
   }
 
   @org.junit.jupiter.api.Tag("navigation")

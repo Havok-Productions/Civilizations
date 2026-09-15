@@ -2,48 +2,75 @@ package dev.civilizations.navigation;
 
 import java.util.*;
 
-/** A failed transition is reconsidered after its local block signature changes or a cooldown. */
+/** Actor-local retry evidence. A native path refusal is not proof a village route is impossible. */
 public final class RouteMemory {
-  private record Failure(String signature, long until) {}
+  public record Saved(
+      TerrainRouteSearch.Edge edge,
+      String signature,
+      long until,
+      String worker,
+      String reason,
+      long observedAt) {}
 
-  public record Saved(TerrainRouteSearch.Edge edge, String signature, long until) {}
+  private record Key(String worker, TerrainRouteSearch.Edge edge) {}
 
-  private final Map<TerrainRouteSearch.Edge, Failure> failures = new LinkedHashMap<>();
+  private final Map<Key, Saved> failures = new LinkedHashMap<>();
 
   public synchronized List<Saved> snapshot(long now) {
-    failures.entrySet().removeIf(e -> e.getValue().until <= now);
-    return failures.entrySet().stream()
-        .map(e -> new Saved(e.getKey(), e.getValue().signature, e.getValue().until))
-        .toList();
+    failures.values().removeIf(v -> v.until <= now);
+    return List.copyOf(failures.values());
   }
 
   public synchronized void restore(List<Saved> values, long now) {
     for (Saved v : values)
-      if (v.until > now && failures.size() < 256)
-        failures.put(v.edge, new Failure(v.signature, v.until));
+      // Old village-wide bans lacked actor/reason/state evidence; do not revive those bans.
+      if (v.worker != null
+          && v.reason != null
+          && v.signature != null
+          && v.edge != null
+          && v.until > now
+          && failures.size() < 256) failures.put(new Key(v.worker, v.edge), v);
   }
 
-  public synchronized void reject(TerrainRouteSearch.Edge edge, NavigationMap map, long now) {
-    failures.put(edge, new Failure(signature(edge, map), now + 300_000));
+  public synchronized Saved reject(
+      String worker,
+      TerrainRouteSearch.Edge edge,
+      NavigationMap map,
+      String reason,
+      long now,
+      long retryMillis) {
+    Saved failure =
+        new Saved(edge, signature(edge, map), now + Math.max(0, retryMillis), worker, reason, now);
+    failures.put(new Key(worker, edge), failure);
     while (failures.size() > 256) failures.remove(failures.keySet().iterator().next());
+    return failure;
   }
 
-  public synchronized Set<TerrainRouteSearch.Edge> blocked(NavigationMap map, long now) {
+  public synchronized List<Saved> active(String worker, NavigationMap map, long now) {
     failures
-        .entrySet()
+        .values()
         .removeIf(
-            e ->
-                e.getValue().until <= now
-                    || map.contains(e.getKey().from())
-                        && map.contains(e.getKey().to())
-                        && !e.getValue().signature.equals(signature(e.getKey(), map)));
-    return Set.copyOf(failures.keySet());
+            v ->
+                v.until <= now
+                    || map.contains(v.edge.from())
+                        && map.contains(v.edge.to())
+                        && !v.signature.equals(signature(v.edge, map)));
+    return failures.values().stream().filter(v -> v.worker.equals(worker)).toList();
+  }
+
+  public synchronized Set<TerrainRouteSearch.Edge> blocked(
+      String worker, NavigationMap map, long now) {
+    Set<TerrainRouteSearch.Edge> result = new HashSet<>();
+    active(worker, map, now).forEach(v -> result.add(v.edge));
+    return Set.copyOf(result);
   }
 
   private static String signature(TerrainRouteSearch.Edge edge, NavigationMap map) {
     StringBuilder key = new StringBuilder();
     for (var p : List.of(edge.from(), edge.to()))
-      for (int dy = -1; dy <= 2; dy++) key.append(map.cell(p.add(0, dy, 0))).append(';');
+      for (int dx = -1; dx <= 1; dx++)
+        for (int dz = -1; dz <= 1; dz++)
+          for (int dy = -1; dy <= 2; dy++) key.append(map.cell(p.add(dx, dy, dz))).append(';');
     return key.toString();
   }
 }

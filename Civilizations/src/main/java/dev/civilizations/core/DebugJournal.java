@@ -1,6 +1,7 @@
 package dev.civilizations.core;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.Instant;
@@ -35,12 +36,13 @@ public final class DebugJournal implements AutoCloseable {
     event.put("village", village);
     event.put("worker", worker);
     event.put("type", type);
-    event.put("data", Map.copyOf(data));
+    // A recovery can fail before an instruction exists. Optional evidence must not abort it.
+    event.put("data", Collections.unmodifiableMap(new LinkedHashMap<>(data)));
     if (!queue.offer(event)) dropped.incrementAndGet();
   }
 
   private void writeLoop() {
-    Gson gson = new Gson();
+    Gson gson = new GsonBuilder().serializeNulls().create();
     try {
       Files.createDirectories(directory);
       Path file = directory.resolve("events.jsonl");

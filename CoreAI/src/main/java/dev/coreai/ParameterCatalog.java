@@ -24,6 +24,12 @@ public final class ParameterCatalog {
                   "navigation",
                   10000,
                   "Time allowed for a native route transition before trying another"),
+          "navigation.retry_ms",
+              new Spec(
+                  "navigation",
+                  15000,
+                  "Actor-local cooldown for an unchanged failed transition; terrain changes"
+                      + " invalidate it early"),
           "navigation.recovery_attempts",
               new Spec(
                   "navigation", 6, "Failed route transitions before asking for a recovery program"),

@@ -1,5 +1,17 @@
 # Controller adaptation and activity recovery
 
+## Alpha.25: changing routes and precise failure evidence
+
+Recovery diagnostics accept and retain a null final instruction when a proposal fails before execution. That logging path no longer throws `NullPointerException` before the worker's recovery callback. Missing instructions and executed instructions remain distinguishable.
+
+Navigation snapshots retain block states, including door orientation/open state and vegetation state. Before continuing a native movement segment, the worker checks upcoming support/body/head cells against live owned-region blocks. Changed terrain discards the stale route and triggers a fresh map without recording an impossible route or consuming another failed-transition attempt. The route's own opening/clearance is recognized so completed actions do not cause remapping loops. Fresh searches prefer a dry detour, then use the existing natural-obstacle preparation executor when needed; real reach, protection, support, drops and inventory checks still apply. Consecutive reachable door cells are prepared before selecting a landing beyond the doorway.
+
+Failed edges are now specific to one worker, with a default 15-second cooldown exposed as `navigation.retry_ms` to ordinary TUNE proposals. Local block-state or neighboring geometry changes invalidate the cooldown early. Legacy village-wide five-minute bans are not restored. Resource, permission and unowned-region waits do not become remembered terrain failures. Logs distinguish remembered edges, their worker/reason/retry time, and the next recovery action.
+
+Native failures report exact actor position/state, movement settings, local live collision shapes and block states beside the archived snapshot. Unsafe native paths identify the first rejected node/block and its cause. Minecraft's native API sometimes returns only a missing path; diagnostics explicitly preserve that uncertainty. Work permission refusals distinguish an unenrolled worker, recorded player placement and a cancelled WorkEvent. Listed event listeners are potential handlers, not attribution of which listener cancelled an event.
+
+Validation: 90 focused JVM cases passed. The short Folia 26.1.2 scenario verified the null-instruction recovery callback, a real opened oak door, a tree and grass inserted after mapping, a fresh route, two removed natural logs, 9.67 blocks of physical travel, and exactly five retained logs (three original plus two harvested). This isolates execution with controlled terrain and disabled inference; it is not a benchmark of model reasoning or village-wide construction throughput.
+
 ## Alpha.22: site preparation, shared storage and couriers
 
 Site preparation compiles observed soil and natural-tree obstacles into ordered clearing jobs before house, wall or path work. Multi-layer soil cuts no longer fail solely because they exceed one layer. Tree heightmaps are resolved to ground, each clearing stage must have a reachable supported work position, and later construction checks the cleared terrain. Actual workers recheck the expected block, ownership, protection, water, overhead support, reach, facing and inventory space. A site needing an inaccessible scaffold or an unobserved classification reports that specific obstacle; this change does not create arbitrary scaffold programs automatically. Loose dirt beside a wall can be cleared; supporting or protected blocks remain distinct.

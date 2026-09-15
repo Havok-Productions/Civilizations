@@ -18,7 +18,15 @@ public final class NavigationMap {
     UNKNOWN
   }
 
-  public record Cell(String material, Kind kind) {}
+  public record Cell(String material, Kind kind, String state) {
+    public Cell(String material, Kind kind) {
+      this(material, kind, "");
+    }
+
+    public Cell {
+      state = state == null ? "" : state;
+    }
+  }
 
   public record Passage(boolean allowed, String reason, List<Pos> clear, List<Pos> open) {}
 
@@ -39,7 +47,12 @@ public final class NavigationMap {
     for (var e : cells.entrySet())
       hash +=
           (long) e.getKey().hashCode() * 0x9e3779b9L
-              ^ (e.getValue().material() + ":" + e.getValue().kind().name()).hashCode();
+              ^ (e.getValue().material()
+                      + ":"
+                      + e.getValue().kind().name()
+                      + ":"
+                      + e.getValue().state())
+                  .hashCode();
     fingerprint = Long.toUnsignedString(hash, 16);
   }
 
@@ -137,6 +150,7 @@ public final class NavigationMap {
   /** Compact complete volume, palette + runs, x then z then y. Includes floor/head margins. */
   public Map<String, Object> describe() {
     List<String> palette = new ArrayList<>();
+    List<String> states = new ArrayList<>();
     Map<String, Integer> index = new HashMap<>();
     List<Integer> runs = new ArrayList<>();
     int last = -1, count = 0;
@@ -144,12 +158,14 @@ public final class NavigationMap {
       for (int z = center.z() - radius; z <= center.z() + radius; z++)
         for (int y = center.y() - vertical - 1; y <= center.y() + vertical + 2; y++) {
           Cell c = cell(new Pos(x, y, z));
-          String key = c.material + ":" + c.kind;
+          String label = c.material + ":" + c.kind;
+          String key = label + ":" + c.state;
           Integer id = index.get(key);
           if (id == null) {
             id = palette.size();
             index.put(key, id);
-            palette.add(key);
+            palette.add(label);
+            states.add(c.state);
           }
           if (id == last) count++;
           else {
@@ -176,6 +192,8 @@ public final class NavigationMap {
         "x,z,y; y from center-vertical-1 to center+vertical+2 inclusive",
         "palette",
         palette,
+        "block_states",
+        states,
         "runs",
         runs,
         "fingerprint",
