@@ -74,7 +74,7 @@ class ProposalSalvageTest {
                 2,
                 message -> {})) {
       coordinator.consider(v, null, new CoreTest.Flat(), Map.of());
-      assertEquals(List.of(b.surveyRadius()), radii);
+      assertEquals(List.of(DesignSurvey.proposal(b, origin).radius()), radii);
       assertTrue(v.proposals().isEmpty(), v.designFeedback().toString());
       assertEquals(DesignProposals.project(saved), v.designs().getFirst().project());
       assertNull(backend.request.get());
@@ -118,10 +118,100 @@ class ProposalSalvageTest {
                 2,
                 message -> {})) {
       coordinator.consider(v, null, new CoreTest.Flat(), Map.of());
-      assertEquals(List.of(b.surveyRadius(), 32), radii);
+      assertEquals(List.of(DesignSurvey.proposal(b, v.center()).radius(), 32), radii);
       assertTrue(v.jobs().isEmpty());
       assertTrue(v.proposals().getFirst().reason().contains("snapshot_resource_budget_exceeded"));
       assertFalse(v.proposals().getFirst().reason().contains("Terrain not observed"));
+    }
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  @Tag("design")
+  @Tag("settlements")
+  @Tag("inference")
+  @Tag("interaction")
+  void mislocatedWallRecoversAroundKnownBedWithoutRepeatingOversizedSurveyOrChangingGoal(
+      boolean modelRepeatsBadCoordinates) throws Exception {
+    var data = CoreTest.village().snapshot();
+    data.center = new Pos(-4134, 65, -1341);
+    Settlement village = new Settlement(data);
+    village.enroll("worker", 5);
+    Pos bed = village.center().add(-26, 0, -52);
+    village.beds(List.of(bed));
+    Blueprint original =
+        new Blueprint(
+            "wall",
+            "Protect the inhabited bed neighborhood",
+            4108,
+            1288,
+            3,
+            3,
+            2,
+            "east",
+            List.of(
+                DesignTest.p(4108, 1289),
+                DesignTest.p(4108, 1286),
+                DesignTest.p(4105, 1286),
+                DesignTest.p(4105, 1289)));
+    var saved =
+        DesignProposals.retain(village, original, village.center(), 0)
+            .waiting("waiting", "Fresh survey unavailable: snapshot_resource_budget_exceeded", 0);
+    village.proposal(saved);
+    List<DesignSurvey> captures = new ArrayList<>();
+    Backend offline = new Backend();
+    offline.online = modelRepeatsBadCoordinates;
+    offline.answer =
+        new Blueprint("wall", original.purpose(), 4105, 1288, 3, 3, 2, "west", original.points());
+    CountDownLatch acceptedSignal = new CountDownLatch(1);
+    try (var queue = new InferenceQueue(offline, 4);
+        var coordinator =
+            new DesignCoordinator(
+                queue,
+                new VillageConnections(),
+                (world, center, radius) -> {
+                  captures.add(new DesignSurvey(center, radius));
+                  assertTrue(
+                      radius < 128, "The bad coordinates must not request thousands of blocks");
+                  return CompletableFuture.completedFuture(
+                      new CoreTest.Flat() {
+                        public boolean available(int x, int z) {
+                          return Math.abs(x - center.x()) <= radius
+                              && Math.abs(z - center.z()) <= radius;
+                        }
+
+                        public String type(Pos p) {
+                          return available(p.x(), p.z()) ? super.type(p) : "UNKNOWN";
+                        }
+                      });
+                },
+                Runnable::run,
+                () -> List.of(village),
+                directory,
+                1000,
+                2,
+                message -> {})) {
+      coordinator.observe(
+          (id, event) -> {
+            if ("validation".equals(event.get("stage"))
+                && String.valueOf(event.get("message")).startsWith("Accepted "))
+              acceptedSignal.countDown();
+          });
+      coordinator.consider(village, null, new CoreTest.Flat(), Map.of());
+      assertTrue(acceptedSignal.await(5, TimeUnit.SECONDS), village.designFeedback().toString());
+      assertEquals(
+          2, captures.size(), "One village context and one fresh alternative-footprint survey");
+      assertEquals(modelRepeatsBadCoordinates, offline.request.get() != null);
+      assertTrue(village.proposals().isEmpty(), village.designFeedback().toString());
+      assertEquals(1, village.designs().size());
+      var accepted = village.designs().getFirst();
+      assertEquals(DesignProposals.project(saved), accepted.project());
+      assertEquals(original.purpose(), accepted.purpose());
+      assertTrue(
+          DesignCompiler.insideWall(Blueprint.parse(accepted.blueprint()), accepted.origin(), bed));
+      assertFalse(village.jobs().isEmpty());
+      assertTrue(village.jobs().stream().noneMatch(j -> j.complete));
+      assertTrue(village.designFeedback().stream().anyMatch(s -> s.contains("coordinate_space")));
     }
   }
 

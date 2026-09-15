@@ -54,13 +54,6 @@ final class RouteDesign {
     List<Blueprint.Point> ring = line(b, true);
     SitePreparation.route(s, ring, b.height());
     int constructionPhase = s.jobs.size();
-    s.require(
-        landmarks.isEmpty()
-            ? inside(b.points(), 0, 0)
-            : landmarks.stream()
-                .anyMatch(p -> inside(b.points(), p.x() - s.center.x(), p.z() - s.center.z())),
-        "Wall must protect a village bed, chest, or the work center; other neighborhoods may have"
-            + " their own defenses");
     Blueprint.Point gate = new Blueprint.Point(b.x(), b.z());
     s.require(ring.contains(gate), "Gate must be on the wall contour");
     List<Pos> columns = new ArrayList<>(), stands = new ArrayList<>();

@@ -106,6 +106,6 @@ final class ProgressBlockersTest {
             new Pos(-4163, 71, -1345));
     assertEquals(6, absolute.x());
     assertEquals(-6, absolute.z());
-    assertEquals(32, absolute.surveyRadius());
+    assertEquals(32, DesignSurvey.proposal(absolute, new Pos(-4163, 71, -1345)).radius());
   }
 }

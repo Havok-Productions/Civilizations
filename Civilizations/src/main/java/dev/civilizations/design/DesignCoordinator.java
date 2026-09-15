@@ -121,22 +121,45 @@ public final class DesignCoordinator implements AutoCloseable {
     }
     // A retained layout gets the same complete survey as a new layout. A small context map
     // must never overwrite its failure with an artificial "terrain not observed" rejection.
-    snapshots
-        .capture(world, proposal.origin(), Blueprint.parse(proposal.blueprint()).surveyRadius())
+    captureProposal(v, world, proposal)
         .thenAcceptAsync(
             t -> considerReady(v, world, proposal.origin(), t, resourceSites, proposal), executor)
         .exceptionally(
             error -> {
-              deferred(v, proposal, "Fresh survey unavailable: " + error.getMessage());
-              salvageContext(v, world, proposal, resourceSites);
+              var failed =
+                  deferred(
+                      v,
+                      proposal,
+                      "Proposal survey rejected or unavailable: " + error.getMessage());
+              salvageContext(v, world, failed, resourceSites);
               return null;
             });
   }
 
   private void salvageContext(
       Settlement v, World world, DesignProposal proposal, Map<String, Integer> resourceSites) {
-    snapshots
-        .capture(world, proposal.origin(), 32)
+    CompletableFuture<Terrain> context;
+    try {
+      var area = DesignSurvey.neighborhood(v, proposal.origin());
+      context =
+          capture(v, world, proposal.origin(), area, "village_revision_context")
+              .exceptionallyCompose(
+                  error -> {
+                    observer.accept(
+                        v.id(),
+                        Map.of(
+                            "stage",
+                            "revision_survey_fallback",
+                            "reason",
+                            error.toString(),
+                            "radius",
+                            32));
+                    return snapshots.capture(world, proposal.origin(), 32);
+                  });
+    } catch (RuntimeException invalidBounds) {
+      context = snapshots.capture(world, proposal.origin(), 32);
+    }
+    context
         .thenAcceptAsync(
             t -> considerReady(v, world, proposal.origin(), t, resourceSites, proposal, false),
             executor)
@@ -189,7 +212,8 @@ public final class DesignCoordinator implements AutoCloseable {
         pending.remove(v.id());
         return;
       }
-      salvage = fresh.proposal();
+      salvageContext(v, world, fresh.proposal(), resourceSites);
+      return;
     }
     observer.accept(
         v.id(),
@@ -211,7 +235,7 @@ public final class DesignCoordinator implements AutoCloseable {
         "survey_scope",
         completeSurvey
             ? "full proposed footprint"
-            : "local revision context only; full footprint survey failed");
+            : "village revision context; proposed footprint has not been admitted");
     report.put(
         "coordinate_example",
         Map.of(
@@ -374,7 +398,7 @@ public final class DesignCoordinator implements AutoCloseable {
       DesignProposal proposal,
       Blueprint response,
       List<Map<String, Object>> examples) {
-    boolean usable = ProposalSalvage.usable(proposal, response);
+    boolean usable = usableRevision(v, proposal, response);
     Blueprint revision = usable ? response : ProposalSalvage.alternative(proposal, examples);
     if (revision == null) {
       connections.read(
@@ -473,6 +497,31 @@ public final class DesignCoordinator implements AutoCloseable {
     receive(v, world, alternative, origin);
   }
 
+  private boolean usableRevision(Settlement previous, DesignProposal proposal, Blueprint response) {
+    if (!ProposalSalvage.usable(proposal, response)) return false;
+    Settlement v = current(previous);
+    if (v == null) return false;
+    List<Pos> landmarks = new ArrayList<>(v.beds());
+    landmarks.addAll(v.chests());
+    try {
+      DesignCompiler.validatePurpose(response, proposal.origin(), landmarks);
+      return true;
+    } catch (IllegalArgumentException mismatch) {
+      observer.accept(
+          v.id(),
+          Map.of(
+              "stage",
+              "revision_purpose_mismatch",
+              "proposal_id",
+              proposal.id(),
+              "reason",
+              mismatch.getMessage(),
+              "next_action",
+              "try a validated local alternative for the same goal"));
+      return false;
+    }
+  }
+
   /** Find the current state after an asynchronous survey/model call races with a merge. */
   private Settlement current(Settlement previous) {
     return settlements.get().stream()
@@ -507,14 +556,15 @@ public final class DesignCoordinator implements AutoCloseable {
 
   private void survey(Settlement previous, World world, DesignProposal proposal) {
     try {
-      Blueprint blueprint = Blueprint.parse(proposal.blueprint());
-      snapshots
-          .capture(world, proposal.origin(), blueprint.surveyRadius())
+      captureProposal(previous, world, proposal)
           .thenAcceptAsync(terrain -> accept(previous, proposal, terrain), executor)
           .whenComplete(
               (unused, error) -> {
                 if (error != null)
-                  deferred(previous, proposal, "Fresh survey unavailable: " + error.getMessage());
+                  deferred(
+                      previous,
+                      proposal,
+                      "Proposal survey rejected or unavailable: " + error.getMessage());
                 pending.remove(previous.id());
               });
     } catch (RuntimeException e) {
@@ -523,17 +573,58 @@ public final class DesignCoordinator implements AutoCloseable {
     }
   }
 
-  private void deferred(Settlement previous, DesignProposal proposal, String reason) {
+  private CompletableFuture<Terrain> captureProposal(
+      Settlement previous, World world, DesignProposal proposal) {
+    try {
+      Settlement v = current(previous);
+      if (v == null) throw new IllegalStateException("Village no longer active");
+      Blueprint b = Blueprint.parse(proposal.blueprint());
+      List<Pos> landmarks = new ArrayList<>(v.beds());
+      landmarks.addAll(v.chests());
+      DesignCompiler.validatePurpose(b, proposal.origin(), landmarks);
+      return capture(
+          v,
+          world,
+          proposal.origin(),
+          DesignSurvey.proposal(b, proposal.origin()),
+          "proposal_footprint_and_access");
+    } catch (RuntimeException rejected) {
+      return CompletableFuture.failedFuture(rejected);
+    }
+  }
+
+  private CompletableFuture<Terrain> capture(
+      Settlement v, World world, Pos origin, DesignSurvey area, String scope) {
+    observer.accept(
+        v.id(),
+        Map.of(
+            "stage",
+            "survey_request",
+            "scope",
+            scope,
+            "blueprint_origin",
+            origin,
+            "capture_center",
+            area.center(),
+            "radius",
+            area.radius()));
+    return snapshots.capture(world, area.center(), area.radius());
+  }
+
+  private DesignProposal deferred(Settlement previous, DesignProposal proposal, String reason) {
+    var result = new java.util.concurrent.atomic.AtomicReference<>(proposal);
     connections.read(
         () -> {
           Settlement v = current(previous);
           if (v == null || closed) return;
           var waiting =
               DesignProposals.defer(v, proposal, reason, System.currentTimeMillis() + 2 * interval);
+          result.set(waiting);
           write(v, "proposal", waiting);
           feedback(v, "Retained " + proposal.kind() + ": " + reason);
           next.put(v.id(), System.currentTimeMillis() + interval);
         });
+    return result.get();
   }
 
   private synchronized DesignProposals.Admission accept(

@@ -20,6 +20,7 @@ public final class DesignCompiler {
       String project,
       Predicate<Pos> occupied,
       List<Pos> landmarks) {
+    validatePurpose(b, center, landmarks);
     DesignSite s = new DesignSite(terrain, center, project, occupied);
     switch (b.kind()) {
       case "house" -> HousingDesign.build(s, b);
@@ -61,5 +62,17 @@ public final class DesignCompiler {
 
   public static boolean insideWall(Blueprint wall, Pos center, Pos p) {
     return RouteDesign.inside(wall.points(), p.x() - center.x(), p.z() - center.z());
+  }
+
+  /** Existing defense requirement can be checked before spending resources on terrain capture. */
+  public static void validatePurpose(Blueprint b, Pos origin, List<Pos> landmarks) {
+    if (b.kind().equals("wall")
+        && (landmarks.isEmpty() ? List.of(origin) : landmarks)
+            .stream().noneMatch(p -> insideWall(b, origin, p)))
+      throw new IllegalArgumentException(
+          "Wall must protect a village bed, chest, or the work center; contour encloses none of"
+              + " these. Check coordinate_space against the saved origin "
+              + origin.key()
+              + "; other neighborhoods may have their own defenses");
   }
 }

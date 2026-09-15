@@ -55,6 +55,7 @@ public record DesignProposal(
     return status.equals("needs_revision")
         || reason.startsWith("Physical validation:")
         || reason.startsWith("Fresh survey unavailable:")
+        || reason.startsWith("Proposal survey rejected or unavailable:")
         || reason.startsWith("Survey could not start:");
   }
 

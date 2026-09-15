@@ -115,7 +115,9 @@ final class ActivityRecoveryTest {
             "{\"kind\":\"house\",\"purpose\":\"Larger"
                 + " shelter\",\"x\":80,\"z\":0,\"width\":12,\"depth\":12,\"height\":5,\"direction\":\"north\",\"points\":[]}");
     assertEquals(80, proposal.x());
-    assertTrue(proposal.surveyRadius() > 80);
+    var area = DesignSurvey.proposal(proposal, v.center());
+    assertTrue(Math.abs(area.center().x() - (v.center().x() + 92)) < area.radius());
+    assertTrue(Math.abs(area.center().x() - v.center().x()) < area.radius());
   }
 
   @Test

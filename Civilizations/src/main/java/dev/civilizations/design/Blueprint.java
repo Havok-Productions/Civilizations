@@ -37,16 +37,6 @@ public record Blueprint(
     }
   }
 
-  public int surveyRadius() {
-    long extent =
-        Math.max(
-            Math.abs((long) x) + Math.abs((long) width) + Math.abs((long) depth),
-            Math.abs((long) z) + Math.abs((long) width) + Math.abs((long) depth));
-    for (Point p : points)
-      extent = Math.max(extent, Math.max(Math.abs((long) p.x()), Math.abs((long) p.z())));
-    return (int) Math.min(Integer.MAX_VALUE, Math.max(32, extent + 3));
-  }
-
   public static final String SCHEMA =
       """
       {"type":"object","properties":{"coordinate_space":{"type":"string","enum":["relative","world"]},"kind":{"type":"string","enum":["house","wall","path","farm","lights","mine","wait"]},"purpose":{"type":"string"},"x":{"type":"integer"},"z":{"type":"integer"},"width":{"type":"integer"},"depth":{"type":"integer"},"height":{"type":"integer"},"direction":{"type":"string","enum":["north","south","east","west"]},"points":{"type":"array","items":{"type":"object","properties":{"x":{"type":"integer"},"z":{"type":"integer"}},"required":["x","z"],"additionalProperties":false}}},"required":["coordinate_space","kind","purpose","x","z","width","depth","height","direction","points"],"additionalProperties":false}
