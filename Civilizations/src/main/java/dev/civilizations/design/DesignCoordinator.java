@@ -56,7 +56,10 @@ public final class DesignCoordinator implements AutoCloseable {
   }
 
   public String status(Settlement v) {
-    return statuses.getOrDefault(v.id(), "waiting for an eligible village need");
+    String status = statuses.getOrDefault(v.id(), "waiting for an eligible village need");
+    return v.proposals().isEmpty()
+        ? status
+        : status + "; retained proposals=" + v.proposals().size();
   }
 
   private Predicate<Pos> occupied(Settlement v) {
@@ -72,21 +75,31 @@ public final class DesignCoordinator implements AutoCloseable {
 
   public void consider(
       Settlement v, World world, Terrain terrain, Map<String, Integer> resourceSites) {
+    long now = System.currentTimeMillis();
+    if (closed || v.paused() || now < next.getOrDefault(v.id(), 0L) || !pending.add(v.id())) return;
     try {
+      DesignProposal retry =
+          v.proposals().stream()
+              .filter(p -> p.due(now))
+              .filter(p -> DesignNeeds.allowed(v, activeLimit).contains(p.kind()))
+              .min(Comparator.comparingLong(DesignProposal::retryAt))
+              .orElse(null);
+      if (retry != null) {
+        next.put(v.id(), now + interval);
+        survey(v, world, retry);
+        return;
+      }
       Pos focus = DesignFocus.select(v);
-      if (!closed
-          && !pending.contains(v.id())
-          && System.currentTimeMillis() >= next.getOrDefault(v.id(), 0L))
-        snapshots
-            .capture(world, focus, 32)
-            .thenAcceptAsync(t -> considerReady(v, world, focus, t, resourceSites), executor)
-            .exceptionally(
-                error -> {
-                  pending.remove(v.id());
-                  next.put(v.id(), System.currentTimeMillis() + interval);
-                  feedback(v, "Design survey unavailable: " + error.getMessage());
-                  return null;
-                });
+      snapshots
+          .capture(world, focus, 32)
+          .thenAcceptAsync(t -> considerReady(v, world, focus, t, resourceSites), executor)
+          .exceptionally(
+              error -> {
+                pending.remove(v.id());
+                next.put(v.id(), System.currentTimeMillis() + interval);
+                feedback(v, "Design survey unavailable: " + error.getMessage());
+                return null;
+              });
     } catch (RuntimeException e) {
       pending.remove(v.id());
       next.put(v.id(), System.currentTimeMillis() + interval);
@@ -98,8 +111,11 @@ public final class DesignCoordinator implements AutoCloseable {
       Settlement v, World world, Pos origin, Terrain terrain, Map<String, Integer> resourceSites) {
     long now = System.currentTimeMillis();
     Set<String> kinds = DesignNeeds.allowed(v, activeLimit);
-    if (closed || now < next.getOrDefault(v.id(), 0L) || kinds.isEmpty() || !pending.add(v.id()))
+    if (closed || v.paused() || kinds.isEmpty()) {
+      pending.remove(v.id());
+      next.put(v.id(), now + interval);
       return;
+    }
     observer.accept(
         v.id(),
         Map.of(
@@ -136,6 +152,12 @@ public final class DesignCoordinator implements AutoCloseable {
     report.put("material_sources", MaterialSources.knowledge());
     report.put("stock_age_seconds", Math.min(9999, v.stockAge(now) / 1000));
     report.put("feedback", v.designFeedback());
+    report.put(
+        "retained_proposals",
+        v.proposals().stream()
+            .sorted(Comparator.comparingLong(DesignProposal::retryAt))
+            .limit(6)
+            .toList());
     report.put("supply_requests", v.supplyNeeds(now));
     report.put("shared_facts", v.knowledge().report(now));
     report.put(
@@ -229,39 +251,7 @@ public final class DesignCoordinator implements AutoCloseable {
                 pending.remove(v.id());
                 return;
               }
-              write(
-                  v,
-                  "proposal",
-                  Map.of(
-                      "blueprint",
-                      blueprint,
-                      "origin",
-                      origin,
-                      "status",
-                      "received; awaiting physical validation"));
-              try {
-                blueprint.validateGeometry();
-              } catch (IllegalArgumentException invalid) {
-                feedback(
-                    v,
-                    "Invalid geometry: "
-                        + invalid.getMessage()
-                        + ". Relative coordinates use offsets from "
-                        + origin.key()
-                        + "; e.g. x=6,z=-6. Set coordinate_space=world when supplying absolute"
-                        + " coordinates.");
-                useObservedAlternative(v, world, origin, examples, "invalid proposed geometry");
-                return;
-              }
-              snapshots
-                  .capture(world, origin, blueprint.surveyRadius())
-                  .thenAcceptAsync(fresh -> accept(v, blueprint, origin, fresh), executor)
-                  .whenComplete(
-                      (unused, error) -> {
-                        if (error != null && !closed)
-                          feedback(v, "Design validation failed: " + error.getMessage());
-                        pending.remove(v.id());
-                      });
+              receive(v, world, blueprint, origin);
             });
     if (!submitted) {
       pending.remove(v.id());
@@ -294,76 +284,118 @@ public final class DesignCoordinator implements AutoCloseable {
             alternative,
             "basis",
             "observed feasible candidate; requires fresh validation"));
-    snapshots
-        .capture(world, origin, alternative.surveyRadius())
-        .thenAcceptAsync(t -> accept(v, alternative, origin, t), executor)
-        .whenComplete(
-            (unused, error) -> {
-              if (error != null) feedback(v, "Alternative survey failed: " + error.getMessage());
-              pending.remove(v.id());
-            });
+    receive(v, world, alternative, origin);
   }
 
-  private synchronized void accept(Settlement v, Blueprint blueprint, Pos origin, Terrain terrain) {
-    connections.read(() -> acceptCurrent(v, blueprint, origin, terrain));
+  /** Find the current state after an asynchronous survey/model call races with a merge. */
+  private Settlement current(Settlement previous) {
+    return settlements.get().stream()
+        .filter(
+            v ->
+                !v.retired()
+                    && (v.id().equals(previous.id()) || v.absorbedIds().contains(previous.id())))
+        .findFirst()
+        .orElse(null);
   }
 
-  private void acceptCurrent(Settlement v, Blueprint blueprint, Pos origin, Terrain terrain) {
-    if (closed || v.paused()) return;
-    try {
-      if (!DesignNeeds.allowed(v, activeLimit).contains(blueprint.kind()))
-        throw new IllegalArgumentException("Village need changed or this kind is already planned");
-      String project =
-          "design-" + blueprint.kind() + "-" + UUID.randomUUID().toString().substring(0, 8);
-      List<Pos> landmarks = new ArrayList<>(v.beds());
-      landmarks.addAll(v.chests());
-      DesignCompiler.Result compiled =
-          new DesignCompiler().compile(blueprint, terrain, origin, project, occupied(v), landmarks);
-      String json = new Gson().toJson(blueprint);
-      DesignRecord record =
-          new DesignRecord(
-              project,
-              blueprint.kind(),
-              blueprint.purpose(),
-              json,
-              compiled.materials(),
-              compiled.jobs().size(),
-              System.currentTimeMillis(),
-              origin);
-      if (!v.addDesign(
-          record,
-          compiled.jobs(),
-          compiled.reservations(),
-          activeLimit + (blueprint.kind().equals("mine") ? 1 : 0)))
-        throw new IllegalArgumentException("Space or project capacity changed before admission");
-      write(
-          v,
-          "plan",
-          Map.of("design", record, "jobs", compiled.jobs(), "reserved", compiled.reservations()));
-      feedback(
-          v,
-          "Accepted "
-              + project
-              + ": "
-              + record.purpose()
-              + "; "
-              + record.jobs()
-              + " actions; materials "
-              + record.materials());
-    } catch (IllegalArgumentException e) {
-      next.put(v.id(), System.currentTimeMillis() + interval);
-      feedback(
-          v,
-          "Rejected "
-              + blueprint.kind()
-              + " at "
-              + blueprint.x()
-              + ","
-              + blueprint.z()
-              + ": "
-              + e.getMessage()
-              + ". Revise the coordinates, dimensions, or route.");
+  private void receive(Settlement previous, World world, Blueprint blueprint, Pos origin) {
+    java.util.concurrent.atomic.AtomicReference<DesignProposal> retained =
+        new java.util.concurrent.atomic.AtomicReference<>();
+    connections.read(
+        () -> {
+          Settlement v = current(previous);
+          if (v == null || closed) return;
+          DesignProposal p =
+              DesignProposals.retain(v, blueprint, origin, System.currentTimeMillis());
+          retained.set(p);
+          write(v, "proposal", p);
+          if (p.status().equals("needs_revision")) feedback(v, p.reason());
+        });
+    DesignProposal proposal = retained.get();
+    if (proposal == null || proposal.status().equals("needs_revision")) {
+      pending.remove(previous.id());
+      return;
     }
+    survey(previous, world, proposal);
+  }
+
+  private void survey(Settlement previous, World world, DesignProposal proposal) {
+    try {
+      Blueprint blueprint = Blueprint.parse(proposal.blueprint());
+      snapshots
+          .capture(world, proposal.origin(), blueprint.surveyRadius())
+          .thenAcceptAsync(terrain -> accept(previous, proposal, terrain), executor)
+          .whenComplete(
+              (unused, error) -> {
+                if (error != null)
+                  deferred(previous, proposal, "Fresh survey unavailable: " + error.getMessage());
+                pending.remove(previous.id());
+              });
+    } catch (RuntimeException e) {
+      deferred(previous, proposal, "Survey could not start: " + e.getMessage());
+      pending.remove(previous.id());
+    }
+  }
+
+  private void deferred(Settlement previous, DesignProposal proposal, String reason) {
+    connections.read(
+        () -> {
+          Settlement v = current(previous);
+          if (v == null || closed) return;
+          var waiting =
+              DesignProposals.defer(v, proposal, reason, System.currentTimeMillis() + 2 * interval);
+          write(v, "proposal", waiting);
+          feedback(v, "Retained " + proposal.kind() + ": " + reason);
+          next.put(v.id(), System.currentTimeMillis() + interval);
+        });
+  }
+
+  private synchronized void accept(Settlement previous, DesignProposal proposal, Terrain terrain) {
+    connections.read(
+        () -> {
+          Settlement v = current(previous);
+          if (v == null || closed) return;
+          var result =
+              DesignProposals.admit(
+                  v,
+                  proposal,
+                  terrain,
+                  occupied(v),
+                  activeLimit,
+                  System.currentTimeMillis() + 2 * interval);
+          next.put(v.id(), System.currentTimeMillis() + interval);
+          if (!result.accepted()) {
+            write(v, "proposal", result.proposal());
+            feedback(v, "Retained " + proposal.kind() + ": " + result.proposal().reason());
+            return;
+          }
+          if (result.compiled() != null) {
+            write(
+                v,
+                "plan",
+                Map.of(
+                    "design",
+                    result.design(),
+                    "jobs",
+                    result.compiled().jobs(),
+                    "reserved",
+                    result.compiled().reservations(),
+                    "construction",
+                    result.compiled().construction(),
+                    "proposal",
+                    proposal));
+            feedback(
+                v,
+                "Accepted "
+                    + result.design().project()
+                    + ": "
+                    + result.design().purpose()
+                    + "; "
+                    + result.design().jobs()
+                    + " actions; materials "
+                    + result.design().materials());
+          }
+        });
   }
 
   private Map<String, Integer> relative(Settlement v, Pos p) {
@@ -406,7 +438,7 @@ public final class DesignCoordinator implements AutoCloseable {
   static final String SYSTEM =
       """
       You are the village architect. Propose one useful project from supported kinds using observations, needs, resources and prior failures. Return a JSON blueprint. Declare coordinate_space: relative for offsets from survey_origin or world for absolute world positions. The host converts explicitly declared world coordinates to offsets before validation. Prefer relative offsets. Survey_origin is an inhabited work area rather than necessarily the old settlement center. Examples are optional suggestions, not a whitelist: you may change coordinates, dimensions and routes. There are no configured numeric proposal ranges. World checks validate actual support, access, resources, collision and protected blocks. Larger work may need independently buildable stages when execution resources are exhausted; explain the useful first stage rather than claiming a whole village is finished.
-      Respond wait if no physically meaningful project is available. Recent hostile mobs and missing defenses are urgent: propose a local wall protecting an inhabited bed/storage area even when other houses remain unfinished. A merged village can have multiple local defenses. A wall need not include every distant chest or the historic village center. Do not build a wall around nothing. Avoid repeating the same failed geometry. site_rejections provides actual reasons candidates failed.
+      Respond wait if no physically meaningful project is available. Recent hostile mobs and missing defenses are urgent: propose a local wall protecting an inhabited bed/storage area even when other houses remain unfinished. A merged village can have multiple local defenses. A wall need not include every distant chest or the historic village center. Do not build a wall around nothing. retained_proposals are remembered intentions, not completed work. Address their recorded blocker or propose a revised layout; capacity and unavailable observations can be temporary. A duplicate closing corner is accepted, and the host can relocate/orient a gate on its nearest straight segment while retaining your contour. Avoid repeating the same failed geometry. site_rejections provides actual reasons candidates failed.
       house: x/z minimum corner, width/depth footprint, height walls, direction entrance, optional points bed feet facing south. Leave headroom and room for the two-block beds. wall: simple closed axis-aligned polygon points, x/z a gate point on a straight segment, height positive, direction gate orientation. path: ordered axis-aligned points and width1. farm: x/z footprint, width/depth; needs soil and existing water. lights: points with support. mine: x/z entrance, direction staircase, depth descending steps and width horizontal continuation. Workers need actual tools and materials. Survey observations, not model recollection, determine what exists. A zero-coal mine is exploration, not guaranteed fuel. End with the final blueprint; never attest completed world work.
       """;
 }

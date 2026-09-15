@@ -6,7 +6,11 @@ import java.util.*;
 /** Rectilinear model-drawn wall contours and walking paths, validated before expansion. */
 final class RouteDesign {
   static List<Blueprint.Point> line(Blueprint b, boolean closed) {
-    List<Blueprint.Point> points = b.points();
+    List<Blueprint.Point> points = new ArrayList<>();
+    for (Blueprint.Point point : b.points())
+      if (points.isEmpty() || !points.getLast().equals(point)) points.add(point);
+    if (closed && points.size() > 1 && points.getFirst().equals(points.getLast()))
+      points.removeLast();
     if (points.size() < (closed ? 4 : 2))
       throw new IllegalArgumentException(
           "A closed wall needs at least four vertices; a path needs two");
@@ -80,9 +84,6 @@ final class RouteDesign {
         if (Math.abs(g.y() - ground.y()) <= 1
             && ground.add(0, b.height(), 0).distance2(g.add(0, 1, 0)) <= 21
             && Math.abs(ground.y() + b.height() - g.y() - 1) <= 3
-            && !s.occupied.test(g)
-            && !s.occupied.test(g.add(0, 1, 0))
-            && !s.occupied.test(g.add(0, 2, 0))
             && s.solid(g)
             && s.clear(g.add(0, 1, 0))
             && s.clear(g.add(0, 2, 0))) {
@@ -106,9 +107,9 @@ final class RouteDesign {
           s.require(
               Math.abs(g.y() - ground.y()) <= 1 && s.solid(g),
               "Gate needs accessible ground on both sides");
-          s.open(g.add(0, 1, 0));
-          s.open(g.add(0, 2, 0));
-          s.reserve(g);
+          s.openAccess(g.add(0, 1, 0));
+          s.openAccess(g.add(0, 2, 0));
+          s.reserveAccess(g);
         }
       }
       columns.add(ground);

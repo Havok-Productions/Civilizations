@@ -76,6 +76,9 @@ public final class VillageConnections {
           });
       d.designReservations.addAll(from.designReservations);
       d.designFeedback.addAll(from.designFeedback);
+      for (DesignProposal proposal : from.proposals)
+        if (d.proposals.stream().noneMatch(p -> p.id().equals(proposal.id())))
+          d.proposals.add(proposal);
       from.designs.forEach(
           record ->
               d.designs.add(

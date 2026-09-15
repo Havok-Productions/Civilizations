@@ -553,6 +553,7 @@ public final class VillagerWorker {
       report.put("resource_sites", sites);
       report.put("material_sources", MaterialSources.knowledge());
       report.put("current_project", village.taskProject(id));
+      report.put("unfinished_steps", village.checkpoints(id));
       report.put("deposit_allowed", village.mayShareSurplus(id) && village.chest() != null);
       report.put("recent_results", village.memories(id));
       report.put("agent_experiences", mind.report());
@@ -634,14 +635,21 @@ public final class VillagerWorker {
   }
 
   private void begin(Job candidate) {
+    var continuation = village.resume(id, Set.of(candidate.id), System.currentTimeMillis());
+    if (continuation != null) supplyFor = continuation.parent();
     mind.begin(
-        candidate, here(), inventory(), System.currentTimeMillis(), () -> beginWork(candidate));
+        supplyFor == null ? candidate : supplyFor,
+        here(),
+        inventory(),
+        System.currentTimeMillis(),
+        () -> beginWork(candidate));
   }
 
   private void beginWork(Job candidate) {
     workPose.reset();
     waitingReason = "";
     job = candidate;
+    village.checkpoint(id, job, supplyFor, "Working on validated step");
     policyTicket =
         plugin.coreAi() == null
             ? null
@@ -726,6 +734,19 @@ public final class VillagerWorker {
 
   private void fallback(long now, Pos at) {
     List<Job> candidates = offered(now, at);
+    var continuation =
+        village.resume(
+            id,
+            candidates.stream().map(j -> j.id).collect(java.util.stream.Collectors.toSet()),
+            now);
+    if (continuation != null) {
+      supplyFor = continuation.parent();
+      begin(continuation.job());
+      debug(
+          "task_resumed",
+          Map.of("job", continuation.job().id, "parent", supplyFor == null ? "" : supplyFor.id));
+      return;
+    }
     // Reuse carried building supplies before classifying them as surplus from the last project.
     for (Job candidate : candidates)
       if (needed(candidate).isEmpty() && village.claim(candidate.id, id, now)) {
@@ -979,6 +1000,7 @@ public final class VillagerWorker {
         && village.claim(mine.id, id, now)) {
       supplyFor = job;
       job = mine;
+      village.checkpoint(id, job, supplyFor, "Obtaining supplies for parent task");
       mode = "work";
       return;
     }
@@ -1123,6 +1145,7 @@ public final class VillagerWorker {
   }
 
   private void reset() {
+    village.checkpoint(id, job, supplyFor, "Interrupted; retained for resumption");
     deliveries.cancel();
     mind.cancel("worker_reset");
     workPose.reset();

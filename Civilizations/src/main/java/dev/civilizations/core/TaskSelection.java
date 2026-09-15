@@ -21,6 +21,8 @@ public final class TaskSelection {
     String project = village.taskProject(worker);
     boolean food = inventory.getOrDefault("BREAD", 0) < 3;
     boolean danger = village.needs().danger(now);
+    Set<String> remembered = new HashSet<>();
+    village.checkpoints(worker).forEach(step -> remembered.add(step.job()));
     return village.jobs().stream()
         .filter(j -> village.available(j.id, worker, now))
         .filter(
@@ -40,21 +42,23 @@ public final class TaskSelection {
         .sorted(
             Comparator.<Job>comparingInt(
                     j ->
-                        j.everBuilt && j.kind == Job.Kind.PLACE
-                            ? 0
-                            : j.project.equals(project)
-                                ? 1
-                                : danger
-                                        && (j.project.startsWith("wall-")
-                                            || j.project.startsWith("design-wall-")
-                                            || j.project.startsWith("design-lights-")
-                                            || j.project.equals("lights"))
-                                    ? 2
-                                    : food && j.kind == Job.Kind.FARM
-                                        ? 3
-                                        : j.kind == Job.Kind.PLACE && missing.apply(j).isEmpty()
-                                            ? 4
-                                            : j.kind == Job.Kind.MINE ? 6 : 5)
+                        remembered.contains(j.id)
+                            ? -1
+                            : j.everBuilt && j.kind == Job.Kind.PLACE
+                                ? 0
+                                : j.project.equals(project)
+                                    ? 1
+                                    : danger
+                                            && (j.project.startsWith("wall-")
+                                                || j.project.startsWith("design-wall-")
+                                                || j.project.startsWith("design-lights-")
+                                                || j.project.equals("lights"))
+                                        ? 2
+                                        : food && j.kind == Job.Kind.FARM
+                                            ? 3
+                                            : j.kind == Job.Kind.PLACE && missing.apply(j).isEmpty()
+                                                ? 4
+                                                : j.kind == Job.Kind.MINE ? 6 : 5)
                 .thenComparingLong(j -> j.target.distance2(at)))
         .limit(12)
         .toList();

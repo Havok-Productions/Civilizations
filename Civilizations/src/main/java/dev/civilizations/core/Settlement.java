@@ -14,6 +14,7 @@ public final class Settlement {
     public String taskProject = "";
     public Set<String> committedProjects = new HashSet<>();
     public String lastSuggestion = "";
+    public List<TaskCheckpoint> taskCheckpoints = new ArrayList<>();
 
     public Agent() {}
 
@@ -42,6 +43,7 @@ public final class Settlement {
     public Set<String> playerBlocks = new HashSet<>();
     public boolean paused;
     public List<DesignRecord> designs = new ArrayList<>();
+    public List<DesignProposal> proposals = new ArrayList<>();
     public Set<Pos> designReservations = new HashSet<>();
     public List<String> designFeedback = new ArrayList<>();
     public Pos craftingTable;
@@ -265,6 +267,13 @@ public final class Settlement {
     if (data.absorbedIds == null) data.absorbedIds = new HashSet<>();
     if (data.memberPositions == null) data.memberPositions = new LinkedHashMap<>();
     if (data.designs == null) data.designs = new ArrayList<>();
+    if (data.proposals == null) data.proposals = new ArrayList<>();
+    data.agents
+        .values()
+        .forEach(
+            a -> {
+              if (a.taskCheckpoints == null) a.taskCheckpoints = new ArrayList<>();
+            });
     if (data.designReservations == null) data.designReservations = new HashSet<>();
     if (data.designFeedback == null) data.designFeedback = new ArrayList<>();
     knowledge.restore(data.blockedFacts, data.supplyNeeds, data.progress);
@@ -272,6 +281,51 @@ public final class Settlement {
 
   public synchronized List<DesignRecord> designs() {
     return List.copyOf(data.designs);
+  }
+
+  public synchronized List<DesignProposal> proposals() {
+    return List.copyOf(data.proposals);
+  }
+
+  public synchronized void proposal(DesignProposal proposal) {
+    data.proposals.removeIf(p -> p.id().equals(proposal.id()));
+    data.proposals.add(proposal);
+  }
+
+  public synchronized void acceptedProposal(String id) {
+    data.proposals.removeIf(p -> p.id().equals(id));
+  }
+
+  public synchronized void checkpoint(String worker, Job job, Job parent, String reason) {
+    Agent agent = data.agents.get(worker);
+    if (agent == null || job == null) return;
+    Job actual = find(job.id);
+    if (actual == null || actual.complete) return;
+    TaskContinuity.remember(
+        agent.taskCheckpoints,
+        new TaskCheckpoint(
+            job.id, parent == null ? "" : parent.id, reason, System.currentTimeMillis()));
+  }
+
+  public synchronized List<TaskCheckpoint> checkpoints(String worker) {
+    Agent agent = data.agents.get(worker);
+    return agent == null ? List.of() : List.copyOf(agent.taskCheckpoints);
+  }
+
+  public record Continuation(Job job, Job parent) {}
+
+  /** Claim a remembered child and its parent together; never steal another worker's lease. */
+  public synchronized Continuation resume(String worker, Set<String> offered, long now) {
+    for (TaskCheckpoint step : checkpoints(worker)) {
+      Job child = find(step.job()), parent = step.parent().isEmpty() ? null : find(step.parent());
+      if (child == null || !offered.contains(child.id) || !available(child.id, worker, now))
+        continue;
+      if (parent != null && (parent.complete || !available(parent.id, worker, now))) continue;
+      if (parent != null) claim(parent.id, worker, now);
+      claim(child.id, worker, now);
+      return new Continuation(child.copy(), parent == null ? null : parent.copy());
+    }
+    return null;
   }
 
   public synchronized List<String> designFeedback() {
@@ -299,6 +353,15 @@ public final class Settlement {
 
   public synchronized boolean addDesign(
       DesignRecord record, List<Job> jobs, Set<Pos> occupied, int activeLimit) {
+    return addDesign(record, jobs, occupied, occupied, activeLimit);
+  }
+
+  public synchronized boolean addDesign(
+      DesignRecord record,
+      List<Job> jobs,
+      Set<Pos> occupied,
+      Set<Pos> construction,
+      int activeLimit) {
     boolean defense =
         Set.of("wall", "mine").contains(record.kind())
             && data.designs.stream()
@@ -308,7 +371,7 @@ public final class Settlement {
             && data.designs.stream().filter(d -> !allComplete(d.project())).count() >= activeLimit)
       return false;
     Set<Pos> old = layoutOccupancy();
-    if (occupied.stream().anyMatch(p -> old.contains(p) || playerProtected(p))) return false;
+    if (construction.stream().anyMatch(p -> old.contains(p) || playerProtected(p))) return false;
     if (!addProject(record.project(), jobs)) return false;
     data.designs.add(record);
     data.designReservations.addAll(occupied);
@@ -538,6 +601,9 @@ public final class Settlement {
     Job j = find(id);
     if (j == null || !worker.equals(j.owner)) return false;
     j.complete = true;
+    data.agents
+        .values()
+        .forEach(a -> TaskContinuity.completed(a.taskCheckpoints, id, System.currentTimeMillis()));
     j.everBuilt = j.kind != Job.Kind.CLEAR;
     j.owner = null;
     remember(worker, "Completed " + j.project + " at " + j.target.key(), true);
@@ -561,6 +627,7 @@ public final class Settlement {
     if (j != null && worker.equals(j.owner)) {
       j.owner = null;
       j.failures++;
+      j.blockedReason = reason;
       j.retryAfter = now + Math.min(300_000, 15_000L * j.failures);
     }
     remember(worker, reason, false);
@@ -644,6 +711,7 @@ public final class Settlement {
     d.jobs = new ArrayList<>(jobs());
     d.playerBlocks = new HashSet<>(data.playerBlocks);
     d.designs = new ArrayList<>(data.designs);
+    d.proposals = new ArrayList<>(data.proposals);
     d.designReservations = new HashSet<>(data.designReservations);
     d.designFeedback = new ArrayList<>(data.designFeedback);
     d.craftingTable = data.craftingTable;
@@ -657,6 +725,7 @@ public final class Settlement {
           b.completed = a.completed;
           b.taskProject = a.taskProject;
           b.lastSuggestion = a.lastSuggestion;
+          b.taskCheckpoints = new ArrayList<>(a.taskCheckpoints);
           b.committedProjects =
               a.committedProjects == null ? new HashSet<>() : new HashSet<>(a.committedProjects);
           d.agents.put(id, b);

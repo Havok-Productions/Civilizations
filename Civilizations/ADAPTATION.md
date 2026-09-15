@@ -38,6 +38,14 @@ Recovery errors preserve their underlying cause instead of reporting only `Compl
 
 The final focused selection passed 121 JVM cases. The disposable `progress` scenario physically verified walking beyond an initial radius-four map, SEARCH32, real dirt clearance and retained drops, then sand gathering, a crafted/placed furnace, native smelting, and a glass repair. Eight cobblestone and one fuel log were consumed; the spare log and cleared dirt remained. A separate `progress` run with `-Dcivilizations.test.farm-preparation=true` verified a real worker clearing/retaining a dandelion and planting wheat using one seed. These are executor checks with a deterministic recovery teacher, not a fresh Qwen/DeepSeek capability benchmark or a full-village/wall run.
 
+## Task and proposal continuity in alpha.23
+
+Accepted projects already persisted. Workers now also save the exact unfinished step and, when mining for another task, its parent step. Sleep, threat recovery, unload and restart release leases without deleting those intentions. Resumption claims both steps together and respects another worker's live claim, prerequisite order and retry evidence. Verified completion removes the checkpoint or returns it to the parent. Checkpoints migrate with job IDs during village merges. Older saves acquire checkpoints as workers start work; past unsaved steps cannot be reconstructed exactly.
+
+`DesignProposals` retains architect intentions separately from executable projects. Capacity changes and unavailable or blocked terrain defer a proposal with its reason and a fresh-survey retry; invalid geometry remains available for model revision. `BlueprintNormalization` accepts a repeated closing corner, removes consecutive duplicate route points and chooses the nearest straight gate segment with a compatible orientation. The original blueprint remains recorded. Admission still checks current terrain, access, support and occupied construction space. Walking margins and supported work positions can be shared while building footprints and interiors remain reserved. Retries use stable proposal/project identities, including after merges, so delayed callbacks cannot duplicate admitted work.
+
+The `design tasks settlements storage navigation` selection passed 98 JVM cases with no failures or skips. It verifies persistence, claims, proposal admission and geometry against synthetic terrain. No new Folia or model run was started for this change; live movement, throughput and autonomous design choices need observation after installation. The earlier alpha.22 physical evidence describes that release's executor checks only.
+
 ## Earlier alpha.18 changes and evidence
 
 Civilizations alpha.18 uses Java 25 and Folia 26.1.2. Build both modules with `mvn -f pom.xml package`; install only the Civilizations JAR. Run focused checks with `python tools/test_sections.py coreai navigation design tasks`, then package with `-DskipTests` when a JAR is needed.

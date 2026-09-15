@@ -34,10 +34,7 @@ final class UtilityDesign {
         Pos stand = null;
         for (int[] d : new int[][] {{-1, 0}, {1, 0}, {0, -1}, {0, 1}}) {
           Pos p = crop.add(d[0], 0, d[1]);
-          if (s.clear(p)
-              && s.clear(p.add(0, 1, 0))
-              && s.solid(p.add(0, -1, 0))
-              && !s.occupied.test(p)) {
+          if (s.clear(p) && s.clear(p.add(0, 1, 0)) && s.solid(p.add(0, -1, 0))) {
             stand = p;
             break;
           }

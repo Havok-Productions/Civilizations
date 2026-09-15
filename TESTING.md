@@ -38,6 +38,8 @@ The runner prints chosen classes and method counts. `test-results/last-run.json`
 
 ## Slow checks are separate
 
+Alpha.23 adds focused task/proposal continuity contracts to `design tasks settlements`: exact supply-parent resumption after release/restart, atomic claims, merge migration, persistent retry evidence, normalization of closed wall notation and gate orientation, durable deferred proposals, and shared work access with exclusive construction/interior reservations. These tests exercise the production persistence, admission and claim code with synthetic terrain. They do not establish live-model design quality or physical construction speed; no Folia startup is needed for these persistence and planning contracts.
+
 Alpha.22 adds `cooperation`: one disposable-world scenario covering multi-layer soil/tree preparation, a paid floor placement, a complete three-block-high wall with its gate, courier travel while the donor retains unfinished work, resumption of that work, and a crafted/placed/registered storage expansion. It checks actual blocks, inventory conservation and existing chest contents. It uses specified projects and supplies to isolate the executor; it does not claim that a local language model designed those projects autonomously.
 
 Alpha.21 extends the existing `progress` case to omit model VERIFY deliberately, then verifies the host checks the real recovery result. After sand-to-glass it runs charcoal-to-torch preparation with actual fuel, intermediate output collection, final crafting/placement and exact leftovers. This single workflow targets the intermediate-batch regression; it does not benchmark live-model reasoning or complete wall construction.

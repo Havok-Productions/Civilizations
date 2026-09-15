@@ -12,6 +12,9 @@
     "diagnostics": "Failure classification, journal persistence and outcome evidence"
   },
   "source_rules": [
+    {"patterns": ["*/DesignProposal.java"], "sections": ["design", "settlements"]},
+    {"patterns": ["*/Job.java", "*/TaskCheckpoint.java", "*/TaskContinuity.java"], "sections": ["tasks", "settlements"]},
+    {"patterns": ["*/VillagerWorker.java"], "sections": ["tasks", "storage", "crafting", "coreai"]},
     {"patterns": ["*/DeliveryBoard.java", "*/DeliveryActions.java", "*/NearbyWork.java"], "sections": ["storage", "tasks", "crafting"]},
     {"patterns": ["*/FarmingActions.java"], "sections": ["crafting", "tasks", "design"]},
     {"patterns": ["*/SmeltingActions.java", "*/SmeltingFuel.java"], "sections": ["crafting", "storage", "tasks"]},

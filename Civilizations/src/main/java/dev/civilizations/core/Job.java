@@ -25,7 +25,8 @@ public final class Job {
   public int phase;
   public transient String owner;
   public transient long leaseUntil;
-  public transient long retryAfter;
+  public long retryAfter;
+  public String blockedReason = "";
 
   public Job() {}
 
@@ -53,6 +54,8 @@ public final class Job {
     j.everBuilt = everBuilt;
     j.failures = failures;
     j.phase = phase;
+    j.retryAfter = retryAfter;
+    j.blockedReason = blockedReason;
     return j;
   }
 }

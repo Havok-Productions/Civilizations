@@ -25,8 +25,13 @@ final class HousingDesign {
                 + g.y()
                 + " / "
                 + s.type(g));
-        s.reserve(g);
-        for (int y = 1; y <= h + 1; y++) s.open(g.add(0, y, 0));
+        boolean outside = x < 0 || z < 0 || x >= w || z >= d;
+        if (outside) s.reserveAccess(g);
+        else s.reserve(g);
+        for (int y = 1; y <= h + 1; y++) {
+          if (outside) s.openAccess(g.add(0, y, 0));
+          else s.open(g.add(0, y, 0));
+        }
       }
     int dx = b.direction().equals("east") ? w - 1 : b.direction().equals("west") ? 0 : w / 2;
     int dz = b.direction().equals("south") ? d - 1 : b.direction().equals("north") ? 0 : d / 2;

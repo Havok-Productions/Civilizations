@@ -13,6 +13,7 @@ final class DesignSite {
   final Predicate<Pos> occupied;
   final List<Job> jobs = new ArrayList<>();
   final Set<Pos> reserved = new HashSet<>();
+  final Set<Pos> construction = new HashSet<>();
   final Map<Pos, String> placed = new HashMap<>();
   final Map<Pos, String> prepared = new HashMap<>();
 
@@ -65,6 +66,12 @@ final class DesignSite {
     require(
         !occupied.test(p), "Existing structure, reserved access, or player block at " + p.key());
     reserved.add(p);
+    construction.add(p);
+  }
+
+  void reserveAccess(Pos p) {
+    require(!terrain.type(p).equals("UNKNOWN"), "Unknown working space at " + p.key());
+    reserved.add(p);
   }
 
   void open(Pos p) {
@@ -72,16 +79,16 @@ final class DesignSite {
     require(clear(p), "Obstructed space at " + p.key());
   }
 
+  void openAccess(Pos p) {
+    reserveAccess(p);
+    require(clear(p), "Obstructed walking space at " + p.key());
+  }
+
   Pos standNear(Pos target) {
     for (int dy : new int[] {0, -1, 1, -2, -3})
       for (int[] d : new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
         Pos p = target.add(d[0], dy, d[1]);
-        if (clear(p)
-            && clear(p.add(0, 1, 0))
-            && solid(p.add(0, -1, 0))
-            && !occupied.test(p)
-            && !occupied.test(p.add(0, -1, 0))
-            && terrain.dry(p)) return p;
+        if (clear(p) && clear(p.add(0, 1, 0)) && solid(p.add(0, -1, 0)) && terrain.dry(p)) return p;
       }
     throw new IllegalArgumentException("No supported working position near " + target.key());
   }
@@ -95,9 +102,9 @@ final class DesignSite {
         target.distance2(stand) <= 21 && Math.abs(target.y() - stand.y()) <= 3,
         "Block is beyond ordinary villager reach");
     reserve(target);
-    reserve(stand);
-    reserve(stand.add(0, 1, 0));
-    reserve(stand.add(0, -1, 0));
+    reserveAccess(stand);
+    reserveAccess(stand.add(0, 1, 0));
+    reserveAccess(stand.add(0, -1, 0));
     require(
         clear(stand) && clear(stand.add(0, 1, 0)) && solid(stand.add(0, -1, 0)),
         "Unusable work position " + stand.key());

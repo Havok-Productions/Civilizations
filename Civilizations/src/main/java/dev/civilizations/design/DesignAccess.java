@@ -35,6 +35,14 @@ final class DesignAccess {
           public String type(Pos p) {
             return changes.getOrDefault(p, s.terrain.type(p));
           }
+
+          public boolean clear(Pos p) {
+            return changes.containsKey(p) ? Terrain.super.clear(p) : s.terrain.clear(p);
+          }
+
+          public String blockData(Pos p) {
+            return s.terrain.blockData(p);
+          }
         };
     Set<String> reached = new HashSet<>();
     ArrayDeque<Pos> queue = new ArrayDeque<>();

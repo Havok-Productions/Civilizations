@@ -7,7 +7,11 @@ import java.util.function.Predicate;
 
 /** Converts one declarative design into a reviewed, atomic project with a material estimate. */
 public final class DesignCompiler {
-  public record Result(List<Job> jobs, Set<Pos> reservations, Map<String, Integer> materials) {}
+  public record Result(
+      List<Job> jobs,
+      Set<Pos> reservations,
+      Map<String, Integer> materials,
+      Set<Pos> construction) {}
 
   public Result compile(
       Blueprint b,
@@ -48,7 +52,11 @@ public final class DesignCompiler {
           });
       RecipeCatalog.leftovers(j.material, cost).forEach((m, n) -> carry.merge(m, n, Integer::sum));
     }
-    return new Result(List.copyOf(s.jobs), Set.copyOf(s.reserved), Map.copyOf(supply));
+    return new Result(
+        List.copyOf(s.jobs),
+        Set.copyOf(s.reserved),
+        Map.copyOf(supply),
+        Set.copyOf(s.construction));
   }
 
   public static boolean insideWall(Blueprint wall, Pos center, Pos p) {
