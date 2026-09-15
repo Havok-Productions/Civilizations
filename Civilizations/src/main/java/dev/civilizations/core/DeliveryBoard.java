@@ -17,11 +17,20 @@ public final class DeliveryBoard {
   public record Delivery(
       String donor, String recipient, String task, String material, int amount) {}
 
+  public record FailedRoute(Delivery delivery, Pos from, Pos to, long retryAt, String reason) {}
+
   private final Map<String, Worker> workers = new HashMap<>();
   private final Map<String, Delivery> active = new HashMap<>();
+  private final List<FailedRoute> failedRoutes = new ArrayList<>();
 
   public synchronized void publish(String id, Worker worker) {
     workers.put(id, worker);
+    failedRoutes.removeIf(
+        f ->
+            f.delivery().donor().equals(id) && !f.from().equals(worker.position())
+                || f.delivery().recipient().equals(id)
+                    && (!f.to().equals(worker.position())
+                        || !f.delivery().task().equals(worker.task())));
     active
         .values()
         .removeIf(
@@ -39,6 +48,23 @@ public final class DeliveryBoard {
     active.remove(donor);
   }
 
+  /** Release only the failed handoff. The donor's construction claim remains untouched. */
+  public synchronized FailedRoute defer(Delivery delivery, long now, long retryMs, String reason) {
+    if (!delivery.equals(active.get(delivery.donor()))) return null;
+    active.remove(delivery.donor());
+    Worker from = workers.get(delivery.donor()), to = workers.get(delivery.recipient());
+    if (from == null || to == null) return null;
+    failedRoutes.removeIf(
+        f ->
+            f.delivery().donor().equals(delivery.donor())
+                && f.delivery().recipient().equals(delivery.recipient()));
+    FailedRoute failure =
+        new FailedRoute(
+            delivery, from.position(), to.position(), now + Math.max(0, retryMs), reason);
+    failedRoutes.add(failure);
+    return failure;
+  }
+
   public synchronized Worker worker(String id) {
     return workers.get(id);
   }
@@ -51,6 +77,7 @@ public final class DeliveryBoard {
   }
 
   public synchronized Delivery claim(String donor, long now) {
+    failedRoutes.removeIf(f -> f.retryAt() <= now);
     active.values().removeIf(d -> !fresh(d.donor(), now) || !fresh(d.recipient(), now));
     Worker from = workers.get(donor);
     if (!fresh(donor, now)) return null;
@@ -72,6 +99,11 @@ public final class DeliveryBoard {
       if (recipient.equals(donor)
           || !fresh(recipient, now)
           || active.containsKey(recipient)
+          || failedRoutes.stream()
+              .anyMatch(
+                  f ->
+                      f.delivery().donor().equals(donor)
+                          && f.delivery().recipient().equals(recipient))
           || active.values().stream().anyMatch(d -> d.recipient().equals(recipient))) continue;
       for (var offer : new TreeMap<>(from.offer()).entrySet()) {
         int amount = Math.min(offer.getValue(), wanted(entry.getValue(), offer.getKey()));
@@ -127,6 +159,9 @@ public final class DeliveryBoard {
   }
 
   public synchronized Map<String, ?> report() {
-    return Map.of("workers", Map.copyOf(workers), "couriers", List.copyOf(active.values()));
+    return Map.of(
+        "workers", Map.copyOf(workers),
+        "couriers", List.copyOf(active.values()),
+        "failed_routes", List.copyOf(failedRoutes));
   }
 }

@@ -26,6 +26,7 @@ final class CooperationChecks {
   private int stage;
   private long started;
   private boolean courierTravel, unfinishedDelivery;
+  private boolean courierFailureChecked;
   private List<Job> wall;
   private Job donorJob;
 
@@ -264,9 +265,36 @@ final class CooperationChecks {
       if (delivery != null && builder.getLocation().distanceSquared(donor.getLocation()) > 16) {
         courierTravel = true;
         unfinishedDelivery |= !village.mayShareSurplus(donorWork.id());
+        if (Boolean.getBoolean("civilizations.test.courier-failure") && !courierFailureChecked) {
+          if (!Bukkit.isOwnedByCurrentRegion(donor))
+            throw new AssertionError("Fixture must own donor before injecting its route failure");
+          Method failed =
+              VillagerWorker.class.getDeclaredMethod("navigationFailed", long.class, String.class);
+          failed.setAccessible(true);
+          failed.invoke(donorWork, now, "Fixture-injected courier route failure");
+          Job saved =
+              village.jobs().stream()
+                  .filter(j -> j.id.equals(donorJob.id))
+                  .findFirst()
+                  .orElseThrow();
+          if (saved.failures != 0
+              || saved.retryAfter != 0
+              || !village.renew(donorJob.id, donorWork.id(), now)
+              || village.deliveries().incoming(builderWork.id(), now) != null
+              || village.deliveries().claim(donorWork.id(), now) != null)
+            throw new AssertionError("Courier failure lost own task or repeated unchanged handoff");
+          courierFailureChecked = true;
+          fixture
+              .getLogger()
+              .info(
+                  "COURIER FAILURE PASS: injected route failure released handoff, retained own"
+                      + " claim and did not increment building failures");
+        }
       }
       if (village.allComplete("design-cooperative-wall")
           && village.allComplete("courier-own-work")) {
+        if (Boolean.getBoolean("civilizations.test.courier-failure") && !courierFailureChecked)
+          throw new AssertionError("Courier failure case was not exercised");
         if (!courierTravel || !unfinishedDelivery)
           throw new AssertionError("No courier travel while committed work remained");
         for (Job j : wall)

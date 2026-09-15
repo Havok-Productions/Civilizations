@@ -34,6 +34,38 @@ public final class DeliveryActions {
     return current != null;
   }
 
+  public boolean failed(long now, String reason) {
+    if (current == null) return false;
+    DeliveryBoard.Delivery delivery = current;
+    var failure =
+        village
+            .deliveries()
+            .defer(delivery, now, WorkerTuning.value(plugin, actor, "navigation.retry_ms"), reason);
+    plugin.debug(
+        village.id(),
+        id,
+        "delivery_failed",
+        Map.of(
+            "delivery",
+            delivery,
+            "reason",
+            reason,
+            "navigation",
+            navigation.evidence(),
+            "retry_at",
+            failure == null ? now : failure.retryAt(),
+            "retained_project",
+            village.taskProject(id),
+            "next_action",
+            "Resume own task; recipient can accept another courier",
+            "verified_action",
+            false));
+    current = null;
+    navigation.stop();
+    next = now + 2000;
+    return true;
+  }
+
   public String status() {
     return current == null
         ? ""

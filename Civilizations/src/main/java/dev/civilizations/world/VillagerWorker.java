@@ -88,7 +88,7 @@ public final class VillagerWorker {
     nearby = new NearbyWork(plugin, entity, village);
     workPose = new WorkPose(plugin, entity);
     building = new BuildingActions(plugin, entity, this::fail, this::complete);
-    navigation = new WorkerNavigation(plugin, entity, village, this::fail);
+    navigation = new WorkerNavigation(plugin, entity, village, this::navigationFailed);
     deliveries = new DeliveryActions(plugin, entity, village, navigation);
     recovery = new RecoveryPolicy(System.currentTimeMillis(), plugin.reasoningCooldown());
     gathering = new GatheringActions(plugin, entity, village, navigation, recovery, this::fail);
@@ -1146,6 +1146,10 @@ public final class VillagerWorker {
 
   private void walk(Pos destination, long now) {
     navigation.walk(destination, now);
+  }
+
+  private void navigationFailed(long now, String reason) {
+    if (!deliveries.failed(now, reason)) fail(now, reason);
   }
 
   private void fail(long now, String reason) {
