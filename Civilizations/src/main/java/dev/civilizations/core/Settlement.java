@@ -98,7 +98,23 @@ public final class Settlement {
   }
 
   public synchronized List<Pos> connectionPoints() {
-    return data.memberPositions.isEmpty() ? areas() : List.copyOf(data.memberPositions.values());
+    Set<Pos> anchors = new LinkedHashSet<>(data.memberPositions.values());
+    anchors.add(data.center);
+    anchors.addAll(data.beds);
+    anchors.addAll(data.chests);
+    return List.copyOf(anchors);
+  }
+
+  private final DeliveryBoard deliveries = new DeliveryBoard();
+
+  public DeliveryBoard deliveries() {
+    return deliveries;
+  }
+
+  private final StorageCapacity storageCapacity = new StorageCapacity();
+
+  public StorageCapacity storageCapacity() {
+    return storageCapacity;
   }
 
   public synchronized void removeChest(Pos p) {

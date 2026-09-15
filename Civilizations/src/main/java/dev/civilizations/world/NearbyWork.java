@@ -54,51 +54,6 @@ public final class NearbyWork {
             village.remember(id, "Heard " + peerId.substring(0, 8) + ": " + fact.result(), false);
           }
         }
-        // Donors retain everything committed to unfinished projects, food, seeds and tools.
-        if (!village.mayShareSurplus(peerId)) continue;
-        Map<String, Integer> spare =
-            RecipeCatalog.surplus(InventoryOps.summary(peer.getInventory()), true);
-        for (var request : outstanding.entrySet()) {
-          Set<Material> types = materials(request.getKey());
-          int remaining = request.getValue();
-          for (Material type : types) {
-            int offer = Math.min(remaining, spare.getOrDefault(type.name(), 0));
-            if (offer <= 0) continue;
-            Map<String, Integer> beforePeer = InventoryOps.summary(peer.getInventory());
-            Map<String, Integer> beforeActor = InventoryOps.summary(actor.getInventory());
-            int moved =
-                InventoryOps.transfer(
-                    peer.getInventory(), actor.getInventory(), Set.of(type), offer);
-            if (moved > 0) {
-              TransferReceipts.record(
-                  plugin,
-                  village,
-                  id,
-                  "handoff",
-                  peerId,
-                  id,
-                  beforePeer,
-                  peer.getInventory(),
-                  beforeActor,
-                  actor.getInventory());
-              remaining -= moved;
-              village.remember(
-                  peerId,
-                  "Handed " + moved + " " + type + " to nearby worker " + id.substring(0, 8),
-                  true);
-              village.remember(
-                  id,
-                  "Received "
-                      + moved
-                      + " "
-                      + type
-                      + " from nearby worker "
-                      + peerId.substring(0, 8),
-                  true);
-              village.knowledge().clear("resource:" + request.getKey());
-            }
-          }
-        }
       }
     }
     while (heard.size() > 32) heard.remove(heard.keySet().iterator().next());

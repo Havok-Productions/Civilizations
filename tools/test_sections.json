@@ -12,6 +12,7 @@
     "diagnostics": "Failure classification, journal persistence and outcome evidence"
   },
   "source_rules": [
+    {"patterns": ["*/DeliveryBoard.java", "*/DeliveryActions.java", "*/NearbyWork.java"], "sections": ["storage", "tasks", "crafting"]},
     {"patterns": ["*/FarmingActions.java"], "sections": ["crafting", "tasks", "design"]},
     {"patterns": ["*/SmeltingActions.java", "*/SmeltingFuel.java"], "sections": ["crafting", "storage", "tasks"]},
     {"patterns": ["*/ResourceSurvey.java", "*/GatheringActions.java", "*/NearbyResources.java", "*/MaterialSources.java"], "sections": ["navigation", "crafting"]},
@@ -33,6 +34,7 @@
     {"patterns": ["*/RegionSnapshots.java", "*/Terrain.java", "*/BlockRules.java"], "sections": ["navigation", "design"]}
   ],
   "physical_scenarios": {
+    "cooperation": "One disposable-world case: real soil/tree preparation, complete wall, physical courier deliveries during unfinished work, crafted shared storage expansion",
     "rule-learning": "Actual workers classify and clear clutter, finish two repairs, then reuse the rule without another model request",
     "live-skill": "Fake proposal through actual Folia support placement, walking and persisted outcome",
     "navigation": "Solid-wall detour, natural clearing, multi-map travel and verified repair; no station follow-up",

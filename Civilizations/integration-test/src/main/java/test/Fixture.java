@@ -25,6 +25,10 @@ public class Fixture extends JavaPlugin {
       return;
     }
     switch (scenario) {
+      case COOPERATION -> {
+        new CooperationChecks(this).start();
+        return;
+      }
       case PROGRESS -> {
         new ProgressChecks(this).start();
         return;

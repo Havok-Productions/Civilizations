@@ -26,7 +26,7 @@ final class HousingDesign {
                 + " / "
                 + s.type(g));
         s.reserve(g);
-        for (int y = 1; y <= h + 2; y++) s.open(g.add(0, y, 0));
+        for (int y = 1; y <= h + 1; y++) s.open(g.add(0, y, 0));
       }
     int dx = b.direction().equals("east") ? w - 1 : b.direction().equals("west") ? 0 : w / 2;
     int dz = b.direction().equals("south") ? d - 1 : b.direction().equals("north") ? 0 : d / 2;

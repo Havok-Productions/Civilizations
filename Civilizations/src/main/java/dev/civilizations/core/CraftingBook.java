@@ -70,6 +70,38 @@ public final class CraftingBook {
     return recipes.values().stream().mapToInt(List::size).sum();
   }
 
+  /** Held ingredients committed to one immediate output, using the same recipe choices as work. */
+  public Map<String, Integer> reserved(String output, Map<String, Integer> inventory) {
+    Map<String, Integer> remaining = new HashMap<>(inventory), result = new HashMap<>();
+    reserve(output, 1, remaining, result, new HashSet<>());
+    return Map.copyOf(result);
+  }
+
+  private void reserve(
+      String output,
+      int amount,
+      Map<String, Integer> inv,
+      Map<String, Integer> result,
+      Set<String> path) {
+    int held = Math.min(amount, inv.getOrDefault(output, 0));
+    if (held > 0) {
+      result.merge(output, held, Integer::sum);
+      inv.put(output, inv.get(output) - held);
+    }
+    if (held == amount || output.isEmpty() || !path.add(output)) return;
+    Recipe recipe =
+        recipes.getOrDefault(output, List.of()).stream()
+            .min(Comparator.comparingInt(r -> score(r, inv)))
+            .orElse(null);
+    if (recipe == null) return;
+    int batches = (amount - held + recipe.amount() - 1) / recipe.amount();
+    cost(recipe, inv).forEach((m, n) -> reserve(m, n * batches, inv, result, new HashSet<>(path)));
+    if (recipe.furnace()) {
+      String fuel = SmeltingFuel.choose(inv, Map.of());
+      if (fuel != null) reserve(fuel, 1, inv, result, new HashSet<>(path));
+    }
+  }
+
   public List<Recipe> snapshot() {
     return recipes.values().stream().flatMap(List::stream).toList();
   }

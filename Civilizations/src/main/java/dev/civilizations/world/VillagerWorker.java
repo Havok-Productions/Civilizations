@@ -32,6 +32,7 @@ public final class VillagerWorker {
   private final RecoveryPolicy recovery;
   private final ToolActions tools;
   private final NearbyWork nearby;
+  private final DeliveryActions deliveries;
   private Map<String, Object> lastFailure = Map.of();
   private Map<String, Integer> requests = Map.of();
   private String lastStep = "";
@@ -88,6 +89,7 @@ public final class VillagerWorker {
     workPose = new WorkPose(plugin, entity);
     building = new BuildingActions(plugin, entity, this::fail, this::complete);
     navigation = new WorkerNavigation(plugin, entity, village, this::fail);
+    deliveries = new DeliveryActions(plugin, entity, village, navigation);
     recovery = new RecoveryPolicy(System.currentTimeMillis(), plugin.reasoningCooldown());
     gathering = new GatheringActions(plugin, entity, village, navigation, recovery, this::fail);
     tools = new ToolActions(plugin, entity, village, navigation, this::fail);
@@ -107,6 +109,7 @@ public final class VillagerWorker {
                   if (plugin.experiments() != null)
                     plugin.experiments().cancelWorker(id, "worker_retired");
                   village.release(id);
+                  deliveries.cancel();
                   plugin.retired(id, this);
                 },
                 1,
@@ -123,6 +126,7 @@ public final class VillagerWorker {
     if (plugin.experiments() != null) plugin.experiments().cancelWorker(id, "worker_stopped");
     if (scheduled != null) scheduled.cancel();
     village.release(id);
+    deliveries.cancel();
     if (Bukkit.isOwnedByCurrentRegion(entity)) {
       navigation.stop();
       movementControl.working(false);
@@ -234,6 +238,7 @@ public final class VillagerWorker {
             Map.of("result", "Continuing validated work; stale answer ignored"));
       }
       if (village.paused()) {
+        deliveries.cancel();
         navigation.stop();
         movementControl.working(false);
         entity.getPathfinder().stopPathfinding();
@@ -276,20 +281,25 @@ public final class VillagerWorker {
               && location(chest).getBlock().getState() instanceof Chest c)
             village.stock(chest, InventoryOps.summary(c.getInventory()), now);
       }
-      requests = new LinkedHashMap<>(needed(job));
-      if (job != null) {
-        TaskSelection.missing(job, inventory()).forEach((m, n) -> requests.merge(m, n, Math::max));
-        if (job.kind == Job.Kind.PLACE && inventory().getOrDefault(job.material, 0) == 0)
-          requests.put(job.material, 1);
-        if ((job.kind == Job.Kind.MINE
-                || requests.containsKey("COAL")
-                || requests.containsKey("COBBLESTONE"))
-            && ToolRecipes.tier(inventory()) == 0) {
-          requests.put("WOODEN_PICKAXE", 1);
-          requests.put("STONE_PICKAXE", 1);
-        }
-      }
+      requests = currentRequests();
+      deliveries.publish(at, job, supplyFor, requests, now);
       nearby.tick(requests, now);
+      if (job != null && !village.renew(job.id, id, now)
+          || supplyFor != null && !village.renew(supplyFor.id, id, now)) reset();
+      if (!navigation.experimentActive() && deliveries.tick(now)) {
+        movementControl.working(true);
+        recovery.pause(now);
+        display = deliveries.status();
+        return;
+      }
+      var incoming = village.deliveries().incoming(id, now);
+      if (incoming != null && !navigation.experimentActive()) {
+        navigation.stop();
+        movementControl.working(true);
+        recovery.pause(now);
+        display = "awaiting courier: " + incoming.material();
+        return;
+      }
       var progress = village.knowledge().worker(id);
       String step =
           mode
@@ -316,10 +326,6 @@ public final class VillagerWorker {
                 progress == null ? "" : progress.step()));
       }
       navigation.gates();
-      if (job != null && !village.renew(job.id, id, now)
-          || supplyFor != null && !village.renew(supplyFor.id, id, now)) {
-        reset();
-      }
       if (navigation.experimentActive()) recovery.pause(now);
       if (now - navigation.progressAt() < 1000) recovery.pause(now);
       if (!awaiting && job != null && plugin.thinkingWhenStuck() && recovery.stalled(now)) {
@@ -370,6 +376,26 @@ public final class VillagerWorker {
       nextWork = System.currentTimeMillis() + 5000;
       mode = "rest";
     }
+  }
+
+  /** Recomputed on this entity's region before accepting a courier's inventory transfer. */
+  Map<String, Integer> currentRequests() {
+    Map<String, Integer> result = new LinkedHashMap<>(needed(job));
+    if (job != null) {
+      // Requests describe the executable prerequisite and the finished block, not incompatible
+      // alternative recipes inferred from the old fixed recipe catalog.
+      if (job.kind == Job.Kind.PLACE && inventory().getOrDefault(job.material, 0) == 0)
+        result.put(
+            job.material, village.placementDemand(id, job.material, System.currentTimeMillis()));
+      if ((job.kind == Job.Kind.MINE
+              || result.containsKey("COAL")
+              || result.containsKey("COBBLESTONE"))
+          && ToolRecipes.tier(inventory()) == 0) {
+        result.put("WOODEN_PICKAXE", 1);
+        result.put("STONE_PICKAXE", 1);
+      }
+    }
+    return result;
   }
 
   private boolean threatened() {
@@ -511,6 +537,7 @@ public final class VillagerWorker {
               .toList());
       report.put("shared_facts", village.knowledge().report(now));
       report.put("supply_requests", village.supplyNeeds(now));
+      report.put("material_deliveries", village.deliveries().report());
       Map<String, Object> ingredients = new LinkedHashMap<>();
       jobs.forEach(j -> ingredients.put(j.id, needed(j)));
       report.put("missing_ingredients_by_job", ingredients);
@@ -724,6 +751,8 @@ public final class VillagerWorker {
   private void complete(long now) {
     workPose.reset();
     boolean committed = village.done(job.id, id);
+    if (committed && job.project.startsWith("storage-") && job.material.equals("CHEST"))
+      plugin.placeChest(village, entity.getWorld(), job.target);
     if (supplyFor == null) {
       if (committed)
         mind.succeeded(
@@ -1040,6 +1069,15 @@ public final class VillagerWorker {
         village.finishTasks(id);
         reset();
       } else {
+        village.storageCapacity().request(RecipeCatalog.surplus(inventory(), true));
+        village
+            .storageCapacity()
+            .observe(
+                chest,
+                c.getInventory().firstEmpty() >= 0,
+                InventoryOps.partialStackTypes(c.getInventory()),
+                now);
+        plugin.requestPlan(village, entity.getWorld());
         village
             .knowledge()
             .block(
@@ -1085,6 +1123,7 @@ public final class VillagerWorker {
   }
 
   private void reset() {
+    deliveries.cancel();
     mind.cancel("worker_reset");
     workPose.reset();
     waitingReason = "";

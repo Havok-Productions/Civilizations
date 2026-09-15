@@ -2,7 +2,7 @@ package dev.civilizations.core;
 
 import java.util.Set;
 
-/** A small explicit terrain-preparation vocabulary; buildings, trees and crops are not spoil. */
+/** Natural ground and clutter. Trees require additional observed evidence before clearing. */
 public final class SiteMaterials {
   private SiteMaterials() {}
 
@@ -41,6 +41,11 @@ public final class SiteMaterials {
   }
 
   public static boolean clearable(String type) {
-    return vegetation(type) || Set.of("DIRT", "GRASS_BLOCK").contains(type);
+    return vegetation(type) || soil(type);
+  }
+
+  public static boolean soil(String type) {
+    return Set.of("DIRT", "GRASS_BLOCK", "COARSE_DIRT", "PODZOL", "ROOTED_DIRT", "MYCELIUM")
+        .contains(type);
   }
 }

@@ -50,21 +50,22 @@ public interface Terrain {
   }
 
   default boolean natural(Pos p) {
-    return Set.of(
-            "STONE",
-            "DEEPSLATE",
-            "GRANITE",
-            "DIORITE",
-            "ANDESITE",
-            "DIRT",
-            "GRASS_BLOCK",
-            "COAL_ORE",
-            "DEEPSLATE_COAL_ORE",
-            "IRON_ORE",
-            "DEEPSLATE_IRON_ORE",
-            "COPPER_ORE",
-            "DEEPSLATE_COPPER_ORE")
-        .contains(type(p));
+    return dev.civilizations.core.SiteMaterials.soil(type(p))
+        || Set.of(
+                "STONE",
+                "DEEPSLATE",
+                "GRANITE",
+                "DIORITE",
+                "ANDESITE",
+                "DIRT",
+                "GRASS_BLOCK",
+                "COAL_ORE",
+                "DEEPSLATE_COAL_ORE",
+                "IRON_ORE",
+                "DEEPSLATE_IRON_ORE",
+                "COPPER_ORE",
+                "DEEPSLATE_COPPER_ORE")
+            .contains(type(p));
   }
 
   default boolean fluid(Pos p) {

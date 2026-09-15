@@ -7,19 +7,48 @@ import java.util.*;
 /** Rejects disconnected islands and cliff-top sites before villagers are assigned work. */
 final class DesignAccess {
   static void verify(DesignSite s) {
+    Set<String> reached = reachable(s, s.prepared, s.jobs.stream().map(j -> j.stand).toList());
+    if (s.jobs.getFirst().kind == dev.civilizations.core.Job.Kind.MINE)
+      s.require(
+          reached.contains(key(s.jobs.getFirst().stand)),
+          "Mine entrance is disconnected from village walking ground");
+    else
+      for (var j : s.jobs)
+        if (j.kind != dev.civilizations.core.Job.Kind.CLEAR)
+          s.require(
+              reached.contains(key(j.stand)),
+              "Design work site is disconnected by water, structures or cliffs at "
+                  + j.stand.key());
+  }
+
+  static Set<String> reachable(DesignSite s, Map<Pos, String> changes, Collection<Pos> targets) {
+    Terrain terrain =
+        new Terrain() {
+          public int height(int x, int z) {
+            return s.terrain.height(x, z);
+          }
+
+          public boolean available(int x, int z) {
+            return s.terrain.available(x, z);
+          }
+
+          public String type(Pos p) {
+            return changes.getOrDefault(p, s.terrain.type(p));
+          }
+        };
     Set<String> reached = new HashSet<>();
     ArrayDeque<Pos> queue = new ArrayDeque<>();
     Pos c = s.center;
     int extent =
-        s.jobs.stream()
+        targets.stream()
                 .mapToInt(
                     j ->
                         (int)
                             Math.min(
                                 Integer.MAX_VALUE - 2,
                                 Math.max(
-                                    Math.abs((long) j.stand.x() - c.x()),
-                                    Math.abs((long) j.stand.z() - c.z()))))
+                                    Math.abs((long) j.x() - c.x()),
+                                    Math.abs((long) j.z() - c.z()))))
                 .max()
                 .orElse(0)
             + 2;
@@ -28,7 +57,7 @@ final class DesignAccess {
     for (int r = 0; r <= 4; r++)
       for (int x = -r; x <= r; x++)
         for (int z = -r; z <= r; z++) {
-          Pos p = walk(s.terrain, c.x() + x, c.z() + z, c.y(), 3);
+          Pos p = walk(terrain, c.x() + x, c.z() + z, c.y(), 3);
           if (p != null && Math.abs(p.y() - c.y()) <= 3) {
             queue.add(p);
             reached.add(key(p));
@@ -44,22 +73,14 @@ final class DesignAccess {
         s.require(
             reached.size() < 20000,
             "Access-search work budget exhausted; divide the proposed project into stages");
-        Pos q = walk(s.terrain, x, z, p.y(), 1);
+        Pos q = walk(terrain, x, z, p.y(), 1);
         if (q != null && Math.abs(q.y() - p.y()) <= 1 && reached.add(key(q))) queue.add(q);
       }
     }
-    if (s.jobs.getFirst().kind == dev.civilizations.core.Job.Kind.MINE)
-      s.require(
-          reached.contains(key(s.jobs.getFirst().stand)),
-          "Mine entrance is disconnected from village walking ground");
-    else
-      for (var j : s.jobs)
-        s.require(
-            reached.contains(key(j.stand)),
-            "Design work site is disconnected by water, structures or cliffs at " + j.stand.key());
+    return reached;
   }
 
-  private static String key(Pos p) {
+  static String key(Pos p) {
     return p.x() + "," + p.z();
   }
 

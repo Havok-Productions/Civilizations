@@ -14,6 +14,7 @@ final class DesignSite {
   final List<Job> jobs = new ArrayList<>();
   final Set<Pos> reserved = new HashSet<>();
   final Map<Pos, String> placed = new HashMap<>();
+  final Map<Pos, String> prepared = new HashMap<>();
 
   DesignSite(Terrain terrain, Pos center, String project, Predicate<Pos> occupied) {
     this.terrain = terrain;
@@ -33,7 +34,12 @@ final class DesignSite {
         terrain.available(wx, wz),
         "Terrain not observed at " + x + "," + z + "; consult snapshot coverage and retry");
     Pos ground = new Pos(wx, terrain.groundHeight(wx, wz), wz);
-    while ("AIR".equals(placed.get(ground))) ground = ground.add(0, -1, 0);
+    while (clear(ground) || type(ground).endsWith("_LOG") || type(ground).endsWith("_LEAVES")) {
+      ground = ground.add(0, -1, 0);
+      require(
+          !type(ground).equals("UNKNOWN"),
+          "Ground beneath vegetation is unobserved at " + ground.key());
+    }
     return ground;
   }
 
@@ -108,6 +114,7 @@ final class DesignSite {
     Job j = new Job(kind, project, target, stand, material, terrain.type(target), data);
     j.phase = phase;
     jobs.add(j);
+    if (kind == Job.Kind.CLEAR) prepared.put(target, "AIR");
     placed.put(
         target,
         (kind == Job.Kind.MINE || kind == Job.Kind.CLEAR)

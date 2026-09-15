@@ -68,6 +68,13 @@ public final class StorageObserver {
                             Map<String, Integer> inventory =
                                 InventoryOps.summary(chest.getInventory());
                             village.stock(p, inventory, System.currentTimeMillis());
+                            village
+                                .storageCapacity()
+                                .observe(
+                                    p,
+                                    chest.getInventory().firstEmpty() >= 0,
+                                    InventoryOps.partialStackTypes(chest.getInventory()),
+                                    System.currentTimeMillis());
                             for (String material : inventory.keySet()) {
                               village.knowledge().clear("resource:" + material);
                               if (material.endsWith("_LOG"))

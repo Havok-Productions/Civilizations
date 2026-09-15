@@ -38,6 +38,8 @@ The runner prints chosen classes and method counts. `test-results/last-run.json`
 
 ## Slow checks are separate
 
+Alpha.22 adds `cooperation`: one disposable-world scenario covering multi-layer soil/tree preparation, a paid floor placement, a complete three-block-high wall with its gate, courier travel while the donor retains unfinished work, resumption of that work, and a crafted/placed/registered storage expansion. It checks actual blocks, inventory conservation and existing chest contents. It uses specified projects and supplies to isolate the executor; it does not claim that a local language model designed those projects autonomously.
+
 Alpha.21 extends the existing `progress` case to omit model VERIFY deliberately, then verifies the host checks the real recovery result. After sand-to-glass it runs charcoal-to-torch preparation with actual fuel, intermediate output collection, final crafting/placement and exact leftovers. This single workflow targets the intermediate-batch regression; it does not benchmark live-model reasoning or complete wall construction.
 
 Alpha.20 adds `progress`: a deterministic recovery beyond the original map followed by actual sand gathering, furnace crafting/placement, native smelting and glass repair. For changes confined to farm clutter, run that scenario with `-Dcivilizations.test.farm-preparation=true`; it skips the recovery/glass setup and checks the dandelion-to-wheat action with real drops and a consumed seed. These selectors never start automatically during section checks.

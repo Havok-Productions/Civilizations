@@ -7,6 +7,16 @@ import org.bukkit.inventory.*;
 
 /** Entity/chest inventory is only touched when both are owned by the current region. */
 public final class InventoryOps {
+  public static java.util.Set<String> partialStackTypes(org.bukkit.inventory.Inventory inventory) {
+    java.util.Set<String> result = new java.util.HashSet<>();
+    for (var item : inventory.getStorageContents())
+      if (item != null
+          && !item.getType().isAir()
+          && item.getAmount() < Math.min(item.getMaxStackSize(), inventory.getMaxStackSize()))
+        result.add(item.getType().name());
+    return java.util.Set.copyOf(result);
+  }
+
   private InventoryOps() {}
 
   public static boolean canFit(Inventory inventory, Collection<ItemStack> incoming) {

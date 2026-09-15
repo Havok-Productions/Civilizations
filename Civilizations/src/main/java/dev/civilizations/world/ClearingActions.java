@@ -14,15 +14,23 @@ public final class ClearingActions {
 
   public static String work(CivilizationsPlugin plugin, Villager actor, Job job, Block block) {
     if (block.getType().isAir()) return null;
+    boolean tree =
+        "natural-tree".equals(job.blockData)
+            && (job.expected.endsWith("_LOG") && !job.expected.startsWith("STRIPPED_")
+                || job.expected.endsWith("_LEAVES")
+                    && !block.getBlockData().getAsString().contains("persistent=true"));
     if (!block.getType().name().equals(job.expected)
         || (!SiteMaterials.clearable(job.expected)
+            && !tree
             && !(plugin.experiments() != null
                 && BlockObservation.learnedClear(
                     plugin.experiments().rules(), actor.getUniqueId().toString(), block)))
         || !BlockRules.dry(block)
         || !BlockRules.safeMining(block))
       return "Site clearance changed or is unsafe at " + job.target.key();
-    if (!block.getRelative(0, 1, 0).isPassable())
+    String above = block.getRelative(0, 1, 0).getType().name();
+    if (!block.getRelative(0, 1, 0).isPassable()
+        && !(tree && (above.endsWith("_LOG") || above.endsWith("_LEAVES"))))
       return "Clearance would undermine an overhead block at " + job.target.key();
     List<ItemStack> drops = new ArrayList<>(block.getDrops());
     if (!InventoryOps.canFit(actor.getInventory(), drops))

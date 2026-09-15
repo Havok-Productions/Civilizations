@@ -10,7 +10,7 @@ public final class NavigationTerrain {
   private NavigationTerrain() {}
 
   private static final Set<String> SOIL =
-      Set.of("DIRT", "GRASS_BLOCK", "ROOTED_DIRT", "PODZOL", "COARSE_DIRT");
+      Set.of("DIRT", "GRASS_BLOCK", "ROOTED_DIRT", "PODZOL", "COARSE_DIRT", "MYCELIUM");
 
   public static NavigationMap capture(
       Terrain terrain, Pos center, int radius, Set<Pos> protectedBlocks) {
@@ -91,7 +91,7 @@ public final class NavigationTerrain {
     }
     if (type.endsWith("_LEAVES"))
       return !String.valueOf(t.blockData(p)).contains("persistent=true");
-    if (!type.endsWith("_LOG")) return false;
+    if (!type.endsWith("_LOG") || type.startsWith("STRIPPED_")) return false;
     Pos root = p;
     for (int i = 0; i < 8 && t.type(root.add(0, -1, 0)).endsWith("_LOG"); i++)
       root = root.add(0, -1, 0);
@@ -110,6 +110,10 @@ public final class NavigationTerrain {
       for (int dz = -1; dz <= 1; dz++)
         for (int dy = -1; dy <= 1; dy++) {
           Pos q = p.add(dx, dy, dz);
+          // A neighbouring wall does not make loose soil architectural. Its foundation and
+          // blocks supporting a structure remain protected.
+          if (dev.civilizations.core.SiteMaterials.soil(t.type(p))
+              && (dx != 0 || dz != 0 || dy < 0)) continue;
           String type = t.type(q);
           if (protectedBlocks.contains(q)
               || type.endsWith("_PLANKS")

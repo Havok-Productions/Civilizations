@@ -48,6 +48,8 @@ final class RouteDesign {
   static void wall(DesignSite s, Blueprint b, List<Pos> landmarks) {
     s.require(b.height() > 0, "A wall needs positive height");
     List<Blueprint.Point> ring = line(b, true);
+    SitePreparation.route(s, ring, b.height());
+    int constructionPhase = s.jobs.size();
     s.require(
         landmarks.isEmpty()
             ? inside(b.points(), 0, 0)
@@ -122,12 +124,14 @@ final class RouteDesign {
             stands.get(i),
             isGate ? "OAK_FENCE_GATE" : "COBBLESTONE",
             isGate ? "minecraft:oak_fence_gate[facing=" + b.direction() + ",open=false]" : null,
-            y - 1);
+            constructionPhase + y - 1);
       }
   }
 
   static void path(DesignSite s, Blueprint b) {
     s.require(b.width() == 1, "Paths currently use one-block-wide routes");
+    SitePreparation.route(s, line(b, false), 2);
+    int constructionPhase = s.jobs.size();
     Pos prior = null;
     for (Blueprint.Point point : line(b, false)) {
       Pos g = s.ground(point.x(), point.z());
@@ -141,7 +145,7 @@ final class RouteDesign {
       s.reserve(g);
       s.require(s.terrain.dry(g.add(0, 1, 0)), "Path crosses water");
       if (!s.terrain.type(g).equals("DIRT_PATH"))
-        s.add(Job.Kind.PATH, g, g.add(0, 1, 0), "DIRT_PATH", null, 0);
+        s.add(Job.Kind.PATH, g, g.add(0, 1, 0), "DIRT_PATH", null, constructionPhase);
     }
   }
 }

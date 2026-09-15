@@ -729,9 +729,23 @@ public final class CivilizationsPlugin extends JavaPlugin
                         var repairReport = VillageRepairs.survey(v, terrain);
                         debug(v.id(), "", "repair_survey", repairReport);
                       }
-                      if (!survey.equals(v.center())) return;
-                      if (v.chest() == null && plan.chest() != null)
+                      if (v.chest() == null
+                          && plan.chest() != null
+                          && terrain.type(plan.chest()).equals("CHEST"))
                         placeChest(v, world, plan.chest());
+                      else if (StoragePlanning.schedule(v, terrain, survey, scanRadius, now))
+                        debug(
+                            v.id(),
+                            "",
+                            "storage_project",
+                            Map.of(
+                                "reason",
+                                v.chest() == null
+                                    ? "initial_shared_storage"
+                                    : "observed_full_shared_storage",
+                                "origin",
+                                survey));
+                      if (!survey.equals(v.center())) return;
                       if (!adaptiveDesign) {
                         v.addProject("wall-" + radius, plan.wall());
                         v.addProject("mine", plan.mine());
@@ -846,7 +860,7 @@ public final class CivilizationsPlugin extends JavaPlugin
             });
   }
 
-  private void placeChest(Settlement v, World world, Pos pos) {
+  public void placeChest(Settlement v, World world, Pos pos) {
     Bukkit.getRegionScheduler()
         .execute(
             this,
@@ -854,24 +868,10 @@ public final class CivilizationsPlugin extends JavaPlugin
             () ->
                 connections.read(
                     () -> {
-                      if (closing || v.retired() || v.chest() != null) return;
+                      if (closing || v.retired()) return;
                       if (!Bukkit.isOwnedByCurrentRegion(location(world, pos), 1)) return;
                       Block b = location(world, pos).getBlock();
-                      if (v.playerProtected(pos) || v.protectedPos(pos)) return;
-                      if (b.getType() != Material.CHEST) {
-                        if (!(b.isEmpty()
-                                || Set.of(
-                                        Material.SHORT_GRASS,
-                                        Material.TALL_GRASS,
-                                        Material.FERN,
-                                        Material.SNOW,
-                                        Material.DANDELION,
-                                        Material.POPPY)
-                                    .contains(b.getType()))
-                            || !b.getRelative(BlockFace.DOWN).getType().isSolid()
-                            || !b.getRelative(BlockFace.UP).isPassable()) return;
-                        b.setType(Material.CHEST, false);
-                      }
+                      if (v.playerProtected(pos) || b.getType() != Material.CHEST) return;
                       if (b.getState() instanceof Chest chest) {
                         String owner =
                             chest
@@ -887,6 +887,7 @@ public final class CivilizationsPlugin extends JavaPlugin
                             .set(chestKey, PersistentDataType.STRING, v.id());
                         chest.update();
                         v.chest(pos);
+                        v.storageCapacity().fulfilled();
                         getLogger()
                             .info("Community chest ready for " + v.id() + " at " + pos.key());
                       }
