@@ -53,6 +53,7 @@ public final class CivilizationsPlugin extends JavaPlugin
   private StateStore store;
   private DebugJournal journal;
   private DebugJournal failures;
+  private DebugJournal probes;
   private NavigationService navigation;
 
   public NavigationService navigation() {
@@ -73,6 +74,10 @@ public final class CivilizationsPlugin extends JavaPlugin
     if (journal != null) journal.event(village, worker, type, data);
     if (failures != null && dev.civilizations.core.FailureEvents.isFailure(type, data))
       failures.event(village, worker, type, data);
+  }
+
+  public void probeEvent(String village, String worker, String type, Map<String, ?> data) {
+    if (probes != null) probes.event(village, worker, type, data);
   }
 
   private RegionSnapshots snapshots;
@@ -108,6 +113,11 @@ public final class CivilizationsPlugin extends JavaPlugin
   public void onEnable() {
     saveDefaultConfig();
     recipes = ServerRecipes.capture();
+    probes =
+        new DebugJournal(
+            getDataFolder().toPath().resolve("debug/probes"),
+            4L * 1024 * 1024,
+            getLogger()::warning);
     failures =
         new DebugJournal(
             getDataFolder().toPath().resolve("debug/failures"),
@@ -289,6 +299,7 @@ public final class CivilizationsPlugin extends JavaPlugin
     planning.shutdownNow();
     if (navigation != null) navigation.close();
     if (failures != null) failures.close();
+    if (probes != null) probes.close();
     // Serialize final save behind earlier writes; no wait on any game thread.
     List<Settlement.Data> finalState =
         settlements.values().stream().map(Settlement::snapshot).toList();
@@ -929,7 +940,8 @@ public final class CivilizationsPlugin extends JavaPlugin
     if (detailed) {
       if (args.length == 1) {
         sender.sendMessage(
-            "Optional diagnostics: /civ debug details | ai | design | coreai | plan | create");
+            "Optional diagnostics: /civ debug details | probe | ai | design | coreai | plan |"
+                + " create");
         sender.sendMessage(
             "Villagers discover, plan and work automatically; these commands are not setup steps.");
         return true;
@@ -938,6 +950,10 @@ public final class CivilizationsPlugin extends JavaPlugin
     }
     String sub = args.length == 0 ? "status" : args[0].toLowerCase(Locale.ROOT);
     if (detailed && sub.equals("details")) sub = "status";
+    if (sub.equals("probe")) {
+      ProbeCommand.execute(this, sender, args);
+      return true;
+    }
     if (sub.equals("help")) {
       sender.sendMessage(
           "/civ: village progress | /civ inspect: nearest villager | /civ pause or resume");
@@ -1144,8 +1160,12 @@ public final class CivilizationsPlugin extends JavaPlugin
         args.length == 1
             ? List.of("status", "inspect", "pause", "resume", "debug", "help")
             : args.length == 2 && args[0].equalsIgnoreCase("debug")
-                ? List.of("details", "ai", "design", "coreai", "plan", "create")
-                : List.of();
+                ? List.of("details", "probe", "ai", "design", "coreai", "plan", "create")
+                : args.length == 3
+                        && args[0].equalsIgnoreCase("debug")
+                        && args[1].equalsIgnoreCase("probe")
+                    ? List.of("start", "status", "cancel", "jobs")
+                    : List.of();
     return choices.stream()
         .filter(s -> s.startsWith(args[args.length - 1].toLowerCase(Locale.ROOT)))
         .toList();

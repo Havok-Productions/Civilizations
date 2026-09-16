@@ -29,6 +29,7 @@ public final class VillagerWorker {
   private final BuildingActions building;
   private final WorkPose workPose;
   private final VillagerMind mind;
+  private final WorkerProbe probe;
   private String waitingReason = "";
   private final GatheringActions gathering;
   private final RecoveryPolicy recovery;
@@ -103,6 +104,40 @@ public final class VillagerWorker {
     recovery = new RecoveryPolicy(System.currentTimeMillis(), plugin.reasoningCooldown());
     gathering = new GatheringActions(plugin, entity, village, navigation, recovery, this::fail);
     tools = new ToolActions(plugin, entity, village, navigation, this::fail);
+    probe =
+        new WorkerProbe(
+            plugin,
+            entity,
+            village,
+            () -> supplyFor == null ? job : supplyFor,
+            this::assignProbe,
+            navigation::evidence,
+            () -> status() + " | " + waitingReason);
+  }
+
+  public void probe(
+      String action, String jobId, long duration, java.util.function.Consumer<List<String>> reply) {
+    probe.request(action, jobId, duration, reply);
+  }
+
+  private boolean assignProbe(Job candidate, long now) {
+    if (stopped) return false;
+    if (job != null
+        && (job.id.equals(candidate.id)
+            || supplyFor != null && supplyFor.id.equals(candidate.id))) {
+      excludeLearning("admin-commanded task probe");
+      awaiting = false;
+      nextAdvice = null;
+      generation++;
+      return true;
+    }
+    excludeLearning("admin-commanded task probe");
+    reset(); // Checkpoints preserve interrupted work and carried resources.
+    nextAdvice = null;
+    if (!village.claim(candidate.id, id, now)) return false;
+    nextWork = now;
+    begin(candidate);
+    return true;
   }
 
   public void start() {
@@ -115,6 +150,7 @@ public final class VillagerWorker {
                 t -> tick(),
                 () -> {
                   stopped = true;
+                  probe.interrupt(TaskProbe.Result.INTERRUPTED, "Worker unloaded or retired");
                   mind.close();
                   if (plugin.experiments() != null)
                     plugin.experiments().cancelWorker(id, "worker_retired");
@@ -132,6 +168,7 @@ public final class VillagerWorker {
 
   public void stop() {
     stopped = true;
+    probe.interrupt(TaskProbe.Result.INTERRUPTED, "Worker/plugin stopped");
     mind.close();
     if (plugin.experiments() != null) plugin.experiments().cancelWorker(id, "worker_stopped");
     if (scheduled != null) scheduled.cancel();
@@ -231,7 +268,13 @@ public final class VillagerWorker {
         .connections()
         .read(
             () -> {
-              if (!village.retired()) tickActive();
+              if (!village.retired()) {
+                try {
+                  tickActive();
+                } finally {
+                  probe.sample();
+                }
+              }
             });
   }
 
@@ -405,6 +448,7 @@ public final class VillagerWorker {
       }
     } catch (Exception e) {
       display = "recovering: " + e.getClass().getSimpleName();
+      probe.failure(e.toString());
       plugin.getLogger().warning("Worker " + id + ": " + e);
       debug(
           "exception",
@@ -516,6 +560,7 @@ public final class VillagerWorker {
 
   private void choose(long now, Pos at) {
     if (now < nextWork) return;
+    if (probe.resume(now)) return;
     if (nextAdvice != null) {
       Decision advice = nextAdvice;
       nextAdvice = null;
@@ -704,7 +749,7 @@ public final class VillagerWorker {
     job = candidate;
     village.checkpoint(id, job, supplyFor, "Working on validated step");
     policyTicket =
-        plugin.coreAi() == null
+        plugin.coreAi() == null || probe.active()
             ? null
             : plugin
                 .coreAi()
@@ -843,6 +888,7 @@ public final class VillagerWorker {
     boolean changed = !after.equals(workBlockBefore);
     String effect = changed ? "world_changed" : "already_satisfied";
     boolean committed = village.done(job.id, id, effect);
+    if (committed) probe.completed(job.id, changed);
     if (committed)
       plugin.debug(
           village.id(),
@@ -1286,6 +1332,7 @@ public final class VillagerWorker {
     evidence.put("failure_id", failureId);
     lastFailure = Map.copyOf(evidence);
     debug("failure", lastFailure);
+    probe.failure(reason, lastFailure);
     mind.failed(reason, lastFailure);
     navigation.mapFailure(failureId, job == null ? here() : job.target, now);
     if (plugin.coreAi() != null) {
