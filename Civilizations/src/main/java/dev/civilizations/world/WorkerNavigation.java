@@ -183,10 +183,17 @@ public final class WorkerNavigation {
   }
 
   public void walkWork(Pos stand, Pos target, long now) {
-    walkWork(stand, target, WorkerTuning.value(plugin, actor, "construction.reach_squared"), now);
+    walkWork(
+        stand, target, WorkerTuning.value(plugin, actor, "construction.reach_squared"), now, true);
   }
 
   public void walkWork(Pos stand, Pos target, int reach, long now) {
+    walkWork(stand, target, reach, now, false);
+  }
+
+  private void walkWork(Pos stand, Pos target, int reach, long now, boolean construction) {
+    java.util.function.Predicate<Pos> usableHeight =
+        p -> !construction || WorkPose.withinConstructionReach(p, target, reach);
     if (!target.equals(workTarget)) {
       rejectedWorkPositions.clear();
       workTarget = target;
@@ -195,7 +202,8 @@ public final class WorkerNavigation {
     if (workApproach != null
         && Bukkit.isOwnedByCurrentRegion(location(target), 1)
         && Bukkit.isOwnedByCurrentRegion(location(workApproach), 1)
-        && !WorkPositions.usable(actor, workApproach, target, reach)) {
+        && (!usableHeight.test(workApproach)
+            || !WorkPositions.usable(actor, workApproach, target, reach))) {
       rejectedWorkPositions.add(workApproach);
       event(
           "work_position_occluded_or_changed",
@@ -210,7 +218,8 @@ public final class WorkerNavigation {
       workApproach = null;
     }
     if (workApproach == null || rejectedWorkPositions.contains(workApproach))
-      workApproach = WorkPositions.choose(actor, stand, target, reach, rejectedWorkPositions);
+      workApproach =
+          WorkPositions.choose(actor, stand, target, reach, rejectedWorkPositions, usableHeight);
     if (workApproach == null) {
       event(
           "no_visible_supported_work_position",

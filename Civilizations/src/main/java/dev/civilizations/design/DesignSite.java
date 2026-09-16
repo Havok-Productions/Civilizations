@@ -16,6 +16,8 @@ final class DesignSite {
   final Set<Pos> construction = new HashSet<>();
   final Map<Pos, String> placed = new HashMap<>();
   final Map<Pos, String> prepared = new HashMap<>();
+  final Map<String, Integer> grades = new HashMap<>();
+  final Set<String> footprint = new HashSet<>();
   List<String> trialWarnings;
 
   DesignSite(Terrain terrain, Pos center, String project, Predicate<Pos> occupied) {
@@ -43,6 +45,8 @@ final class DesignSite {
             + ","
             + z
             + "); consult snapshot coverage and retry");
+    Integer graded = grades.get(wx + "," + wz);
+    if (graded != null) return new Pos(wx, graded, wz);
     Pos ground = new Pos(wx, terrain.groundHeight(wx, wz), wz);
     while (clear(ground) || type(ground).endsWith("_LOG") || type(ground).endsWith("_LEAVES")) {
       ground = ground.add(0, -1, 0);
@@ -50,6 +54,8 @@ final class DesignSite {
           !type(ground).equals("UNKNOWN"),
           "Ground beneath vegetation is unobserved at " + ground.key());
     }
+    while (placed.containsKey(ground.add(0, 1, 0)) && solid(ground.add(0, 1, 0)))
+      ground = ground.add(0, 1, 0);
     return ground;
   }
 
@@ -66,7 +72,7 @@ final class DesignSite {
   boolean solid(Pos p) {
     return placed.containsKey(p)
         ? Set.of("COBBLESTONE", "OAK_PLANKS", "DIRT_PATH").contains(placed.get(p))
-        : terrain.natural(p) || Set.of("FARMLAND", "DIRT_PATH").contains(terrain.type(p));
+        : terrain.support(p);
   }
 
   void reserve(Pos p) {
@@ -94,12 +100,54 @@ final class DesignSite {
   }
 
   Pos standNear(Pos target) {
+    List<Pos> candidates = standsNear(target);
+    require(!candidates.isEmpty(), "No supported working position near " + target.key());
+    return candidates.getFirst();
+  }
+
+  List<Pos> standsNear(Pos target) {
+    List<Pos> candidates = new ArrayList<>();
     for (int dy : new int[] {0, -1, 1, -2, -3})
       for (int[] d : new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
         Pos p = target.add(d[0], dy, d[1]);
-        if (clear(p) && clear(p.add(0, 1, 0)) && solid(p.add(0, -1, 0)) && terrain.dry(p)) return p;
+        if (clear(p) && clear(p.add(0, 1, 0)) && solid(p.add(0, -1, 0)) && terrain.dry(p))
+          candidates.add(p);
       }
-    throw new IllegalArgumentException("No supported working position near " + target.key());
+    return candidates;
+  }
+
+  DesignSite copy() {
+    DesignSite copy = new DesignSite(terrain, center, project, occupied);
+    copy.jobs.addAll(jobs);
+    copy.reserved.addAll(reserved);
+    copy.construction.addAll(construction);
+    copy.placed.putAll(placed);
+    copy.prepared.putAll(prepared);
+    copy.grades.putAll(grades);
+    copy.footprint.addAll(footprint);
+    copy.trialWarnings = trialWarnings == null ? null : new ArrayList<>(trialWarnings);
+    return copy;
+  }
+
+  void adopt(DesignSite other) {
+    jobs.clear();
+    jobs.addAll(other.jobs);
+    reserved.clear();
+    reserved.addAll(other.reserved);
+    construction.clear();
+    construction.addAll(other.construction);
+    placed.clear();
+    placed.putAll(other.placed);
+    prepared.clear();
+    prepared.putAll(other.prepared);
+    grades.clear();
+    grades.putAll(other.grades);
+    footprint.clear();
+    footprint.addAll(other.footprint);
+    if (trialWarnings != null) {
+      trialWarnings.clear();
+      trialWarnings.addAll(other.trialWarnings);
+    }
   }
 
   void add(Job.Kind kind, Pos target, Pos stand, String material, String data, int phase) {
@@ -108,7 +156,7 @@ final class DesignSite {
         "Compilation work budget exhausted; split this proposal into independently buildable"
             + " stages");
     require(
-        target.distance2(stand) <= 21 && Math.abs(target.y() - stand.y()) <= 3,
+        WorkPose.withinConstructionReach(stand, target, 21),
         "Block is beyond ordinary villager reach");
     reserve(target);
     reserveAccess(stand);

@@ -83,6 +83,15 @@ final class DesignTrialChecks {
             world.getBlockAt(x, y + h, z).setType(h == -1 ? Material.DIRT : Material.AIR, false);
       // Grass under the actor reproduces the live CLEARABLE -> no_safe_start_cell failure.
       world.getBlockAt(0, y, 0).setType(Material.SHORT_GRASS, false);
+      boolean preparation = Boolean.getBoolean("civilizations.test.site-preparation");
+      if (preparation) {
+        world.getBlockAt(3, y, 2).setType(Material.LEAF_LITTER, false);
+        world.getBlockAt(3, y + 1, 2).setType(Material.DIRT, false);
+        world.getBlockAt(6, y - 1, 4).setType(Material.COBBLESTONE, false);
+        world.getBlockAt(6, y + 4, 4).setType(Material.DIRT, false);
+        world.getBlockAt(2, y, 4).setType(Material.OAK_LOG, false);
+        world.getBlockAt(2, y + 1, 4).setType(Material.OAK_LEAVES, false);
+      }
       var data = new Settlement.Data();
       data.world = world.getUID().toString();
       data.center = new Pos(0, y, 0);
@@ -159,7 +168,15 @@ final class DesignTrialChecks {
                 fail(error);
                 return null;
               });
-      a.getScheduler().runDelayed(fixture, task -> first.start(), () -> {}, 100);
+      a.getScheduler()
+          .runDelayed(
+              fixture,
+              task -> {
+                a.setAI(true);
+                first.start();
+              },
+              () -> {},
+              100);
       long started = System.currentTimeMillis();
       a.getScheduler()
           .runAtFixedRate(
@@ -173,17 +190,32 @@ final class DesignTrialChecks {
                   if (village.hasProject(project) && village.allComplete(project)) {
                     var jobs =
                         village.jobs().stream().filter(j -> j.project.equals(project)).toList();
-                    require(jobs.size() == 16, "Expected all 16 wall/gate blocks");
+                    long stone =
+                        jobs.stream()
+                            .filter(
+                                j -> j.kind == Job.Kind.PLACE && j.material.equals("COBBLESTONE"))
+                            .count();
+                    require(
+                        preparation
+                            ? stone > 15 && jobs.stream().anyMatch(j -> j.kind == Job.Kind.CLEAR)
+                            : jobs.size() == 16,
+                        "Expected complete wall and preparation");
+                    Map<Pos, String> finalBlocks = new HashMap<>();
                     for (Job j : jobs)
+                      finalBlocks.put(
+                          j.target,
+                          j.kind == Job.Kind.CLEAR || j.kind == Job.Kind.MINE ? "AIR" : j.material);
+                    for (var entry : finalBlocks.entrySet())
                       require(
                           world
-                              .getBlockAt(j.target.x(), j.target.y(), j.target.z())
+                              .getBlockAt(
+                                  entry.getKey().x(), entry.getKey().y(), entry.getKey().z())
                               .getType()
                               .name()
-                              .equals(j.material),
-                          "Missing actual " + j.material + " at " + j.target);
+                              .equals(entry.getValue()),
+                          "Missing actual " + entry.getValue() + " at " + entry.getKey());
                     require(
-                        InventoryOps.count(a.getInventory(), Material.COBBLESTONE) == 17,
+                        InventoryOps.count(a.getInventory(), Material.COBBLESTONE) == 32 - stone,
                         "Cobblestone conservation");
                     require(
                         InventoryOps.count(a.getInventory(), Material.OAK_FENCE_GATE) == 0,
@@ -191,6 +223,23 @@ final class DesignTrialChecks {
                     require(
                         world.getBlockAt(0, y, 0).getType() == Material.SHORT_GRASS,
                         "Walking wrongly required grass removal");
+                    if (preparation) {
+                      require(
+                          InventoryOps.count(a.getInventory(), Material.DIRT) == 2,
+                          "Cleared soil drops retained");
+                      require(
+                          InventoryOps.count(a.getInventory(), Material.OAK_LOG) == 1,
+                          "Cleared tree drops retained");
+                      fixture
+                          .getLogger()
+                          .info(
+                              "SITE PREPARATION PASS: "
+                                  + jobs.size()
+                                  + " real jobs; "
+                                  + stone
+                                  + " paid cobblestone; two soil drops and one log retained;"
+                                  + " complete wall over repaired foundations");
+                    }
                     first.probe(
                         "status",
                         "auto",
@@ -241,6 +290,7 @@ final class DesignTrialChecks {
     var actor = world.spawn(new Location(world, x, y, z), Villager.class);
     actor.setAdult();
     actor.setPersistent(true);
+    actor.setAI(false); // Hold the starting position until command admission and worker control.
     actor.getInventory().clear();
     village.enroll(actor.getUniqueId().toString(), 20);
     var worker = new VillagerWorker(plugin, actor, village);

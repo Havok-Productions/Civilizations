@@ -111,6 +111,8 @@ public final class RecoveryExperiments implements AutoCloseable {
             SkillLibrary.Experience previous = library.get(context.key());
             if (previous != null) report.put("previous_live_attempt", previous);
             record(trial, "requested", Map.of("observation", report));
+            var inferenceFailure =
+                new AtomicReference<dev.coreai.reasoning.InferenceScheduler.Failure>();
             boolean accepted =
                 inference.submit(
                     "skill-trial",
@@ -140,7 +142,7 @@ public final class RecoveryExperiments implements AutoCloseable {
                             () -> {
                               if (active.get() != trial) return;
                               if (proposal == null) {
-                                reject(trial, "model_unavailable_or_invalid_program");
+                                reject(trial, "inference_failed: " + inferenceFailure.get());
                                 return;
                               }
                               SkillProgram program = proposal.program();
@@ -179,8 +181,9 @@ public final class RecoveryExperiments implements AutoCloseable {
                                       "status",
                                       "live pilot permitted; no replay-improvement gate"));
                               trial.program.complete(program);
-                            }));
-            if (!accepted) reject(trial, "inference_queue_busy");
+                            }),
+                    inferenceFailure::set);
+            if (!accepted) reject(trial, "inference_not_admitted: " + inferenceFailure.get());
           } catch (Exception error) {
             reject(trial, "proposal_error: " + error);
           }
@@ -249,6 +252,7 @@ public final class RecoveryExperiments implements AutoCloseable {
       long now,
       CompletableFuture<SkillProgram> result,
       boolean corrected) {
+    var inferenceFailure = new AtomicReference<dev.coreai.reasoning.InferenceScheduler.Failure>();
     boolean accepted =
         inference.submit(
             "skill-revision:" + trial.id,
@@ -288,7 +292,7 @@ public final class RecoveryExperiments implements AutoCloseable {
                     if (proposal == null || duplicate) {
                       String reason =
                           proposal == null
-                              ? "revision_unavailable"
+                              ? "revision_unavailable: " + inferenceFailure.get()
                               : "unchanged_failed_recovery_instructions";
                       record(
                           trial,
@@ -319,8 +323,11 @@ public final class RecoveryExperiments implements AutoCloseable {
                     result.complete(trial.source);
                   }))
                 result.completeExceptionally(new IllegalStateException("revision_io_unavailable"));
-            });
-    if (!accepted) result.completeExceptionally(new IllegalStateException("revision_queue_busy"));
+            },
+            inferenceFailure::set);
+    if (!accepted)
+      result.completeExceptionally(
+          new IllegalStateException("revision_not_admitted: " + inferenceFailure.get()));
   }
 
   private static String attemptKey(SkillContext context, SkillProgram program) {

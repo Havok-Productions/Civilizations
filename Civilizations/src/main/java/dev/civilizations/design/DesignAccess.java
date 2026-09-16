@@ -7,23 +7,17 @@ import java.util.*;
 /** Rejects disconnected islands and cliff-top sites before villagers are assigned work. */
 final class DesignAccess {
   static void verify(DesignSite s) {
-    if (s.jobs.getFirst().kind == dev.civilizations.core.Job.Kind.MINE) {
-      var entrance = s.jobs.getFirst().stand;
-      s.require(
-          reachable(s, s.prepared, List.of(entrance), false).contains(key(entrance)),
-          "Mine entrance is disconnected from village walking ground");
-      return;
-    }
     // A house's floor creates real standing space one level above the original ground.
     // Validate each stage against preceding work, never equate it with the floor below.
-    Map<Pos, String> staged = new HashMap<>(s.prepared);
+    Map<Pos, String> staged = new HashMap<>();
     for (var j : s.jobs) {
-      if (j.kind == dev.civilizations.core.Job.Kind.CLEAR) continue;
       s.require(
           reachable(s, staged, List.of(j.stand), false).contains(key(j.stand)),
           "Design work site is disconnected by water, structures or cliffs at " + j.stand.key());
       if (j.kind == dev.civilizations.core.Job.Kind.PLACE) staged.put(j.target, j.material);
       else if (j.kind == dev.civilizations.core.Job.Kind.PATH) staged.put(j.target, "DIRT_PATH");
+      else if (j.kind == dev.civilizations.core.Job.Kind.CLEAR
+          || j.kind == dev.civilizations.core.Job.Kind.MINE) staged.put(j.target, "AIR");
     }
   }
 
@@ -128,7 +122,7 @@ final class DesignAccess {
         Pos feet = new Pos(x, nearY + offset * direction, z), ground = feet.add(0, -1, 0);
         String support = t.type(ground);
         if (offset == 0 && direction == -1) continue;
-        if ((t.natural(ground)
+        if ((t.support(ground)
                 || support.endsWith("_PLANKS")
                 || support.endsWith("_STAIRS")
                 || support.endsWith("_SLAB")

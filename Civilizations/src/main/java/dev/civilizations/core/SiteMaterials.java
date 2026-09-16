@@ -10,6 +10,8 @@ public final class SiteMaterials {
     return Set.of(
             "SHORT_GRASS",
             "LEAF_LITTER",
+            "MOSS_CARPET",
+            "PALE_MOSS_CARPET",
             "PINK_PETALS",
             "WILDFLOWERS",
             "TALL_GRASS",
@@ -41,7 +43,12 @@ public final class SiteMaterials {
   }
 
   public static boolean clearable(String type) {
-    return vegetation(type) || soil(type);
+    return vegetation(type) || earthwork(type);
+  }
+
+  /** Explicit site grading may remove these, after checking overhead blocks and protection. */
+  public static boolean earthwork(String type) {
+    return soil(type) || Set.of("DIRT_PATH", "GRAVEL").contains(type);
   }
 
   public static boolean soil(String type) {

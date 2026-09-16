@@ -446,6 +446,9 @@ public final class DesignCoordinator implements AutoCloseable {
         salvage == null
             ? "local AI mapping/designing"
             : "salvaging retained " + salvage.kind() + " proposal " + salvage.id());
+    var inferenceFailure =
+        new java.util.concurrent.atomic.AtomicReference<
+            dev.coreai.reasoning.InferenceScheduler.Failure>();
     boolean submitted =
         inference.submit(
             "design:" + v.id(),
@@ -477,14 +480,13 @@ public final class DesignCoordinator implements AutoCloseable {
                 return;
               }
               if (retainedSalvage != null) {
-                salvageResponse(v, world, retainedSalvage, blueprint, examples);
+                salvageResponse(
+                    v, world, retainedSalvage, blueprint, examples, inferenceFailure.get());
                 return;
               }
               if (blueprint == null) {
                 next.put(v.id(), System.currentTimeMillis() + interval);
-                feedback(
-                    v,
-                    "Model did not return a valid blueprint; see /civ ai for the inference error");
+                feedback(v, "Model did not return a valid blueprint: " + inferenceFailure.get());
                 useObservedAlternative(v, world, origin, examples, "invalid model response");
                 return;
               }
@@ -494,13 +496,15 @@ public final class DesignCoordinator implements AutoCloseable {
                 return;
               }
               receive(v, world, blueprint, origin);
-            });
+            },
+            inferenceFailure::set);
     if (!submitted) {
       next.put(v.id(), now + 30_000);
-      if (salvage != null) salvageResponse(v, world, salvage, null, examples);
+      if (salvage != null)
+        salvageResponse(v, world, salvage, null, examples, inferenceFailure.get());
       else {
         pending.remove(v.id());
-        statuses.put(v.id(), "waiting for local model/queue");
+        statuses.put(v.id(), "waiting for inference: " + inferenceFailure.get());
       }
     }
   }
@@ -510,7 +514,8 @@ public final class DesignCoordinator implements AutoCloseable {
       World world,
       DesignProposal proposal,
       Blueprint rawResponse,
-      List<Map<String, Object>> examples) {
+      List<Map<String, Object>> examples,
+      dev.coreai.reasoning.InferenceScheduler.Failure inferenceFailure) {
     Blueprint response = localResponse(v, proposal.origin(), rawResponse);
     boolean usable = usableRevision(v, proposal, response);
     Blueprint revision = usable ? response : ProposalSalvage.alternative(proposal, examples);
@@ -546,6 +551,10 @@ public final class DesignCoordinator implements AutoCloseable {
                     response == null ? "No model output available" : response,
                     "selected_revision",
                     "none",
+                    "inference_failure",
+                    inferenceFailure == null
+                        ? "none; model returned an unusable or unchanged layout"
+                        : inferenceFailure,
                     "reason",
                     why));
             feedback(current, why);

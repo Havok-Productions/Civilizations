@@ -84,7 +84,7 @@ public final class RegionSnapshots implements TerrainSurvey {
     return ((long) x << 32) ^ (z & 0xffffffffL);
   }
 
-  private record Captured(
+  record Captured(
       Map<Long, ChunkSnapshot> chunks,
       int min,
       int max,
@@ -122,7 +122,8 @@ public final class RegionSnapshots implements TerrainSurvey {
       String type = type(p), state = blockData(p);
       var rule = learned.get(dev.coreai.TerrainRuleBook.key(type, state));
       return rule != null
-          && rule.facts().removable()
+          && rule.facts().passable()
+          && !type.equals("COBWEB")
           && !rule.facts().fluid()
           && !BlockObservation.dangerous(type, state);
     }

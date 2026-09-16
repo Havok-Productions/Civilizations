@@ -61,7 +61,7 @@ final class RouteDesign {
       Blueprint.Point p = ring.get(i);
       Pos ground = s.ground(p.x(), p.z());
       s.require(
-          s.terrain.natural(ground) && s.terrain.dry(ground.add(0, 1, 0)),
+          s.solid(ground) && s.terrain.dry(ground.add(0, 1, 0)),
           "Wall crosses water or a structure");
       Blueprint.Point next = ring.get((i + 1) % ring.size());
       s.require(

@@ -71,9 +71,28 @@ public interface Terrain {
             .contains(type(p));
   }
 
+  /** Supporting an action does not authorize excavation of the supporting block. */
+  default boolean support(Pos p) {
+    String type = type(p);
+    return natural(p)
+        || type.endsWith("_PLANKS")
+        || type.endsWith("_TERRACOTTA")
+        || Set.of(
+                "COBBLESTONE",
+                "MOSSY_COBBLESTONE",
+                "STONE_BRICKS",
+                "MOSSY_STONE_BRICKS",
+                "CRACKED_STONE_BRICKS",
+                "BRICKS",
+                "TERRACOTTA",
+                "FARMLAND")
+            .contains(type);
+  }
+
   default boolean fluid(Pos p) {
-    return Set.of("WATER", "LAVA", "KELP", "KELP_PLANT", "SEAGRASS", "TALL_SEAGRASS")
-        .contains(type(p));
+    return String.valueOf(blockData(p)).contains("waterlogged=true")
+        || Set.of("WATER", "LAVA", "KELP", "KELP_PLANT", "SEAGRASS", "TALL_SEAGRASS")
+            .contains(type(p));
   }
 
   default boolean dry(Pos p) {

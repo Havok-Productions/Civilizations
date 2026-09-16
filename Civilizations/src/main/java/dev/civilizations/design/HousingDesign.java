@@ -16,8 +16,8 @@ final class HousingDesign {
       for (int z = -1; z <= d; z++) {
         Pos g = s.ground(b.x() + x, b.z() + z);
         s.require(
-            g.y() == floor && s.terrain.natural(g) && s.terrain.dry(g.add(0, 1, 0)),
-            "House requires dry natural ground at "
+            g.y() == floor && s.solid(g) && s.terrain.dry(g.add(0, 1, 0)),
+            "House requires supported dry ground at "
                 + g.key()
                 + "; expected level "
                 + floor

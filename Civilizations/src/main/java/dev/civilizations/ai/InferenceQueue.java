@@ -80,6 +80,28 @@ public final class InferenceQueue implements AutoCloseable {
         callback);
   }
 
+  public <T> boolean submit(
+      String agent,
+      String system,
+      String report,
+      ReasoningMode mode,
+      String schema,
+      long deadline,
+      Function<String, T> parser,
+      Consumer<T> callback,
+      Consumer<InferenceScheduler.Failure> failed) {
+    return scheduler.submit(
+        agent,
+        system,
+        report,
+        ReasoningBackend.Purpose.valueOf(mode.name()),
+        schema,
+        deadline,
+        parser,
+        callback,
+        failed);
+  }
+
   static final String SYSTEM =
       """
       You control one ordinary villager. Solve the village's observed needs using only the offered jobs, real inventory, available resource sites, planning constraints, and recent failures.

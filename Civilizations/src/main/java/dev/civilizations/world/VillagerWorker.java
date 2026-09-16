@@ -1068,8 +1068,8 @@ public final class VillagerWorker {
       workWait("preparing materials or fetching supplies");
       return;
     }
-    if (at.distance2(job.target) > WorkerTuning.value(plugin, entity, "construction.reach_squared")
-        || Math.abs(at.y() - job.target.y()) > 3) {
+    if (!WorkPose.withinConstructionReach(
+        at, job.target, WorkerTuning.value(plugin, entity, "construction.reach_squared"))) {
       workPose.reset();
       navigation.walkWork(job.stand, job.target, now);
       workWait("approaching target: " + navigation.status());

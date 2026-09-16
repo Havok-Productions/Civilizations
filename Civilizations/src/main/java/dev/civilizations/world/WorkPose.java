@@ -11,6 +11,11 @@ import org.bukkit.entity.Villager;
 public final class WorkPose {
   static final double EYE_REACH = 5;
 
+  /** Construction arrival and execution must agree on the same feet envelope. */
+  public static boolean withinConstructionReach(Pos feet, Pos target, int reach) {
+    return feet.distance2(target) <= reach && Math.abs((long) feet.y() - target.y()) <= 3;
+  }
+
   static int feetEnvelope(double eyeHeight) {
     // Reach is measured from the eyes to the target center, not from the feet block.
     return (int) Math.ceil(Math.pow(EYE_REACH + Math.abs(eyeHeight - .5), 2));

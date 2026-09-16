@@ -10,6 +10,8 @@ import java.util.function.Function;
 
 /** One actual inference at a time, bounded queue, one outstanding call per agent. */
 public final class InferenceScheduler implements AutoCloseable {
+  public record Failure(String stage, String reason) {}
+
   private final ReasoningBackend backend;
   private final ThreadPoolExecutor executor;
   private final Set<String> pending = ConcurrentHashMap.newKeySet();
@@ -74,9 +76,32 @@ public final class InferenceScheduler implements AutoCloseable {
       long deadline,
       Function<String, T> parser,
       Consumer<T> callback) {
-    if (!backend.ready() || !pending.add(agent)) return false;
+    return submit(agent, system, report, mode, schema, deadline, parser, callback, failure -> {});
+  }
+
+  /** The failure belongs to this request, including immediate admission refusals. */
+  public <T> boolean submit(
+      String agent,
+      String system,
+      String report,
+      Purpose mode,
+      String schema,
+      long deadline,
+      Function<String, T> parser,
+      Consumer<T> callback,
+      Consumer<Failure> failed) {
+    if (!backend.ready()) {
+      failed.accept(new Failure("backend_unavailable", backend.status()));
+      return false;
+    }
+    if (!pending.add(agent)) {
+      failed.accept(
+          new Failure("already_pending", "This agent already has an outstanding request"));
+      return false;
+    }
     if (!admit(mode)) {
       pending.remove(agent);
+      failed.accept(new Failure("queue_full", "No inference admission slot available"));
       return false;
     }
     try {
@@ -90,35 +115,46 @@ public final class InferenceScheduler implements AutoCloseable {
               order,
               () -> {
                 T decision = null;
+                String stage = "expired";
+                Failure failure = null;
                 try {
                   if (System.currentTimeMillis() > deadline)
                     throw new TimeoutException("Queued decision expired before inference");
                   if (mode == Purpose.RECOVERY) recoveryRequests.incrementAndGet();
                   try {
+                    stage = "backend_error";
+                    String response =
+                        backend.complete(new Request(system, report, mode, schema, deadline));
+                    stage = "invalid_response";
                     decision =
-                        parser.apply(
-                            backend.complete(new Request(system, report, mode, schema, deadline)));
+                        Objects.requireNonNull(
+                            parser.apply(response), "Parser returned no usable response");
                   } catch (Exception e) {
                     if (e instanceof InterruptedException) throw e;
                     if (deadline - System.currentTimeMillis() < 2000) throw e;
                     observer.accept(
                         agent, Map.of("stage", "final_answer_retry", "reason", e.toString()));
                     finalRetries.incrementAndGet();
+                    stage = "backend_error";
+                    String response =
+                        backend.recover(
+                            new Request(
+                                system
+                                    + "\n"
+                                    + "Return the final JSON now. Use only supplied"
+                                    + " observations and supported actions.",
+                                report,
+                                Purpose.FINAL,
+                                schema,
+                                deadline));
+                    stage = "invalid_response";
                     decision =
-                        parser.apply(
-                            backend.recover(
-                                new Request(
-                                    system
-                                        + "\n"
-                                        + "Return the final JSON now. Use only supplied"
-                                        + " observations and supported actions.",
-                                    report,
-                                    Purpose.FINAL,
-                                    schema,
-                                    deadline)));
+                        Objects.requireNonNull(
+                            parser.apply(response), "Parser returned no usable response");
                   }
                   if (System.currentTimeMillis() > deadline) {
                     decision = null;
+                    stage = "expired";
                     throw new TimeoutException("Decision completed after its observations expired");
                   }
                   if (mode == Purpose.DESIGN) designResponses.incrementAndGet();
@@ -127,17 +163,21 @@ public final class InferenceScheduler implements AutoCloseable {
                   decision = null;
                   failures.incrementAndGet();
                   lastError = e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage());
-                  observer.accept(agent, Map.of("stage", "failed", "error", lastError));
+                  failure = new Failure(stage, lastError);
+                  observer.accept(
+                      agent, Map.of("stage", "failed", "failure_stage", stage, "error", lastError));
                 } finally {
                   pending.remove(agent);
                   admission.release();
                 }
+                if (failure != null) failed.accept(failure);
                 callback.accept(decision);
               }));
       return true;
     } catch (RejectedExecutionException e) {
       pending.remove(agent);
       admission.release();
+      failed.accept(new Failure("scheduler_stopped", e.toString()));
       return false;
     }
   }

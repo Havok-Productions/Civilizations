@@ -19,15 +19,29 @@ public final class ClearingActions {
             && (job.expected.endsWith("_LOG") && !job.expected.startsWith("STRIPPED_")
                 || job.expected.endsWith("_LEAVES")
                     && !block.getBlockData().getAsString().contains("persistent=true"));
-    if (!block.getType().name().equals(job.expected)
-        || (!SiteMaterials.clearable(job.expected)
-            && !tree
-            && !(plugin.experiments() != null
-                && BlockObservation.learnedClear(
-                    plugin.experiments().rules(), actor.getUniqueId().toString(), block)))
-        || !BlockRules.dry(block)
-        || !BlockRules.safeMining(block))
-      return "Site clearance changed or is unsafe at " + job.target.key();
+    if (!block.getType().name().equals(job.expected))
+      return "Site clearance changed at "
+          + job.target.key()
+          + ": expected="
+          + job.expected
+          + ", observed="
+          + block.getBlockData().getAsString();
+    if ((!SiteMaterials.clearable(job.expected)
+        && !tree
+        && !(plugin.experiments() != null
+            && BlockObservation.learnedClear(
+                plugin.experiments().rules(), actor.getUniqueId().toString(), block))))
+      return "Site clearance needs removal classification at "
+          + job.target.key()
+          + ": "
+          + block.getBlockData().getAsString();
+    if (!BlockRules.dry(block))
+      return "Site clearance would expose nearby fluid at " + job.target.key();
+    if (!BlockRules.safeMining(block))
+      return "Site clearance has a container or falling block above at "
+          + job.target.key()
+          + ": above="
+          + block.getRelative(0, 1, 0).getType();
     String above = block.getRelative(0, 1, 0).getType().name();
     if (!block.getRelative(0, 1, 0).isPassable()
         && !(tree && (above.endsWith("_LOG") || above.endsWith("_LEAVES"))))
