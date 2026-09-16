@@ -16,6 +16,58 @@ import org.junit.jupiter.api.io.TempDir;
 class RecoveryExperimentsTest {
   @TempDir Path root;
 
+  @Test
+  @org.junit.jupiter.api.Tag("coreai")
+  @org.junit.jupiter.api.Tag("inference")
+  @org.junit.jupiter.api.Tag("interaction")
+  void duplicateRevisionGetsFeedbackAndChangedInventoryAllowsReconsideration() throws Exception {
+    String old =
+        "{\"explanation\":\"walk\",\"steps\":[{\"op\":\"WALK\",\"x\":2,\"y\":0,\"z\":0,\"material\":\"\"}]}";
+    String changed = old.replace("\"x\":2", "\"x\":3");
+    var reports = new CopyOnWriteArrayList<String>();
+    var calls = new AtomicInteger();
+    ModelBackend backend =
+        new ModelBackend() {
+          public boolean ready() {
+            return true;
+          }
+
+          public String status() {
+            return "fixture";
+          }
+
+          public void close() {}
+
+          public String complete(String system, String report) {
+            reports.add(report);
+            return calls.incrementAndGet() == 3 ? changed : old;
+          }
+        };
+    Pos at = new Pos(0, 65, 0), goal = at.add(6, 0, 0);
+    var map = new NavigationMap(at, 8, 3, Map.of());
+    var context = SkillContext.create(map, at, goal, 1, Map.of(), "blocked");
+    try (var queue = new InferenceQueue(backend, 4);
+        var experiments = new RecoveryExperiments(root, queue, () -> "fixture", s -> fail(s))) {
+      long now = System.currentTimeMillis();
+      var trial = experiments.request("v", "w", context, now);
+      trial.program.get(2, TimeUnit.SECONDS);
+      assertEquals(
+          SkillProgram.parse(changed),
+          experiments
+              .revise(trial, context, Map.of("reason", "blocked WALK", "failed_index", 0), now)
+              .get(2, TimeUnit.SECONDS));
+      assertTrue(reports.get(2).contains("unexecuted_duplicate"));
+      var supplied = SkillContext.create(map, at, goal, 1, Map.of("DIRT", 4), "blocked");
+      assertEquals(
+          SkillProgram.parse(old),
+          experiments
+              .revise(trial, supplied, Map.of("reason", "support now available"), now)
+              .get(2, TimeUnit.SECONDS));
+      assertEquals(4, calls.get());
+      experiments.cancel(trial, "fixture_end");
+    }
+  }
+
   @org.junit.jupiter.api.Tag("coreai")
   @org.junit.jupiter.api.Tag("inference")
   @org.junit.jupiter.api.Tag("interaction")
@@ -153,7 +205,8 @@ class RecoveryExperimentsTest {
           });
       var third = experiments.request("v", "three", context, now + 62000);
       assertThrows(ExecutionException.class, () -> third.program.get(2, TimeUnit.SECONDS));
-      assertEquals(2, calls.get());
+      assertEquals(
+          3, calls.get(), "One correction request supplies feedback for the repeated proposal");
       await(
           () -> {
             try {

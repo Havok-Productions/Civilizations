@@ -14,6 +14,9 @@ final class WorkerEmergency {
   private final Villager actor;
   private final Settlement village;
   private final NavigationObservation observation;
+  private final SurfaceSwimming swimming;
+  private org.bukkit.Location waterPosition;
+  private long waterProgress;
   private String cause = "";
   private long started, nextAction, nextReport;
 
@@ -22,6 +25,7 @@ final class WorkerEmergency {
     this.actor = actor;
     this.village = village;
     observation = new NavigationObservation(actor);
+    swimming = new SurfaceSwimming(plugin, actor);
   }
 
   boolean signal(String reason) {
@@ -33,6 +37,19 @@ final class WorkerEmergency {
   boolean needed() {
     if (!cause.isEmpty()) return true;
     if (actor.isSleeping()) return false;
+    long now = System.currentTimeMillis();
+    var at = actor.getLocation();
+    if (actor.isInWater() || observation.surfaceWater(pos(at))) {
+      double dx = waterPosition == null ? 0 : at.getX() - waterPosition.getX();
+      double dz = waterPosition == null ? 0 : at.getZ() - waterPosition.getZ();
+      if (waterPosition == null || dx * dx + dz * dz > .25) {
+        waterPosition = at.clone();
+        waterProgress = now;
+      } else if (now - waterProgress >= 3000) {
+        cause = "STRANDED_WATER";
+        return true;
+      }
+    } else waterPosition = null;
     Block eye = actor.getEyeLocation().getBlock();
     if (eye.getType() == Material.WATER && actor.getRemainingAir() < actor.getMaximumAir() / 2)
       return signal("DROWNING");
@@ -68,6 +85,7 @@ final class WorkerEmergency {
               "task_retained",
               true));
       cause = "";
+      waterPosition = null;
       started = nextAction = 0;
       return false;
     }
@@ -80,6 +98,13 @@ final class WorkerEmergency {
         var velocity = actor.getVelocity();
         if (velocity.getY() < .16) actor.setVelocity(velocity.setY(.16));
       }
+    }
+    if ((wet || swimming.active()) && swimming.tick(now, resumeTarget)) {
+      if (now >= nextReport) {
+        nextReport = now + 5000;
+        report("emergency_surface_route", swimming.evidence());
+      }
+      return true;
     }
     if (now < nextAction) return true;
     nextAction = now + 750;
@@ -153,6 +178,8 @@ final class WorkerEmergency {
           Map.of(
               "cause",
               cause,
+              "surface_escape",
+              swimming.evidence(),
               "colliding_blocks",
               collisions.stream()
                   .map(
@@ -182,7 +209,11 @@ final class WorkerEmergency {
   }
 
   private void report(String type, Map<String, ?> data) {
-    plugin.debug(village.id(), actor.getUniqueId().toString(), type, data);
+    var detail = new LinkedHashMap<String, Object>(data);
+    var at = actor.getLocation();
+    detail.put("actor_location", Map.of("x", at.getX(), "y", at.getY(), "z", at.getZ()));
+    detail.put("velocity", actor.getVelocity().toString());
+    plugin.debug(village.id(), actor.getUniqueId().toString(), type, detail);
   }
 
   private static Pos pos(Location p) {

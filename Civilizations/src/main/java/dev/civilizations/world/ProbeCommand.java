@@ -34,7 +34,7 @@ public final class ProbeCommand {
         return;
       }
       if (!Bukkit.isOwnedByCurrentRegion(player.getLocation(), 1)) {
-        sender.sendMessage("Nearby region is unavailable; retry or specify a worker UUID.");
+        refuse(plugin, sender, "Nearby region is unavailable; retry or specify a worker UUID.");
         return;
       }
       var actor =
@@ -46,14 +46,18 @@ public final class ProbeCommand {
                       e -> e.getLocation().distanceSquared(player.getLocation())))
               .orElse(null);
       if (actor == null) {
-        sender.sendMessage("No controlled villager within 16 blocks.");
+        refuse(
+            plugin,
+            sender,
+            "No controlled villager within 16 horizontal and 8 vertical blocks."
+                + " No trial started. Specify a worker UUID from /civ debug details.");
         return;
       }
       workerId = actor.getUniqueId().toString();
     }
     var worker = plugin.worker(workerId);
     if (worker == null) {
-      sender.sendMessage("No loaded controlled worker with UUID " + workerId);
+      refuse(plugin, sender, "No loaded controlled worker with UUID " + workerId);
       return;
     }
     worker.probe(
@@ -65,6 +69,11 @@ public final class ProbeCommand {
             player.getScheduler().run(plugin, t -> lines.forEach(player::sendMessage), () -> {});
           else lines.forEach(sender::sendMessage);
         });
+  }
+
+  private static void refuse(CivilizationsPlugin plugin, CommandSender sender, String reason) {
+    plugin.probeEvent("", "", "probe_not_started", Map.of("reason", reason));
+    sender.sendMessage(reason);
   }
 
   private static void usage(CommandSender sender) {

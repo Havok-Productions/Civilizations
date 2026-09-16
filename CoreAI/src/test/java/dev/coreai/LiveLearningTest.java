@@ -61,6 +61,20 @@ class LiveLearningTest {
 
   @org.junit.jupiter.api.Tag("coreai")
   @Test
+  void alternateFailuresCannotHideSuccessfulSkillsOrResetOlderCounters() throws Exception {
+    var library = new SkillLibrary(root);
+    library.outcome("same", program(2), "fixture", true, "arrived", 1);
+    library.outcome("same", program(3), "fixture", false, "blocked", 2);
+    assertEquals(program(2), new SkillLibrary(root).reusable("same"));
+    assertEquals(
+        2, library.outcome("same", program(2), "fixture", true, "arrived again", 3).successes());
+    assertEquals(
+        2, library.outcome("same", program(3), "fixture", false, "still blocked", 4).failures());
+    assertEquals(program(2), new SkillLibrary(root).reusable("same"));
+  }
+
+  @org.junit.jupiter.api.Tag("coreai")
+  @Test
   void replayRegressionCanPilotOnOneWorkerButCannotClaimAdoption() throws Exception {
     var library = new PolicyLibrary(root, PolicyLibraryTest.guards());
     var options = PolicyLibraryTest.guards().get(1).options();

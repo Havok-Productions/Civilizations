@@ -20,6 +20,16 @@ public final class SiteObservations {
       Predicate<Pos> occupied,
       Set<String> allowed,
       Map<String, Integer> rejections) {
+    return candidates(terrain, village, occupied, allowed, rejections, new ArrayList<>());
+  }
+
+  public static List<Map<String, Object>> candidates(
+      Terrain terrain,
+      Settlement village,
+      Predicate<Pos> occupied,
+      Set<String> allowed,
+      Map<String, Integer> rejections,
+      List<Map<String, Object>> failures) {
     List<Map<String, Object>> result = new ArrayList<>();
     DesignCompiler compiler = new DesignCompiler();
     if (allowed.contains("wall")) {
@@ -32,29 +42,12 @@ public final class SiteObservations {
               .sorted(Comparator.comparingLong(village.center()::distance2))
               .limit(9)
               .toList())
-        for (int radius : new int[] {4, 6, 8, 12, 16, 20, 24}) {
-          int cx = hub.x() - village.center().x(), cz = hub.z() - village.center().z();
-          add(
-              result,
-              compiler,
-              new Blueprint(
-                  "wall",
-                  "Protect village beds and storage",
-                  cx,
-                  cz - radius,
-                  0,
-                  0,
-                  3,
-                  "north",
-                  List.of(
-                      new Blueprint.Point(cx - radius, cz - radius),
-                          new Blueprint.Point(cx + radius, cz - radius),
-                      new Blueprint.Point(cx + radius, cz + radius),
-                          new Blueprint.Point(cx - radius, cz + radius))),
-              terrain,
-              village,
-              occupied,
-              rejections);
+        for (Blueprint alternative : WallAlternatives.around(hub, village.center())) {
+          if (result.stream()
+                  .filter(m -> ((Blueprint) m.get("blueprint")).kind().equals("wall"))
+                  .count()
+              >= 2) break;
+          add(result, compiler, alternative, terrain, village, occupied, rejections, failures);
         }
     }
     if (allowed.contains("path") && village.chest() != null) {
@@ -171,6 +164,18 @@ public final class SiteObservations {
       Settlement v,
       Predicate<Pos> occupied,
       Map<String, Integer> rejections) {
+    add(out, compiler, b, t, v, occupied, rejections, new ArrayList<>());
+  }
+
+  private static void add(
+      List<Map<String, Object>> out,
+      DesignCompiler compiler,
+      Blueprint b,
+      Terrain t,
+      Settlement v,
+      Predicate<Pos> occupied,
+      Map<String, Integer> rejections,
+      List<Map<String, Object>> failures) {
     try {
       List<Pos> landmarks = new ArrayList<>(v.beds());
       landmarks.addAll(v.chests());
@@ -187,11 +192,29 @@ public final class SiteObservations {
               coal,
               "actions",
               compiled.jobs().size(),
+              "preparation_actions",
+              compiled.jobs().stream()
+                  .filter(j -> j.kind == Job.Kind.CLEAR || j.kind == Job.Kind.MINE)
+                  .count(),
               "materials",
               compiled.materials()));
     } catch (IllegalArgumentException invalid) {
       String reason = b.kind() + ": " + invalid.getMessage().replaceAll("-?\\d+", "#");
       rejections.merge(reason, 1, Integer::sum);
+      if (failures.size() < 12
+          && failures.stream().noneMatch(f -> f.get("category").equals(reason)))
+        failures.add(
+            Map.of(
+                "category",
+                reason,
+                "blueprint",
+                b,
+                "reason",
+                invalid.getMessage(),
+                "coordinate_space",
+                "relative",
+                "world_origin",
+                v.center()));
     }
   }
 }

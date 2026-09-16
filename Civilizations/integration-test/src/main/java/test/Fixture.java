@@ -42,8 +42,11 @@ public class Fixture extends JavaPlugin {
         return;
       }
       case NAVIGATION, REPAIR, AUTONOMY, INFERENCE_BUSY -> {
-        if (scenario == Scenario.AUTONOMY && Boolean.getBoolean("civilizations.test.task-probe"))
-          new ProbeChecks(this).start();
+        if (scenario == Scenario.NAVIGATION
+            && Boolean.getBoolean("civilizations.test.adaptive-recovery"))
+          new AdaptiveRecoveryChecks(this).start();
+        else if (scenario == Scenario.AUTONOMY
+            && Boolean.getBoolean("civilizations.test.task-probe")) new ProbeChecks(this).start();
         else if (scenario == Scenario.AUTONOMY
             && Boolean.getBoolean("civilizations.test.progress-learning"))
           new ProgressLearningChecks(this).start();

@@ -145,7 +145,25 @@ public final class RecoveryExperiments implements AutoCloseable {
                               }
                               SkillProgram program = proposal.program();
                               if (library.repeatedFailure(context.key(), program)) {
-                                reject(trial, "same_failed_program_for_unchanged_context");
+                                var repair = new LinkedHashMap<String, Object>(report);
+                                repair.put("unexecuted_duplicate", program);
+                                repair.put(
+                                    "revision_feedback",
+                                    "The proposed instructions already failed in this unchanged"
+                                        + " context. Use previous_live_attempt evidence to change"
+                                        + " the approach or its prerequisites.");
+                                record(trial, "same_failed_program_correction_requested", repair);
+                                submitRevision(
+                                    trial,
+                                    context,
+                                    repair,
+                                    System.currentTimeMillis(),
+                                    trial.program,
+                                    true);
+                                trial.program.whenComplete(
+                                    (value, error) -> {
+                                      if (error != null) active.compareAndSet(trial, null);
+                                    });
                                 return;
                               }
                               trial.teacher = proposal.teacher();
@@ -218,61 +236,103 @@ public final class RecoveryExperiments implements AutoCloseable {
           }
           trial.source = null; // The abandoned source already received its failure outcome.
           record(trial, "revision_requested", report);
-          boolean accepted =
-              inference.submit(
-                  "skill-revision:" + trial.id,
-                  SYSTEM,
-                  new Gson().toJson(report),
-                  ReasoningMode.RECOVERY,
-                  SCHEMA,
-                  now + 180_000,
-                  text -> new Proposed(SkillProgram.parse(text), teacher.get()),
-                  proposal -> {
-                    if (!enqueue(
-                        () -> {
-                          if (closed || active.get() != trial) {
-                            result.completeExceptionally(
-                                new CancellationException("trial_no_longer_active"));
-                            return;
-                          }
-                          if (proposal == null
-                              || trial.attempted.contains(attemptKey(fresh, proposal.program()))) {
-                            String reason =
-                                proposal == null
-                                    ? "revision_unavailable"
-                                    : "unchanged_failed_recovery_instructions";
-                            record(trial, "revision_rejected", Map.of("reason", reason));
-                            result.completeExceptionally(new IllegalArgumentException(reason));
-                            return;
-                          }
-                          trial.source = proposal.program();
-                          trial.sourceContext = fresh;
-                          trial.teacher = proposal.teacher();
-                          record(
-                              trial,
-                              "revision_proposed",
-                              Map.of(
-                                  "program",
-                                  trial.source,
-                                  "observation",
-                                  fresh.observation(),
-                                  "teacher",
-                                  trial.teacher));
-                          result.complete(trial.source);
-                        }))
-                      result.completeExceptionally(
-                          new IllegalStateException("revision_io_unavailable"));
-                  });
-          if (!accepted)
-            result.completeExceptionally(new IllegalStateException("revision_queue_busy"));
+          submitRevision(trial, fresh, report, now, result, false);
         })) result.completeExceptionally(new IllegalStateException("revision_io_unavailable"));
     return result;
+  }
+
+  /** A duplicate receives concrete feedback once before the unchanged proposal is deferred. */
+  private void submitRevision(
+      Trial trial,
+      SkillContext fresh,
+      Map<String, Object> report,
+      long now,
+      CompletableFuture<SkillProgram> result,
+      boolean corrected) {
+    boolean accepted =
+        inference.submit(
+            "skill-revision:" + trial.id,
+            SYSTEM,
+            new Gson().toJson(report),
+            ReasoningMode.RECOVERY,
+            SCHEMA,
+            now + 180_000,
+            text -> new Proposed(SkillProgram.parse(text), teacher.get()),
+            proposal -> {
+              if (!enqueue(
+                  () -> {
+                    if (closed || active.get() != trial) {
+                      result.completeExceptionally(
+                          new CancellationException("trial_no_longer_active"));
+                      return;
+                    }
+                    boolean duplicate =
+                        proposal != null
+                            && (trial.attempted.contains(attemptKey(fresh, proposal.program()))
+                                || library.repeatedFailure(fresh.key(), proposal.program()));
+                    if (duplicate && !corrected) {
+                      var repair = new LinkedHashMap<String, Object>(report);
+                      repair.put("unexecuted_duplicate", proposal.program());
+                      repair.put(
+                          "revision_feedback",
+                          "These exact instructions already failed with this terrain, position,"
+                              + " goal and inventory. Change the failed action or its"
+                              + " prerequisites, not only the explanation. Use the supplied"
+                              + " obstruction evidence to choose a different reachable approach,"
+                              + " clearance or support.");
+                      record(trial, "revision_correction_requested", repair);
+                      submitRevision(
+                          trial, fresh, repair, System.currentTimeMillis(), result, true);
+                      return;
+                    }
+                    if (proposal == null || duplicate) {
+                      String reason =
+                          proposal == null
+                              ? "revision_unavailable"
+                              : "unchanged_failed_recovery_instructions";
+                      record(
+                          trial,
+                          "revision_rejected",
+                          Map.of(
+                              "reason",
+                              reason,
+                              "observation",
+                              fresh.observation(),
+                              "unexecuted_program",
+                              proposal == null ? "none" : proposal.program()));
+                      result.completeExceptionally(new IllegalArgumentException(reason));
+                      return;
+                    }
+                    trial.source = proposal.program();
+                    trial.sourceContext = fresh;
+                    trial.teacher = proposal.teacher();
+                    record(
+                        trial,
+                        "revision_proposed",
+                        Map.of(
+                            "program",
+                            trial.source,
+                            "observation",
+                            fresh.observation(),
+                            "teacher",
+                            trial.teacher));
+                    result.complete(trial.source);
+                  }))
+                result.completeExceptionally(new IllegalStateException("revision_io_unavailable"));
+            });
+    if (!accepted) result.completeExceptionally(new IllegalStateException("revision_queue_busy"));
   }
 
   private static String attemptKey(SkillContext context, SkillProgram program) {
     return context.map().fingerprint
         + ":"
         + context.origin()
+        + ":"
+        + context.goal()
+        + ":"
+        + context.reach2()
+        + ":"
+        + new TreeMap<>(context.inventory())
         + ":"
         + new Gson().toJson(program.steps());
   }

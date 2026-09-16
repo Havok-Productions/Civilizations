@@ -78,6 +78,7 @@ final class RouteDesign {
             && ground.add(0, b.height(), 0).distance2(g.add(0, 1, 0)) <= 21
             && Math.abs(ground.y() + b.height() - g.y() - 1) <= 3
             && s.solid(g)
+            && s.terrain.dry(g.add(0, 1, 0))
             && s.clear(g.add(0, 1, 0))
             && s.clear(g.add(0, 2, 0))) {
           stand = g.add(0, 1, 0);

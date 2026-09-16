@@ -575,19 +575,30 @@ public final class Settlement {
   }
 
   public synchronized boolean available(String id, String worker, long now) {
+    return unavailableReason(id, worker, now).isEmpty();
+  }
+
+  /** The same admission decision supplies both scheduling and diagnostic explanations. */
+  public synchronized String unavailableReason(String id, String worker, long now) {
     Job j = find(id);
-    if (retired || j == null || j.complete || j.retryAfter > now) return false;
+    if (retired) return "village_retired";
+    if (j == null) return "task_missing";
+    if (j.complete) return "task_completed";
+    if (j.retryAfter > now)
+      return "retry_cooldown_ms=" + (j.retryAfter - now) + "; " + j.blockedReason;
     for (Job prior : data.jobs) {
       if (prior.id.equals(j.id)) break;
-      if (prior.target.equals(j.target) && !prior.project.equals(j.project)) return false;
+      if (prior.target.equals(j.target) && !prior.project.equals(j.project))
+        return "target_reserved_by=" + prior.id + "; project=" + prior.project;
     }
     if (j.project.startsWith("design-")
         && data.jobs.stream()
             .anyMatch(
                 prior ->
                     prior.project.equals(j.project) && !prior.complete && prior.phase < j.phase))
-      return false;
-    if (j.owner != null && !worker.equals(j.owner) && j.leaseUntil > now) return false;
+      return "unfinished_preparation_phase_before=" + j.phase + "; project=" + j.project;
+    if (j.owner != null && !worker.equals(j.owner) && j.leaseUntil > now)
+      return "claimed_by=" + j.owner + "; lease_remaining_ms=" + (j.leaseUntil - now);
     if (j.project.startsWith("wall-")
         && data.jobs.stream()
             .anyMatch(
@@ -596,7 +607,7 @@ public final class Settlement {
                         && !prior.complete
                         && prior.target.x() == j.target.x()
                         && prior.target.z() == j.target.z()
-                        && prior.target.y() < j.target.y())) return false;
+                        && prior.target.y() < j.target.y())) return "unfinished_wall_support";
     if (j.project.split("@", 2)[0].equals("house")) {
       String origin = j.project.contains("@") ? j.project.substring(j.project.indexOf('@')) : "";
       if (data.projects.stream()
@@ -604,28 +615,30 @@ public final class Settlement {
               p ->
                   p.startsWith("wall-")
                       && (p.contains("@") ? p.substring(p.indexOf('@')) : "").equals(origin))
-          .anyMatch(p -> !allComplete(p))) return false;
+          .anyMatch(p -> !allComplete(p))) return "unfinished_neighborhood_wall";
       if (data.jobs.stream()
           .anyMatch(
               prior ->
                   prior.project.equals(j.project)
                       && !prior.complete
-                      && prior.target.y() < j.target.y())) return false;
+                      && prior.target.y() < j.target.y())) return "unfinished_lower_house_layer";
       if (j.material.equals("WHITE_BED")
           && data.jobs.stream()
               .anyMatch(
                   prior ->
                       prior.project.equals(j.project)
                           && !prior.complete
-                          && !prior.material.equals("WHITE_BED"))) return false;
+                          && !prior.material.equals("WHITE_BED")))
+        return "unfinished_house_before_bed";
     }
     // Mine steps are ordered: no tunneling through a still-solid staircase.
     if (j.kind == Job.Kind.MINE)
       for (Job prior : data.jobs) {
         if (prior.id.equals(j.id)) break;
-        if (prior.project.equals(j.project) && !prior.complete) return false;
+        if (prior.project.equals(j.project) && !prior.complete)
+          return "unfinished_mine_step=" + prior.id;
       }
-    return true;
+    return "";
   }
 
   public synchronized boolean renew(String id, String worker, long now) {

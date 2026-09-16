@@ -52,7 +52,11 @@ public final class SkillLibrary {
   }
 
   public SkillProgram reusable(String context) {
-    Experience e = get(context);
+    Experience e =
+        records.values().stream()
+            .filter(v -> v.context().equals(context) && v.successes() > 0 && v.failures() == 0)
+            .max(Comparator.comparingInt(Experience::successes).thenComparingLong(Experience::time))
+            .orElse(null);
     return e != null && e.successes() > 0 && e.failures() == 0
         ? SkillProgram.parse(e.source())
         : null;
@@ -79,7 +83,7 @@ public final class SkillLibrary {
       String evidence,
       long now)
       throws IOException {
-    Experience previous = get(context);
+    Experience previous = records.get(context + ":" + program.steps().toString());
     boolean same = previous != null && sameInstructions(previous.source(), program.source());
     int successes = (same ? previous.successes() : 0) + (success ? 1 : 0),
         failures = (same ? previous.failures() : 0) + (success ? 0 : 1);

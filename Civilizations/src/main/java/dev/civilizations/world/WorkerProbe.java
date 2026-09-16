@@ -48,7 +48,26 @@ final class WorkerProbe {
             .run(
                 plugin,
                 t ->
-                    plugin.connections().read(() -> reply.accept(command(action, jobId, duration))),
+                    plugin
+                        .connections()
+                        .read(
+                            () -> {
+                              var lines = command(action, jobId, duration);
+                              plugin.probeEvent(
+                                  village.id(),
+                                  entity.getUniqueId().toString(),
+                                  "probe_command",
+                                  Map.of(
+                                      "action",
+                                      action,
+                                      "requested_task",
+                                      jobId,
+                                      "reply",
+                                      lines,
+                                      "attempt_active",
+                                      active()));
+                              reply.accept(lines);
+                            }),
                 () -> reply.accept(List.of("Worker unloaded before the probe command could run.")));
     if (scheduled == null) reply.accept(List.of("Worker is no longer loaded."));
   }
@@ -80,7 +99,8 @@ final class WorkerProbe {
                           + j.target.key()
                           + " | available="
                           + village.available(j.id, worker, now)
-                          + (j.blockedReason.isEmpty() ? "" : " | " + j.blockedReason)));
+                          + " | "
+                          + village.unavailableReason(j.id, worker, now)));
       return lines;
     }
     if (action.equals("cancel")) {
@@ -100,6 +120,7 @@ final class WorkerProbe {
     Job selected;
     if (requested.equalsIgnoreCase("auto")) {
       selected = current.get();
+      if (selected != null && !village.available(selected.id, worker, now)) selected = null;
       if (selected == null)
         selected =
             village.jobs().stream()
@@ -112,16 +133,25 @@ final class WorkerProbe {
         return List.of("Job ID must identify exactly one task; use probe jobs.");
       selected = matches.getFirst();
     }
-    if (selected == null)
+    if (selected == null) {
+      Map<String, Long> reasons =
+          village.jobs().stream()
+              .filter(j -> !j.complete)
+              .collect(
+                  java.util.stream.Collectors.groupingBy(
+                      j -> village.unavailableReason(j.id, worker, now),
+                      TreeMap::new,
+                      java.util.stream.Collectors.counting()));
       return List.of(
-          "No executable queued task. Use probe jobs and /civ debug design; a rejected design has"
-              + " no job to execute.");
+          "No available task for this worker. No execution trial started.",
+          "Queued task blockers: " + reasons,
+          "Retained designs: "
+              + village.proposals().stream().map(p -> p.kind() + " | " + p.reason()).toList(),
+          "Use /civ debug probe jobs to inspect individual tasks.");
+    }
     if (!village.available(selected.id, worker, now))
       return List.of(
-          "Task unavailable: completed, claimed, waiting on predecessors or retry cooldown. "
-              + selected.blockedReason
-              + " | retryAfter="
-              + selected.retryAfter);
+          "No execution trial started: " + village.unavailableReason(selected.id, worker, now));
     attempt =
         new TaskProbe(selected, now, duration, here(), InventoryOps.summary(entity.getInventory()));
     reported = false;

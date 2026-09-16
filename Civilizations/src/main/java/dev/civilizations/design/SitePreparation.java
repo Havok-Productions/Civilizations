@@ -49,11 +49,29 @@ final class SitePreparation {
       Pos column = ground.get(i), foundation = new Pos(column.x(), levels[i], column.z());
       s.require(
           s.terrain.natural(foundation) && s.terrain.dry(foundation),
-          "Route grading lacks dry natural support at " + foundation.key());
+          "Route grading lacks dry natural support at "
+              + foundation.key()
+              + " (support="
+              + s.terrain.type(foundation)
+              + "; nearby="
+              + surroundings(s, foundation)
+              + ")");
       for (int y = levels[i] + 1; y <= column.y() + height; y++)
         targets.add(new Pos(column.x(), y, column.z()));
     }
     clear(s, targets);
+  }
+
+  private static Map<String, List<String>> surroundings(DesignSite s, Pos at) {
+    Map<String, List<String>> result = new TreeMap<>();
+    for (int x = -1; x <= 1; x++)
+      for (int y = -1; y <= 1; y++)
+        for (int z = -1; z <= 1; z++) {
+          Pos p = at.add(x, y, z);
+          if (s.terrain.fluid(p) || s.terrain.type(p).equals("UNKNOWN"))
+            result.computeIfAbsent(s.terrain.type(p), k -> new ArrayList<>()).add(p.key());
+        }
+    return result;
   }
 
   private static void clear(DesignSite s, Set<Pos> volume) {
@@ -66,7 +84,9 @@ final class SitePreparation {
       s.require(
           !s.occupied.test(p), "Site preparation intersects a protected structure at " + p.key());
       s.require(
-          SiteMaterials.vegetation(s.type(p)) || NavigationTerrain.salvageable(s.terrain, p),
+          SiteMaterials.vegetation(s.type(p))
+              || NavigationTerrain.salvageable(s.terrain, p)
+              || mineable(s, p),
           "Site obstacle needs classification or another layout at "
               + p.key()
               + " ("
@@ -97,7 +117,15 @@ final class SitePreparation {
         Pos p = approach.getKey(), stand = approach.getValue();
         if (!accessible.contains(DesignAccess.key(stand))) continue;
         boolean tree = s.type(p).endsWith("_LOG") || s.type(p).endsWith("_LEAVES");
-        s.add(Job.Kind.CLEAR, p, stand, "", tree ? "natural-tree" : null, s.jobs.size());
+        s.add(
+            dev.civilizations.core.HarvestCatalog.mineral(s.type(p))
+                ? Job.Kind.MINE
+                : Job.Kind.CLEAR,
+            p,
+            stand,
+            "",
+            tree ? "natural-tree" : null,
+            s.jobs.size());
         remaining.remove(p);
         advanced = true;
         break;
@@ -107,5 +135,11 @@ final class SitePreparation {
           "Preparation needs an approach or scaffold before clearing "
               + remaining.stream().limit(4).map(Pos::key).toList());
     }
+  }
+
+  private static boolean mineable(DesignSite s, Pos p) {
+    return dev.civilizations.core.HarvestCatalog.mineral(s.type(p))
+        && !s.occupied.test(p)
+        && !NavigationTerrain.architectureNear(s.terrain, p, Set.of());
   }
 }

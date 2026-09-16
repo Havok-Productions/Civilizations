@@ -283,10 +283,12 @@ public final class DesignCoordinator implements AutoCloseable {
     report.put(
         "crafting_table", v.craftingTable() == null ? null : relative(view, v.craftingTable()));
     Map<String, Integer> rejected = new TreeMap<>();
+    List<Map<String, Object>> siteFailures = new ArrayList<>();
     List<Map<String, Object>> examples =
-        SiteObservations.candidates(terrain, view, occupied(v), kinds, rejected);
+        SiteObservations.candidates(terrain, view, occupied(v), kinds, rejected, siteFailures);
     report.put("validated_site_examples", examples);
     report.put("site_rejections", rejected);
+    report.put("site_failure_examples", siteFailures);
     report.put(
         "site_instruction",
         "Examples are suggestions, not an allowed list. Propose different coordinates, dimensions,"
@@ -357,7 +359,23 @@ public final class DesignCoordinator implements AutoCloseable {
             ReasoningMode.DESIGN,
             schema,
             now + 180_000,
-            text -> Blueprint.parse(text, origin),
+            text -> {
+              try {
+                return Blueprint.parse(text, origin);
+              } catch (RuntimeException invalid) {
+                write(
+                    v,
+                    "invalid-response",
+                    Map.of(
+                        "source",
+                        text == null ? "" : text.substring(0, Math.min(16000, text.length())),
+                        "reason",
+                        invalid.toString(),
+                        "origin",
+                        origin));
+                throw invalid;
+              }
+            },
             blueprint -> {
               if (closed) {
                 pending.remove(v.id());
@@ -422,6 +440,18 @@ public final class DesignCoordinator implements AutoCloseable {
                     "needs_revision", saved.reason(), System.currentTimeMillis() + 2 * interval);
             current.proposal(waiting);
             write(current, "salvage", Map.of("proposal", waiting, "result", why));
+            write(
+                current,
+                "salvage-response",
+                Map.of(
+                    "proposal_id",
+                    saved.id(),
+                    "model_response",
+                    response == null ? "No model output available" : response,
+                    "selected_revision",
+                    "none",
+                    "reason",
+                    why));
             feedback(current, why);
           });
       pending.remove(v.id());

@@ -121,7 +121,7 @@ final class DesignSite {
     Job j = new Job(kind, project, target, stand, material, terrain.type(target), data);
     j.phase = phase;
     jobs.add(j);
-    if (kind == Job.Kind.CLEAR) prepared.put(target, "AIR");
+    if (kind == Job.Kind.CLEAR || kind == Job.Kind.MINE) prepared.put(target, "AIR");
     placed.put(
         target,
         (kind == Job.Kind.MINE || kind == Job.Kind.CLEAR)

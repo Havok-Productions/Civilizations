@@ -49,6 +49,10 @@ final class RecoveryRevision {
     failure.put("position", feet);
     failure.put("original_goal", trial.context.goal());
     failure.put("inventory", InventoryOps.summary(actor.getInventory()));
+    if (org.bukkit.Bukkit.isOwnedByCurrentRegion(actor)) {
+      var worker = plugin.worker(actor.getUniqueId().toString());
+      if (worker != null) failure.put("navigation_evidence", worker.navigationEvidence());
+    }
     survey =
         plugin
             .navigation()
