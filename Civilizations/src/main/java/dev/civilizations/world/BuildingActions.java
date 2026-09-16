@@ -19,6 +19,7 @@ public final class BuildingActions {
   private final Villager entity;
   private final BiConsumer<Long, String> failure;
   private final LongConsumer completion;
+  private final BiConsumer<Long, PlacementSpace.Obstruction> waiting;
   private Job job;
   private long nextAction;
 
@@ -26,11 +27,13 @@ public final class BuildingActions {
       CivilizationsPlugin plugin,
       Villager entity,
       BiConsumer<Long, String> failure,
-      LongConsumer completion) {
+      LongConsumer completion,
+      BiConsumer<Long, PlacementSpace.Obstruction> waiting) {
     this.plugin = plugin;
     this.entity = entity;
     this.failure = failure;
     this.completion = completion;
+    this.waiting = waiting;
   }
 
   public void execute(Job job, Block block, long now) {
@@ -87,8 +90,7 @@ public final class BuildingActions {
     Map<Material, Integer> cost = Map.of(material, 1);
     if (!InventoryOps.has(entity.getInventory(), cost)) return;
     Block head = null;
-    BlockData data =
-        job.blockData == null ? material.createBlockData() : Bukkit.createBlockData(job.blockData);
+    BlockData data = PlacementSpace.data(job);
     if (data instanceof Bed bed) {
       head = block.getRelative(bed.getFacing());
       if (!replaceable(head)
@@ -105,6 +107,12 @@ public final class BuildingActions {
     }
     if (!InventoryOps.canCraft(entity.getInventory(), material, cost)) {
       fail(now, "Inventory full: cannot retain crafting leftovers");
+      return;
+    }
+    // Recheck after permission listeners and immediately before mutating either half of a bed.
+    var obstruction = PlacementSpace.obstruction(block, data);
+    if (obstruction != null) {
+      waiting.accept(now, obstruction);
       return;
     }
     BlockState previous = block.getState(), headBefore = head == null ? null : head.getState();

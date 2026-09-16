@@ -15,11 +15,25 @@ public final class WorkPositions {
 
   public static Pos choose(
       Villager actor, Pos preferred, Pos target, int reach, java.util.Set<Pos> rejected) {
+    return choose(actor, preferred, target, reach, rejected, p -> true);
+  }
+
+  static Pos choose(
+      Villager actor,
+      Pos preferred,
+      Pos target,
+      int reach,
+      java.util.Set<Pos> rejected,
+      java.util.function.Predicate<Pos> allowed) {
     if (!Bukkit.isOwnedByCurrentRegion(at(actor, target), 1)) return preferred;
     var current = actor.getLocation();
     Pos from = new Pos(current.getBlockX(), current.getBlockY(), current.getBlockZ());
     Pos best =
-        !rejected.contains(preferred) && usable(actor, preferred, target, reach) ? preferred : null;
+        !rejected.contains(preferred)
+                && allowed.test(preferred)
+                && usable(actor, preferred, target, reach)
+            ? preferred
+            : null;
     // A higher block often cannot be seen from the immediately adjacent cell because the lower
     // wall occludes it. Search the actual work envelope, including positions farther from the wall.
     int radius =
@@ -31,6 +45,7 @@ public final class WorkPositions {
           if (x == 0 && z == 0) continue;
           Pos candidate = target.add(x, dy, z);
           if (!rejected.contains(candidate)
+              && allowed.test(candidate)
               && (best == null || from.distance2(candidate) < from.distance2(best))
               && usable(actor, candidate, target, reach)) best = candidate;
         }

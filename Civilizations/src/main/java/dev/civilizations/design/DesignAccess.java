@@ -7,7 +7,15 @@ import java.util.*;
 /** Rejects disconnected islands and cliff-top sites before villagers are assigned work. */
 final class DesignAccess {
   static void verify(DesignSite s) {
-    Set<String> reached = reachable(s, s.prepared, s.jobs.stream().map(j -> j.stand).toList());
+    var targets =
+        s.jobs.getFirst().kind == dev.civilizations.core.Job.Kind.MINE
+            ? List.of(s.jobs.getFirst().stand)
+            : s.jobs.stream()
+                .filter(j -> j.kind != dev.civilizations.core.Job.Kind.CLEAR)
+                .map(j -> j.stand)
+                .toList();
+    if (targets.isEmpty()) return; // Clearing stages already verified their own approaches.
+    Set<String> reached = reachable(s, s.prepared, targets, false);
     if (s.jobs.getFirst().kind == dev.civilizations.core.Job.Kind.MINE)
       s.require(
           reached.contains(key(s.jobs.getFirst().stand)),
@@ -21,7 +29,12 @@ final class DesignAccess {
                   + j.stand.key());
   }
 
-  static Set<String> reachable(DesignSite s, Map<Pos, String> changes, Collection<Pos> targets) {
+  /** Search only until the requested work positions (or one next clearing approach) are reached. */
+  static Set<String> reachable(
+      DesignSite s, Map<Pos, String> changes, Collection<Pos> targets, boolean any) {
+    Set<String> pending = new HashSet<>();
+    targets.forEach(p -> pending.add(key(p)));
+    if (pending.isEmpty()) return Set.of();
     Terrain terrain =
         new Terrain() {
           public int height(int x, int z) {
@@ -69,6 +82,7 @@ final class DesignAccess {
           if (p != null && Math.abs(p.y() - c.y()) <= 3) {
             queue.add(p);
             reached.add(key(p));
+            if (pending.remove(key(p)) && (any || pending.isEmpty())) return reached;
             break outer;
           }
         }
@@ -78,11 +92,18 @@ final class DesignAccess {
       for (int[] d : new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
         int x = p.x() + d[0], z = p.z() + d[1];
         if (Math.abs((long) x - c.x()) > extent || Math.abs((long) z - c.z()) > extent) continue;
-        s.require(
-            reached.size() < 20000,
-            "Access-search work budget exhausted; divide the proposed project into stages");
         Pos q = walk(terrain, x, z, p.y(), 1);
-        if (q != null && Math.abs(q.y() - p.y()) <= 1 && reached.add(key(q))) queue.add(q);
+        if (q != null && Math.abs(q.y() - p.y()) <= 1 && reached.add(key(q))) {
+          if (pending.remove(key(q)) && (any || pending.isEmpty())) return reached;
+          s.require(
+              reached.size() < 20000,
+              "Access search incomplete after "
+                  + reached.size()
+                  + " walking cells; still seeking "
+                  + pending.stream().sorted().limit(4).toList()
+                  + "; this is a search budget limit, not proof of disconnected terrain");
+          queue.add(q);
+        }
       }
     }
     return reached;

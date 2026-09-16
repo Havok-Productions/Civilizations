@@ -76,7 +76,7 @@ final class SitePreparation {
     }
     while (!remaining.isEmpty()) {
       boolean advanced = false;
-      Set<String> accessible = DesignAccess.reachable(s, s.prepared, volume);
+      Map<Pos, Pos> approaches = new LinkedHashMap<>();
       for (Pos p : List.copyOf(remaining)) {
         String above = s.type(p.add(0, 1, 0));
         boolean tree = s.type(p).endsWith("_LOG") || s.type(p).endsWith("_LEAVES");
@@ -88,7 +88,15 @@ final class SitePreparation {
         } catch (IllegalArgumentException unavailable) {
           continue;
         }
+        approaches.put(p, stand);
+      }
+      // One reachable next stage is enough. Obstructed later stages become accessible after
+      // earlier clearing; they must not force an exhaustive flood of unrelated open terrain.
+      Set<String> accessible = DesignAccess.reachable(s, s.prepared, approaches.values(), true);
+      for (var approach : approaches.entrySet()) {
+        Pos p = approach.getKey(), stand = approach.getValue();
         if (!accessible.contains(DesignAccess.key(stand))) continue;
+        boolean tree = s.type(p).endsWith("_LOG") || s.type(p).endsWith("_LEAVES");
         s.add(Job.Kind.CLEAR, p, stand, "", tree ? "natural-tree" : null, s.jobs.size());
         remaining.remove(p);
         advanced = true;

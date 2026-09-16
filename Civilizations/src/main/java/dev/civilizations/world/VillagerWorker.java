@@ -89,7 +89,7 @@ public final class VillagerWorker {
             });
     nearby = new NearbyWork(plugin, entity, village);
     workPose = new WorkPose(plugin, entity);
-    building = new BuildingActions(plugin, entity, this::fail, this::complete);
+    building = new BuildingActions(plugin, entity, this::fail, this::complete, this::placementWait);
     navigation = new WorkerNavigation(plugin, entity, village, this::navigationFailed);
     emergency = new WorkerEmergency(plugin, entity, village);
     deliveries = new DeliveryActions(plugin, entity, village, navigation);
@@ -301,11 +301,13 @@ public final class VillagerWorker {
               && location(chest).getBlock().getState() instanceof Chest c)
             village.stock(chest, InventoryOps.summary(c.getInventory()), now);
       }
+      if (job != null && !village.renew(job.id, id, now)
+          || supplyFor != null && !village.renew(supplyFor.id, id, now)) reset();
+      // Observe completed work before publishing supplies, gathering, or accepting a courier.
+      if (completeIfSatisfied(now)) return;
       requests = currentRequests();
       deliveries.publish(at, job, supplyFor, requests, now);
       nearby.tick(requests, now);
-      if (job != null && !village.renew(job.id, id, now)
-          || supplyFor != null && !village.renew(supplyFor.id, id, now)) reset();
       if (!navigation.experimentActive() && deliveries.tick(now)) {
         movementControl.working(true);
         recovery.pause(now);
@@ -940,6 +942,7 @@ public final class VillagerWorker {
       reset();
       return;
     }
+    if (completeIfSatisfied(now)) return;
     if (job.kind == Job.Kind.MINE
         && !prepareTools(Math.max(1, ToolRecipes.required(job.expected)), now, at)) return;
     if (!ingredients(now, at)) {
@@ -963,16 +966,12 @@ public final class VillagerWorker {
     }
     Block block = location(job.target).getBlock();
     workBlockBefore = block.getBlockData().getAsString();
-    if ((job.kind == Job.Kind.MINE || job.kind == Job.Kind.CLEAR) && block.getType().isAir()) {
-      complete(now);
-      return;
-    }
-    if (job.kind == Job.Kind.PLACE
-        && block.getType().name().equals(job.material)
-        && (!(block.getBlockData() instanceof Bed bed)
-            || block.getRelative(bed.getFacing()).getType() == block.getType())) {
-      complete(now);
-      return;
+    if (job.kind == Job.Kind.PLACE) {
+      var obstruction = PlacementSpace.obstruction(block, PlacementSpace.data(job));
+      if (obstruction != null) {
+        placementWait(now, obstruction);
+        return;
+      }
     }
     if (!workPose.accessible(block)) {
       workPose.reset();
@@ -1015,6 +1014,56 @@ public final class VillagerWorker {
         complete(now);
       } else fail(now, result.problem());
     } else building.execute(job, block, now);
+  }
+
+  private boolean completeIfSatisfied(long now) {
+    if (job == null || !owns(job.target, 1)) return false;
+    Block block = location(job.target).getBlock();
+    boolean satisfied =
+        (job.kind == Job.Kind.MINE || job.kind == Job.Kind.CLEAR) && block.getType().isAir()
+            || job.kind == Job.Kind.PLACE
+                && block.getType().name().equals(job.material)
+                && (!(block.getBlockData() instanceof Bed bed)
+                    || block.getRelative(bed.getFacing()).getType() == block.getType());
+    if (!satisfied) return false;
+    workBlockBefore = block.getBlockData().getAsString();
+    complete(now);
+    return true;
+  }
+
+  private void placementWait(long now, PlacementSpace.Obstruction obstruction) {
+    workPose.reset();
+    recovery.pause(now);
+    var shapes = PlacementSpace.shapes(location(job.target).getBlock(), PlacementSpace.data(job));
+    // Step out even when another occupant happened to be returned first by the world query.
+    if (shapes.stream().anyMatch(box -> box.overlaps(entity.getBoundingBox()))) {
+      Pos stand =
+          WorkPositions.choose(
+              entity,
+              job.stand,
+              job.target,
+              WorkerTuning.value(plugin, entity, "construction.reach_squared"),
+              Set.of(),
+              p -> PlacementSpace.fits(entity, p, shapes));
+      if (stand != null) navigation.walkExact(stand, 0, now);
+      workWait(
+          "stepping out of placement space at "
+              + obstruction.block().key()
+              + (stand == null
+                  ? "; no clear supported stand observed yet"
+                  : " toward " + stand.key()));
+    } else {
+      navigation.stop();
+      entity.getPathfinder().stopPathfinding();
+      workWait(
+          "placement space at "
+              + obstruction.block().key()
+              + " occupied by "
+              + obstruction.type()
+              + " "
+              + obstruction.entity()
+              + "; task and materials retained");
+    }
   }
 
   private void gather(long now, Pos at) {
