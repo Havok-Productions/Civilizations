@@ -22,6 +22,7 @@ final class SmeltingActions {
   private String output = "";
   private long lastProgress, nextReport;
   private int cookTime = -1;
+  private boolean missingFuel;
 
   SmeltingActions(
       CivilizationsPlugin plugin,
@@ -48,6 +49,26 @@ final class SmeltingActions {
 
   boolean processing() {
     return batch != null;
+  }
+
+  /** Keep the batch, but expose its missing fuel to normal chest/delivery/gathering recovery. */
+  boolean needsFuel(Pos at, long now) {
+    if (batch == null) return false;
+    if (!Bukkit.isOwnedByCurrentRegion(location(batch), 1))
+      return missingFuel
+          && SmeltingFuel.choose(InventoryOps.summary(actor.getInventory()), Map.of()) == null;
+    if (!(location(batch).getBlock().getState() instanceof Furnace furnace)) return false;
+    var inventory = furnace.getInventory();
+    var result = inventory.getResult();
+    missingFuel =
+        SmeltingFuel.missing(
+            inventory.getSmelting() != null,
+            result != null && result.getType().name().equals(output),
+            furnace.getBurnTime() > 0,
+            inventory.getFuel() != null && !inventory.getFuel().getType().isAir(),
+            InventoryOps.summary(actor.getInventory()));
+    if (missingFuel) lastProgress = now;
+    return missingFuel;
   }
 
   boolean resumePending(Pos at, long now) {
@@ -207,7 +228,11 @@ final class SmeltingActions {
     if (input != null && !input.getType().isAir() || result != null && !result.getType().isAir()) {
       village
           .knowledge()
-          .block("route:" + p.key(), "Furnace is processing another recipe", now, 15000);
+          .block(
+              "station_busy:FURNACE:" + p.key(),
+              "Furnace is processing another recipe",
+              now,
+              15000);
       return;
     }
     var carried = InventoryOps.summary(actor.getInventory());

@@ -156,4 +156,45 @@ class ProgressContractsTest {
         PolicyEvidence.measure(ticket, true, Map.of("executor_result", "world_changed"), 2000)
             .cost());
   }
+
+  @Tag("storage")
+  @Tag("tasks")
+  @Tag("crafting")
+  @Tag("navigation")
+  @Tag("interaction")
+  @Test
+  void capacityRecoveryCoversCraftingHarvestAndRouteDiagnostics() {
+    for (String reason :
+        List.of(
+            "Tool crafting needs inventory space; ingredients retained",
+            "No inventory space for farm preparation drops; plot retained",
+            "inventory_full_for_obstacle_drops",
+            "Inventory full; smelted output retained in furnace",
+            "No room for site-clearance drops"))
+      assertEquals(WorkFailure.INVENTORY_CAPACITY, WorkFailure.classify(reason), reason);
+    assertEquals(
+        WorkFailure.OTHER,
+        WorkFailure.classify("No dry unreserved crafting-table site within reach"));
+  }
+
+  @Tag("storage")
+  @Tag("settlements")
+  @Tag("interaction")
+  @Test
+  void remoteCacheMetadataSurvivesSaveAndOldCachesRemainDiscoverable() throws Exception {
+    var village = CoreTest.village();
+    var cache =
+        new Settlement.SupplyCache(
+            UUID.randomUUID().toString(), "p", "worker", new Pos(200, 65, 0), "BIRCH_LOG");
+    village.cache(cache);
+    var store = new StateStore(root);
+    store.save(List.of(village.snapshot()));
+    var restored = store.load(message -> fail(message)).getFirst().caches().getFirst();
+    assertTrue(restored.wanted(Map.of("LOG", 1)));
+    assertFalse(restored.wanted(Map.of("COAL", 1)));
+    assertEquals(cache, restored);
+    assertTrue(
+        new Settlement.SupplyCache("legacy", "p", "w", new Pos(0, 65, 0))
+            .wanted(Map.of("COAL", 1)));
+  }
 }

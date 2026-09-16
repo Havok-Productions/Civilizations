@@ -10,6 +10,12 @@ import org.bukkit.entity.Villager;
 /** Turn toward a specific block, let the pose be visible, then verify facing before work. */
 public final class WorkPose {
   static final double EYE_REACH = 5;
+
+  static int feetEnvelope(double eyeHeight) {
+    // Reach is measured from the eyes to the target center, not from the feet block.
+    return (int) Math.ceil(Math.pow(EYE_REACH + Math.abs(eyeHeight - .5), 2));
+  }
+
   private final CivilizationsPlugin plugin;
   private final Villager actor;
   private Pos target;

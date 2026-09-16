@@ -173,4 +173,79 @@ class CraftingTest {
         book().withdrawal("TORCH", Map.of("STICK", 2), Map.of("COAL", 20), true));
     assertTrue(book().withdrawal("TORCH", Map.of("TORCH", 1), Map.of("COAL", 20), true).isEmpty());
   }
+
+  @Tag("crafting")
+  @Tag("tasks")
+  @Tag("interaction")
+  @Test
+  void oreOutputAndExecutorBootstrapTheSameToolBeforeGathering() {
+    var recipes = new ArrayList<>(book().snapshot());
+    recipes.add(
+        new CraftingBook.Recipe(
+            "iron", "IRON_INGOT", 1, List.of(List.of("RAW_IRON")), false, true));
+    recipes.add(
+        recipe(
+            "IRON_BLOCK",
+            1,
+            true,
+            "IRON_INGOT",
+            "IRON_INGOT",
+            "IRON_INGOT",
+            "IRON_INGOT",
+            "IRON_INGOT",
+            "IRON_INGOT",
+            "IRON_INGOT",
+            "IRON_INGOT",
+            "IRON_INGOT"));
+    var book = new CraftingBook(recipes);
+    var job =
+        new Job(
+            Job.Kind.PLACE,
+            "iron",
+            new Pos(1, 65, 1),
+            new Pos(0, 65, 1),
+            "IRON_BLOCK",
+            "AIR",
+            null);
+    var inv = new HashMap<String, Integer>();
+    for (int tick = 0; tick < 24 && ToolRecipes.tier(inv) < 2; tick++) {
+      var planned = dev.civilizations.world.WorkerPlan.next(book, job.material, inv, true, true);
+      var step = planned.step();
+      if (step.action().equals("gather")) {
+        assertEquals(
+            Set.of(planned.resource()),
+            dev.civilizations.world.WorkerPlan.needed(book, job, inv, true, true).keySet());
+        assertTrue(
+            HarvestCatalog.required(step.item()) <= ToolRecipes.tier(inv),
+            "Requested ore before making its tool");
+        inv.merge(step.item(), step.amount(), Integer::sum);
+      } else {
+        assertEquals("craft", step.action());
+        step.cost()
+            .forEach(
+                (m, n) -> {
+                  assertTrue(inv.getOrDefault(m, 0) >= n);
+                  inv.merge(m, -n, Integer::sum);
+                });
+        inv.merge(step.item(), step.amount(), Integer::sum);
+      }
+    }
+    assertEquals(2, ToolRecipes.tier(inv));
+    assertEquals(
+        "RAW_IRON",
+        dev.civilizations.world.WorkerPlan.next(book, job.material, inv, true, true).resource());
+  }
+
+  @Tag("crafting")
+  @Tag("storage")
+  @Tag("interaction")
+  @Test
+  void interruptedSmeltingRequestsFuelOnlyUntilItCanResume() {
+    assertTrue(SmeltingFuel.missing(true, false, false, false, Map.of("RAW_IRON", 1)));
+    assertFalse(SmeltingFuel.missing(true, false, false, false, Map.of("BIRCH_LOG", 1)));
+    assertFalse(SmeltingFuel.missing(true, false, false, true, Map.of()));
+    assertFalse(SmeltingFuel.missing(true, false, true, false, Map.of()));
+    assertFalse(SmeltingFuel.missing(true, true, false, false, Map.of()));
+    assertFalse(SmeltingFuel.missing(false, false, false, false, Map.of()));
+  }
 }

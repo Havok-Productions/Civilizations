@@ -31,7 +31,9 @@ public final class ProjectSupplies {
     Map<String, Integer> keep = new HashMap<>();
     if (job.kind == Job.Kind.PLACE) {
       keep.putAll(
-          plugin.recipes().next(job.material, InventoryOps.summary(inv), true, true).cost());
+          WorkerPlan.next(plugin.recipes(), job.material, InventoryOps.summary(inv), true, true)
+              .step()
+              .cost());
       keep.put(job.material, 1);
     }
     int bestPick = -1, tier = 0;
@@ -82,7 +84,8 @@ public final class ProjectSupplies {
             item.getUniqueId().toString(),
             project,
             actor.getUniqueId().toString(),
-            pos(item.getLocation())));
+            pos(item.getLocation()),
+            original.getType().name()));
     plugin.debug(
         village.id(),
         actor.getUniqueId().toString(),
@@ -121,10 +124,16 @@ public final class ProjectSupplies {
           ? !village.allComplete(cache.project())
               || !village.mayShareSurplus(actor.getUniqueId().toString())
           : !cache.project().equals(job.project)) continue;
+      if (!surplus && !cache.wanted(wanted)) continue;
+      if (village.knowledge().blocked("route:" + cache.position().key(), now)) continue;
       Location location =
           new Location(
               actor.getWorld(), cache.position().x(), cache.position().y(), cache.position().z());
-      if (!Bukkit.isOwnedByCurrentRegion(location, 1)) continue;
+      if (!Bukkit.isOwnedByCurrentRegion(location, 1)) {
+        // The saved position/material are safe to use here; inspect the item only after arrival.
+        navigation.walkExact(cache.position(), 0, now);
+        return true;
+      }
       Entity stored = actor.getWorld().getEntity(UUID.fromString(cache.entity()));
       if (!(stored instanceof Item item) || !item.isValid()) {
         if (actor.getWorld().isChunkLoaded(cache.position().x() >> 4, cache.position().z() >> 4))
@@ -133,6 +142,13 @@ public final class ProjectSupplies {
       }
       if (!Bukkit.isOwnedByCurrentRegion(item)) continue;
       ItemStack contents = item.getItemStack().clone();
+      village.cache(
+          new Settlement.SupplyCache(
+              cache.entity(),
+              cache.project(),
+              cache.owner(),
+              pos(item.getLocation()),
+              contents.getType().name()));
       var meta = contents.getItemMeta();
       if (!meta.getPersistentDataContainer().has(bundle)) {
         village.removeCache(cache.entity());
@@ -156,7 +172,8 @@ public final class ProjectSupplies {
       }
       Pos actual = pos(item.getLocation());
       village.cache(
-          new Settlement.SupplyCache(cache.entity(), cache.project(), cache.owner(), actual));
+          new Settlement.SupplyCache(
+              cache.entity(), cache.project(), cache.owner(), actual, contents.getType().name()));
       if (actor.getLocation().distanceSquared(item.getLocation()) > 4) {
         navigation.walkExact(actual, 0, now);
         return true;

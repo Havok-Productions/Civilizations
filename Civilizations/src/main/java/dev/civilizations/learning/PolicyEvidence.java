@@ -7,6 +7,21 @@ import java.util.*;
 public final class PolicyEvidence {
   private PolicyEvidence() {}
 
+  public enum SelectionFailure {
+    LOCAL_RESOURCE_SEARCH_EXHAUSTED,
+    NATIVE_ALTERNATIVE_AVAILABLE
+  }
+
+  /** Executor evidence about this choice, not a claim that the model caused a world failure. */
+  public static Map<String, Object> selectionFailure(
+      SelectionFailure kind, Map<String, ?> details) {
+    var result = new LinkedHashMap<String, Object>(details);
+    result.put("policy_fault", true);
+    result.put("selection_failure", kind.name());
+    result.put("basis", "observed failed selection; external interruptions excluded separately");
+    return Map.copyOf(result);
+  }
+
   public static PolicyMeasurement measure(
       CoreAiCoordinator.Ticket ticket, boolean success, Map<String, ?> evidence, long now) {
     if (ticket.choice().version().equals("host-or-model-override"))

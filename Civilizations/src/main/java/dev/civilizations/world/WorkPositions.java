@@ -39,7 +39,9 @@ public final class WorkPositions {
     int radius =
         Math.min(
             (int) Math.ceil(WorkPose.EYE_REACH), (int) Math.ceil(Math.sqrt(Math.max(0, reach))));
-    for (int dy : new int[] {0, -1, 1, -2, -3})
+    int below = (int) Math.ceil(WorkPose.EYE_REACH + actor.getEyeHeight() - .5);
+    int above = (int) Math.ceil(WorkPose.EYE_REACH - actor.getEyeHeight() + .5);
+    for (int dy = -below; dy <= above; dy++)
       for (int x = -radius; x <= radius; x++)
         for (int z = -radius; z <= radius; z++) {
           if (x == 0 && z == 0) continue;

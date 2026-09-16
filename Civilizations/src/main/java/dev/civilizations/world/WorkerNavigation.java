@@ -147,6 +147,13 @@ public final class WorkerNavigation {
   }
 
   public void stop() {
+    stopRoute();
+    rejectedWorkPositions.clear();
+    workApproach = null;
+    workTarget = null;
+  }
+
+  private void stopRoute() {
     if (skillTrial != null) skillTrial.cancel("navigation_cancelled_or_target_changed");
     generation++;
     plugin.navigation().cancel(actor.getUniqueId().toString(), requestPurpose);
@@ -176,12 +183,15 @@ public final class WorkerNavigation {
   }
 
   public void walkWork(Pos stand, Pos target, long now) {
+    walkWork(stand, target, WorkerTuning.value(plugin, actor, "construction.reach_squared"), now);
+  }
+
+  public void walkWork(Pos stand, Pos target, int reach, long now) {
     if (!target.equals(workTarget)) {
       rejectedWorkPositions.clear();
       workTarget = target;
       workApproach = null;
     }
-    int reach = WorkerTuning.value(plugin, actor, "construction.reach_squared");
     if (workApproach != null
         && Bukkit.isOwnedByCurrentRegion(location(target), 1)
         && Bukkit.isOwnedByCurrentRegion(location(workApproach), 1)
@@ -327,7 +337,8 @@ public final class WorkerNavigation {
     nextMove = now + 500;
     Pos at = here();
     if (!destination.equals(lastDestination) || !target.equals(plannedTarget)) {
-      stop();
+      // Trying another stand in this attempt must retain the earlier rejected stands.
+      stopRoute();
       lastDestination = destination;
       plannedTarget = target;
       nextPlan = 0;
@@ -590,6 +601,7 @@ public final class WorkerNavigation {
     if (choice != null) candidates = VillagerPolicies.ordered(candidates, choice, Pos::key);
     java.util.List<java.util.Map<String, Object>> attempts = new java.util.ArrayList<>();
     int nativeAttempts = 0;
+    Pos rejectedSelection = null;
     for (Pos candidate : candidates) {
       if (!Bukkit.isOwnedByCurrentRegion(location(candidate), 1)) {
         event(
@@ -609,6 +621,8 @@ public final class WorkerNavigation {
       nativeAttempts++;
       var path = actor.getPathfinder().findPath(location(candidate));
       if (path == null || path.getFinalPoint() == null) {
+        if (choice != null && choice.options().getFirst().id().equals(candidate.key()))
+          rejectedSelection = candidate;
         attempts.add(java.util.Map.of("candidate", candidate, "reason", "native_path_missing"));
         event(
             "native_path_missing",
@@ -619,6 +633,8 @@ public final class WorkerNavigation {
       Location endLocation = path.getFinalPoint();
       Pos end = new Pos(endLocation.getBlockX(), endLocation.getBlockY(), endLocation.getBlockZ());
       if (end.distance2(candidate) > 2) {
+        if (choice != null && choice.options().getFirst().id().equals(candidate.key()))
+          rejectedSelection = candidate;
         event(
             "native_path_endpoint_mismatch",
             nativeDetails(
@@ -659,6 +675,29 @@ public final class WorkerNavigation {
             true);
         attempts.add(java.util.Map.of("candidate", candidate, "reason", "native_move_rejected"));
         continue;
+      }
+      if (rejectedSelection != null && policyTicket == null) {
+        var rejectedTicket =
+            plugin
+                .coreAi()
+                .begin(
+                    village.id(), actor.getUniqueId().toString(), choice, rejectedSelection.key());
+        plugin
+            .coreAi()
+            .outcome(
+                rejectedTicket,
+                false,
+                PolicyEvidence.selectionFailure(
+                    PolicyEvidence.SelectionFailure.NATIVE_ALTERNATIVE_AVAILABLE,
+                    java.util.Map.of(
+                        "rejected_choice",
+                        rejectedSelection,
+                        "verified_alternative",
+                        candidate,
+                        "map_id",
+                        plan.id(),
+                        "native_attempts",
+                        nativeAttempts)));
       }
       if (selected == null) selectedAt = now;
       selected = candidate;

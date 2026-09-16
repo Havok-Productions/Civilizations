@@ -6,6 +6,15 @@ import java.util.*;
 public final class SmeltingFuel {
   private SmeltingFuel() {}
 
+  public static boolean missing(
+      boolean input,
+      boolean output,
+      boolean burning,
+      boolean fuelInStation,
+      Map<String, Integer> carried) {
+    return input && !output && !burning && !fuelInStation && choose(carried, Map.of()) == null;
+  }
+
   public static String choose(Map<String, Integer> inventory, Map<String, Integer> input) {
     return inventory.keySet().stream()
         .filter(m -> inventory.get(m) > input.getOrDefault(m, 0))

@@ -28,6 +28,11 @@ public final class GatheringActions {
   private long nextWork, nextLocalScan;
   private List<Pos> nearbySites = List.of();
   private boolean needsSupply;
+  private boolean selectionUnavailable;
+
+  public boolean selectionUnavailable() {
+    return selectionUnavailable;
+  }
 
   public GatheringActions(
       CivilizationsPlugin plugin,
@@ -54,6 +59,7 @@ public final class GatheringActions {
       nextLocalScan = 0;
     }
     needsSupply = false;
+    selectionUnavailable = false;
     step(now, at);
     return needsSupply;
   }
@@ -151,10 +157,14 @@ public final class GatheringActions {
                 "result",
                 "No unreserved, unprotected candidate with an unblocked route"));
         needsSupply = !Set.of("SAND", "RED_SAND").contains(resource);
+        // Occupied/protected/reserved sources are not evidence against the selected task.
+        selectionUnavailable = candidates.isEmpty() && expanded.isEmpty();
         return;
       }
     }
-    if (at.distance2(target) > 12) {
+    // The selected upper trunk survives the facing delay. Use the same work envelope next tick.
+    int reach = WorkPose.feetEnvelope(entity.getEyeHeight());
+    if (at.distance2(target) > reach) {
       walk(target, now);
       return;
     }
@@ -172,11 +182,14 @@ public final class GatheringActions {
       for (int h = 0;
           h < 8
               && block.getRelative(BlockFace.UP).getType() == block.getType()
-              && at.distance2(new Pos(block.getX(), block.getY() + 1, block.getZ())) <= 21;
+              && at.distance2(new Pos(block.getX(), block.getY() + 1, block.getZ())) <= reach
+              && WorkPositions.choose(
+                      entity, at, new Pos(block.getX(), block.getY() + 1, block.getZ()), reach)
+                  != null;
           h++) block = block.getRelative(BlockFace.UP);
       target = new Pos(block.getX(), block.getY(), block.getZ());
       // Only fell reachable trunk blocks; never remotely harvest a tall tree.
-      if (at.distance2(target) > 21) {
+      if (at.distance2(target) > reach) {
         plugin.exhausted(village.id(), new Pos(block.getX(), at.y(), block.getZ()));
         fail(now, "Tree trunk is beyond ordinary villager reach");
         return;
@@ -239,7 +252,7 @@ public final class GatheringActions {
       return;
     }
     if (!pose.accessible(block)) {
-      navigation.walkWork(at, target, now);
+      navigation.walkWork(at, target, reach, now);
       return;
     }
     if (!pose.ready(block, now)) return;

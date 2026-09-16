@@ -1,5 +1,5 @@
 name: Civilizations
-version: '2.0.0-alpha.31'
+version: '2.0.0-alpha.32'
 main: dev.civilizations.CivilizationsPlugin
 api-version: '26.1.2'
 folia-supported: true

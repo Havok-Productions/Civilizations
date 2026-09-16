@@ -317,4 +317,53 @@ class CoreAiIntegrationTest {
     while (!ready.getAsBoolean() && System.nanoTime() < end) Thread.sleep(10);
     assertTrue(ready.getAsBoolean());
   }
+
+  @org.junit.jupiter.api.Tag("coreai")
+  @org.junit.jupiter.api.Tag("tasks")
+  @org.junit.jupiter.api.Tag("interaction")
+  @Test
+  void executorSelectionFailuresReachPersistentAutomaticRollback() throws Exception {
+    var path = root.resolve("policies/jobs");
+    var seed = new PolicyLibrary(path, VillagerPolicyCases.jobs());
+    assertTrue(seed.propose("(+ base (+ (* failures 100) (* missing 100)))", TEACHER).accepted());
+    ModelBackend offline =
+        new ModelBackend() {
+          public boolean ready() {
+            return false;
+          }
+
+          public String status() {
+            return "offline";
+          }
+
+          public void close() {}
+
+          public String complete(String a, String b) {
+            throw new AssertionError("No inference expected");
+          }
+        };
+    var warnings = new java.util.concurrent.CopyOnWriteArrayList<String>();
+    try (var queue = new InferenceQueue(offline, 4);
+        var core = new CoreAiCoordinator(root, queue, () -> TEACHER, warnings::add, false, 60000)) {
+      var choice =
+          core.rank(CoreAiCoordinator.Scope.JOBS, VillagerPolicyCases.jobs().get(3).options());
+      for (int i = 0; i < 3; i++) {
+        var ticket = core.begin("v", "w", choice, choice.options().getFirst().id());
+        core.outcome(
+            ticket,
+            false,
+            PolicyEvidence.selectionFailure(
+                PolicyEvidence.SelectionFailure.LOCAL_RESOURCE_SEARCH_EXHAUSTED,
+                Map.of("resource", "COAL")));
+      }
+      await(
+          () ->
+              core.rank(CoreAiCoordinator.Scope.JOBS, choice.options())
+                  .version()
+                  .equals("baseline"));
+      assertTrue(warnings.isEmpty(), warnings.toString());
+    }
+    assertEquals("baseline", new PolicyLibrary(path, VillagerPolicyCases.jobs()).version().id());
+    assertTrue(Files.readString(root.resolve("data/proposals.jsonl")).contains("rollback"));
+  }
 }

@@ -40,7 +40,8 @@ public final class ToolActions {
   }
 
   public Map<String, Integer> needed(Job job, Map<String, Integer> inventory, Pos at, long now) {
-    if (job != null && smelting.processing()) return Map.of();
+    if (job != null && smelting.processing())
+      return smelting.needsFuel(at, now) ? Map.of("LOG", 1) : Map.of();
     // Ranking asks about many candidates per tick; share observations, not repeated world scans.
     if (now >= stationCheck) {
       stationCheck = now + 1000;
@@ -89,17 +90,21 @@ public final class ToolActions {
   public Preparation prepareItem(String outputItem, long now, Pos at) {
     // A batch may produce an intermediate ingredient (charcoal for torches). Finish the
     // deposited work before replanning from the now-empty inventory or changing recipes.
+    if (smelting.processing() && smelting.needsFuel(at, now)) return fetchFuel(at, now);
     if (smelting.resumePending(at, now)) return new Preparation(false, "");
     Map<String, Integer> inventory = InventoryOps.summary(actor.getInventory());
     if (inventory.getOrDefault(outputItem, 0) > 0) return new Preparation(true, "");
-    if (smelting.resume(outputItem, at, now)) return new Preparation(false, "");
+    if (smelting.resume(outputItem, at, now))
+      return smelting.needsFuel(at, now) ? fetchFuel(at, now) : new Preparation(false, "");
     if (now < nextCraft) return new Preparation(false, "");
     Pos table = stations.choose(at, now);
     if (ChestSupplies.obtain(
         plugin, actor, village, navigation, outputItem, inventory, table != null, at, now))
       return new Preparation(false, "");
-    CraftingBook.Step step =
-        plugin.recipes().next(outputItem, inventory, table != null, smelting.available(at, now));
+    WorkerPlan.Prerequisite prerequisite =
+        WorkerPlan.next(
+            plugin.recipes(), outputItem, inventory, table != null, smelting.available(at, now));
+    CraftingBook.Step step = prerequisite.step();
     String worker = actor.getUniqueId().toString();
     village
         .knowledge()
@@ -108,14 +113,12 @@ public final class ToolActions {
             village.taskProject(worker),
             step.action()
                 + " "
-                + (step.action().equals("gather")
-                    ? gatheringMaterial(outputItem, step.item())
-                    : step.item()),
+                + (step.action().equals("gather") ? prerequisite.resource() : step.item()),
             "",
             "",
             now);
     if (step.action().equals("gather")) {
-      String wanted = gatheringMaterial(outputItem, step.item());
+      String wanted = prerequisite.resource();
       Pos chest =
           village.supplyChest(
               at,
@@ -211,6 +214,16 @@ public final class ToolActions {
         .knowledge()
         .progress(worker, village.taskProject(worker), "Next prerequisite", "", result, now);
     return new Preparation(false, "");
+  }
+
+  private Preparation fetchFuel(Pos at, long now) {
+    Map<String, Integer> inventory = InventoryOps.summary(actor.getInventory());
+    String storedFuel = SmeltingFuel.choose(village.stock(), Map.of());
+    if (storedFuel != null
+        && ChestSupplies.obtain(
+            plugin, actor, village, navigation, storedFuel, inventory, false, at, now))
+      return new Preparation(false, "");
+    return new Preparation(false, "LOG");
   }
 
   private void placeTable(Pos at, long now) {

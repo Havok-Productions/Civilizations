@@ -1118,7 +1118,7 @@ public final class VillagerWorker {
       gathering.reset();
       return;
     }
-    if (!needed(job).containsKey(resource) && !Set.of("COAL", "COBBLESTONE").contains(resource)) {
+    if (!needed(job).containsKey(resource)) {
       mode = "work";
       gathering.reset();
       return;
@@ -1170,7 +1170,13 @@ public final class VillagerWorker {
     village.knowledge().need(material, village.taskProject(id), now);
     // A completed local scan is not evidence that every worker/neighborhood lacks this resource.
     fail(
-        now, "Local search found no available source of " + material + "; requested a supply plan");
+        now,
+        "Local search found no available source of " + material + "; requested a supply plan",
+        gathering.selectionUnavailable()
+            ? PolicyEvidence.selectionFailure(
+                PolicyEvidence.SelectionFailure.LOCAL_RESOURCE_SEARCH_EXHAUSTED,
+                Map.of("resource", material, "search_position", here()))
+            : Map.of());
   }
 
   private void deposit(long now, Pos at) {
@@ -1260,8 +1266,11 @@ public final class VillagerWorker {
   }
 
   private void fail(long now, String reason) {
-    String lower = reason.toLowerCase(Locale.ROOT);
-    if ((lower.contains("inventory full") || lower.contains("no room for"))
+    fail(now, reason, Map.of());
+  }
+
+  private void fail(long now, String reason, Map<String, ?> selectionEvidence) {
+    if (WorkFailure.classify(reason) == WorkFailure.INVENTORY_CAPACITY
         && projectSupplies.makeRoom(job, reason)) {
       recovery.pause(now);
       excludeLearning("inventory capacity interruption");
@@ -1272,6 +1281,7 @@ public final class VillagerWorker {
     var evidence = new java.util.LinkedHashMap<String, Object>(lastFailure);
     evidence.put("navigation", navigation.evidence());
     evidence.put("mode", mode);
+    evidence.putAll(selectionEvidence);
     String failureId = java.util.UUID.randomUUID().toString();
     evidence.put("failure_id", failureId);
     lastFailure = Map.copyOf(evidence);

@@ -151,4 +151,54 @@ class LiveLearningTest {
     assertEquals(previous, restored.version().id());
     assertEquals(previous, new PolicyLibrary(root, PolicyLibraryTest.guards()).version().id());
   }
+
+  @org.junit.jupiter.api.Tag("coreai")
+  @Test
+  void attributedCandidateFailureCannotBeErasedByFasterSuccessfulPairs() throws Exception {
+    var library = new PolicyLibrary(root, PolicyLibraryTest.guards());
+    var options = PolicyLibraryTest.guards().get(1).options();
+    library.stageTrial("(- 0 base)", PolicyLibraryTest.TEACHER);
+    var control = library.rankForWorker(options, "one");
+    library.trialOutcome(control.version(), "one", measured("work", 1000));
+    var candidate = library.rankForWorker(options, "one");
+    library.trialOutcome(
+        candidate.version(),
+        "one",
+        new PolicyMeasurement("work", 1000, true, false, "verified failed choice"));
+    for (int i = 0; i < 3; i++) {
+      library.trialOutcome(control.version(), "one", measured("work", 1000));
+      library.trialOutcome(candidate.version(), "one", measured("work", 700));
+    }
+    assertEquals("baseline", library.version().id());
+    assertTrue(library.trialStatus().contains("candidate_failures=1"));
+    assertTrue(library.trialStatus().contains("regressions=1"));
+    library.trialOutcome(
+        candidate.version(), "one", new PolicyMeasurement("work", 1000, true, false, "failed"));
+    assertTrue(
+        library
+            .trialOutcome(
+                candidate.version(),
+                "one",
+                new PolicyMeasurement("work", 1000, true, false, "failed"))
+            .contains("suspended"));
+    assertEquals("none", library.trialStatus());
+  }
+
+  @org.junit.jupiter.api.Tag("coreai")
+  @Test
+  void failedControlAndSuccessfulCandidateAreAComparisonNotADiscardedFailure() throws Exception {
+    var library = new PolicyLibrary(root, PolicyLibraryTest.guards());
+    var options = PolicyLibraryTest.guards().get(1).options();
+    library.stageTrial("(- 0 base)", PolicyLibraryTest.TEACHER);
+    for (int i = 0; i < 3; i++) {
+      var control = library.rankForWorker(options, "one");
+      library.trialOutcome(
+          control.version(),
+          "one",
+          new PolicyMeasurement("work", 1000, true, false, "failed choice"));
+      var candidate = library.rankForWorker(options, "one");
+      library.trialOutcome(candidate.version(), "one", measured("work", 1200));
+    }
+    assertNotEquals("baseline", library.version().id());
+  }
 }

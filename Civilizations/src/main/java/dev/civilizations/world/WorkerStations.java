@@ -59,6 +59,11 @@ final class WorkerStations {
       known.retainAll(nearest);
     }
     return known.stream()
+        .filter(
+            p ->
+                !village
+                    .knowledge()
+                    .blocked("station_busy:" + material.name() + ":" + p.key(), now))
         .filter(p -> at.distance2(p) <= 12 || !village.knowledge().blocked("route:" + p.key(), now))
         .min(Comparator.comparingLong(p -> p.distance2(at)))
         .orElse(null);

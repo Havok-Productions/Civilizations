@@ -62,7 +62,11 @@ public final class VillageConnections {
               d.supplyCaches.putIfAbsent(
                   id,
                   new Settlement.SupplyCache(
-                      id, project.apply(cache.project()), cache.owner(), cache.position())));
+                      id,
+                      project.apply(cache.project()),
+                      cache.owner(),
+                      cache.position(),
+                      cache.material())));
       for (Job j : from.jobs) {
         j.project = project.apply(j.project);
         d.jobs.add(j);

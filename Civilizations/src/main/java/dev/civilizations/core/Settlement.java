@@ -6,7 +6,22 @@ import java.util.*;
 public final class Settlement {
   public record Memory(long time, String result) {}
 
-  public record SupplyCache(String entity, String project, String owner, Pos position) {}
+  public record SupplyCache(
+      String entity, String project, String owner, Pos position, String material) {
+    public SupplyCache(String entity, String project, String owner, Pos position) {
+      this(entity, project, owner, position, "");
+    }
+
+    public SupplyCache {
+      material = material == null ? "" : material;
+    }
+
+    public boolean wanted(Map<String, Integer> request) {
+      return material.isEmpty()
+          || request.entrySet().stream()
+              .anyMatch(e -> e.getValue() > 0 && DeliveryBoard.matches(e.getKey(), material));
+    }
+  }
 
   public static final class Agent {
     public String id;

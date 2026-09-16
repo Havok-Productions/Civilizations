@@ -44,8 +44,14 @@ public final class PolicyLibrary {
     final Active candidate;
     final long expires;
     String worker;
-    int observations, improvements, regressions, comparisons, ignored;
-    final Map<String, ArrayDeque<Double>> controls = new LinkedHashMap<>(),
+    int observations,
+        improvements,
+        regressions,
+        comparisons,
+        ignored,
+        candidateFailures,
+        controlFailures;
+    final Map<String, ArrayDeque<PolicyMeasurement>> controls = new LinkedHashMap<>(),
         candidates = new LinkedHashMap<>();
 
     Trial(Active candidate) {
@@ -166,10 +172,21 @@ public final class PolicyLibrary {
       trial.ignored++;
       return "live_trial_inconclusive: " + measurement.reason();
     }
-    if (!measurement.success())
-      return "live_trial_attributed_failure_recorded; comparison still required";
-    var arm = version.startsWith("control:") ? trial.controls : trial.candidates;
-    arm.computeIfAbsent(measurement.context(), k -> new ArrayDeque<>()).addLast(measurement.cost());
+    boolean controlArm = version.startsWith("control:");
+    if (!measurement.success()) {
+      if (controlArm) trial.controlFailures++;
+      else {
+        trial.candidateFailures++;
+        trial.regressions++;
+        if (trial.regressions >= 3) {
+          trial = null;
+          return "live_trial_suspended_after_attributed_failures; candidate may be revised or"
+                     + " retried";
+        }
+      }
+    }
+    var arm = controlArm ? trial.controls : trial.candidates;
+    arm.computeIfAbsent(measurement.context(), k -> new ArrayDeque<>()).addLast(measurement);
     while (arm.size() > 32) arm.remove(arm.keySet().iterator().next());
     while (arm.getOrDefault(measurement.context(), new ArrayDeque<>()).size() > 8)
       arm.get(measurement.context()).removeFirst();
@@ -177,9 +194,15 @@ public final class PolicyLibrary {
     var candidates = trial.candidates.get(measurement.context());
     if (controls == null || controls.isEmpty() || candidates == null || candidates.isEmpty())
       return "live_trial_waiting_for_matching_comparison";
-    double control = controls.removeFirst(), candidateCost = candidates.removeFirst();
+    PolicyMeasurement control = controls.removeFirst(), candidateResult = candidates.removeFirst();
     trial.comparisons++;
-    boolean better = candidateCost < control * .9, worse = candidateCost > control * 1.1;
+    boolean better =
+        candidateResult.success()
+            && (!control.success() || candidateResult.cost() < control.cost() * .9);
+    boolean worse =
+        candidateResult.success()
+            && control.success()
+            && candidateResult.cost() > control.cost() * 1.1;
     if (better) trial.improvements++;
     if (worse) trial.regressions++;
     if (trial.regressions >= 3) {
@@ -226,6 +249,10 @@ public final class PolicyLibrary {
             + trial.improvements
             + ", regressions="
             + trial.regressions
+            + ", candidate_failures="
+            + trial.candidateFailures
+            + ", control_failures="
+            + trial.controlFailures
             + ", inconclusive="
             + trial.ignored;
   }

@@ -58,7 +58,9 @@ public class Fixture extends JavaPlugin {
         return;
       }
       case CRAFTING -> {
-        new StationChecks(this).start();
+        if (Boolean.getBoolean("civilizations.test.blocker-recovery"))
+          new BlockerRecoveryChecks(this).start();
+        else new StationChecks(this).start();
         return;
       }
       case CONNECTIONS -> {

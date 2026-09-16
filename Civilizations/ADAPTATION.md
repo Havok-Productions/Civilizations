@@ -133,3 +133,9 @@ The opt-in physical case is `-Dcivilizations.test.scenario=rule-learning -Dcivil
 The final disposable Folia run passed: 70 actual wall/gate placements, two repairs and one upper block, with exact material costs and facing checks. The 59 stored cobblestone were collected in one withdrawal. First-to-last placement took 195.2 seconds; the run recorded 0 navigation-failure events. The teacher was deterministic, so this proves executor behavior and learned-rule reuse, not autonomous model design in a natural village.
 
 To extend tuning, register the parameter's purpose, wire the actual consumer, and cover its observed outcome. Adding a name without implementing its effect is not adaptation. Existing learned parameters and classifications remain compatible with this release.
+
+### Alpha.32 outcome attribution
+
+Failed candidate observations remain in live comparisons and count against promotion, even if later successful attempts are faster. Control failures remain available for matched comparisons. Three attributed candidate failures suspend that pilot; existing rollback restores a previously verified active policy after three attributed failures.
+
+The host now supplies negative selection evidence when a completed local resource search has no candidates (rather than only busy/protected sources), or the policy's preferred native endpoint has no usable path while an alternative passes path checks and accepts movement in the same tick. These are observed failed selections, not claims about model intent or proof of causality. Unobserved searches, changed terrain, external interruptions, no-op work, and overridden choices remain inconclusive. Candidate speed comparisons still require matching work context.
