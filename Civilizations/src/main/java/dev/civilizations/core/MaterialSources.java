@@ -9,14 +9,7 @@ public final class MaterialSources {
   private MaterialSources() {}
 
   public static boolean matches(String resource, String block) {
-    return switch (resource) {
-      case "LOG" -> block.endsWith("_LOG") && !block.startsWith("STRIPPED_");
-      case "COAL" -> block.equals("COAL_ORE") || block.equals("DEEPSLATE_COAL_ORE");
-      case "COBBLESTONE" -> block.equals("STONE");
-      case "WHEAT_SEEDS" -> block.equals("SHORT_GRASS") || block.equals("TALL_GRASS");
-      case "SAND", "RED_SAND" -> block.equals(resource);
-      default -> resource.endsWith("_LOG") && block.equals(resource);
-    };
+    return HarvestCatalog.matches(resource, block);
   }
 
   public static Map<String, String> knowledge() {

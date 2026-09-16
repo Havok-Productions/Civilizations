@@ -83,9 +83,19 @@ public final class GatheringActions {
       gatherWool(now, at);
       return;
     }
-    if (!Set.of("COBBLESTONE", "COAL", "LOG", "WHEAT_SEEDS", "SAND", "RED_SAND").contains(resource)
-        && !resource.endsWith("_LOG")) {
-      fail(now, "No supported local gathering method for " + resource);
+    if (!HarvestCatalog.supported(resource)) {
+      plugin.debug(
+          village.id(),
+          id,
+          "gathering_capability_missing",
+          Map.of(
+              "resource",
+              resource,
+              "available_capabilities",
+              HarvestCatalog.report(),
+              "next_action",
+              "request a supported source or recipe; do not repeat the same unsupported harvest"));
+      fail(now, "No implemented harvesting capability for " + resource);
       return;
     }
     if (target == null) {
@@ -150,6 +160,14 @@ public final class GatheringActions {
     }
     if (!owns(target, 1) || now < nextWork) return;
     Block block = location(target).getBlock();
+    var capability = HarvestCatalog.capability(resource);
+    if (capability != null
+        && capability.preserveBase()
+        && block.getRelative(BlockFace.DOWN).getType() != block.getType()) {
+      exhausted(target);
+      target = null;
+      return;
+    }
     if ((resource.equals("LOG") || resource.endsWith("_LOG")) && tree(block)) {
       for (int h = 0;
           h < 8
@@ -180,7 +198,10 @@ public final class GatheringActions {
             : resource.equals("COAL")
                 ? Set.of(Material.COAL_ORE, Material.DEEPSLATE_COAL_ORE).contains(block.getType())
                 : MaterialSources.matches(resource, block.getType().name());
-    boolean sand = resource.equals("SAND") || resource.equals("RED_SAND");
+    boolean sand =
+        resource.equals("SAND")
+            || resource.equals("RED_SAND")
+            || capability != null && capability.preserveBase();
     boolean safe = sand ? drySand(block) : dry(block);
     if (!match || !safe || !safeMining(block)) {
       plugin.debug(
@@ -205,17 +226,30 @@ public final class GatheringActions {
       target = null;
       return;
     }
-    Material actualDrop =
-        resource.equals("LOG") || resource.endsWith("_LOG")
-            ? block.getType()
-            : Material.valueOf(resource);
-    if (!room(actualDrop, 1, now)) return;
     if (!MiningTools.has(entity.getInventory(), block.getType().name())) {
       fail(now, "Gathering " + resource + " requires a crafted pickaxe");
       return;
     }
+    List<ItemStack> drops =
+        List.copyOf(
+            block.getDrops(
+                MiningTools.tool(entity.getInventory(), block.getType().name()), entity));
+    if (!InventoryOps.canFit(entity.getInventory(), drops)) {
+      fail(now, "Inventory full; harvest drops retained at source");
+      return;
+    }
+    if (!pose.accessible(block)) {
+      navigation.walkWork(at, target, now);
+      return;
+    }
     if (!pose.ready(block, now)) return;
+    String before = block.getBlockData().getAsString();
     if (!plugin.mayChange(entity, block, "GATHER")) {
+      exhausted(target);
+      target = null;
+      return;
+    }
+    if (!before.equals(block.getBlockData().getAsString())) {
       exhausted(target);
       target = null;
       return;
@@ -227,7 +261,7 @@ public final class GatheringActions {
       return;
     }
     MiningTools.used(entity.getInventory(), mined);
-    give(actualDrop, 1);
+    drops.forEach(i -> entity.getInventory().addItem(i));
     village.knowledge().clear("resource:" + resource);
     village
         .knowledge()
@@ -236,11 +270,27 @@ public final class GatheringActions {
             village.taskProject(id),
             "Next prerequisite",
             "",
-            "Gathered " + actualDrop + " at " + target.key(),
+            "Gathered actual drops " + drops + " at " + target.key(),
             now);
-    recovery.progress(now);
+    if (drops.stream().anyMatch(i -> DeliveryBoard.matches(resource, i.getType().name())))
+      recovery.progress(now);
     entity.swingMainHand();
-    village.remember(id, "Gathered " + actualDrop + " at " + target.key(), true);
+    village.remember(id, "Gathered " + drops + " at " + target.key(), true);
+    plugin.debug(
+        village.id(),
+        id,
+        "harvest_result",
+        Map.of(
+            "requested",
+            resource,
+            "source",
+            mined,
+            "position",
+            target,
+            "drops",
+            drops.stream()
+                .map(i -> Map.of("material", i.getType().name(), "amount", i.getAmount()))
+                .toList()));
     exhausted(target);
     target = null;
     pose.reset();

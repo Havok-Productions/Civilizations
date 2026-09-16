@@ -25,7 +25,8 @@ public final class PolicyLibrary {
       Set<String> rejected,
       int strikes,
       List<PolicyCase> replay,
-      boolean liveValidated) {}
+      boolean liveValidated,
+      Set<String> verified) {}
 
   private static final Gson JSON = new Gson();
   private final Path file;
@@ -36,13 +37,16 @@ public final class PolicyLibrary {
   private volatile Active active = baseline();
   private int strikes;
   private boolean liveValidated;
+  private final Set<String> verified = new HashSet<>(Set.of("baseline"));
   private Trial trial;
 
   private static final class Trial {
     final Active candidate;
     final long expires;
     String worker;
-    int successes;
+    int observations, improvements, regressions, comparisons, ignored;
+    final Map<String, ArrayDeque<Double>> controls = new LinkedHashMap<>(),
+        candidates = new LinkedHashMap<>();
 
     Trial(Active candidate) {
       this.candidate = candidate;
@@ -76,6 +80,8 @@ public final class PolicyLibrary {
             && !evaluate(code, baseline().program).accepted)
           throw new IllegalArgumentException("Policy no longer passes guards");
         liveValidated = state.liveValidated;
+        if (state.verified != null) verified.addAll(state.verified);
+        if (liveValidated) verified.add(state.active.id);
         active = new Active(state.active, code);
       } catch (RuntimeException e) {
         throw new IOException("Invalid saved policy; host must retain baseline", e);
@@ -123,7 +129,9 @@ public final class PolicyLibrary {
     if (sorted.isEmpty() || sorted.getFirst().id().equals(incumbent.options.getFirst().id()))
       return incumbent;
     if (trial.worker == null) trial.worker = worker;
-    return new Ranking("trial:" + trial.candidate.version.id, sorted);
+    return trial.observations % 2 == 0
+        ? new Ranking("control:" + trial.candidate.version.id, incumbent.options)
+        : new Ranking("trial:" + trial.candidate.version.id, sorted);
   }
 
   public synchronized Evaluation stageTrial(String source, Provenance teacher) {
@@ -142,31 +150,46 @@ public final class PolicyLibrary {
         true,
         replay.improvements,
         replay.regressions,
-        "One-worker live trial staged; replay is advisory; not adopted");
+        "One-worker comparison staged; alternate incumbent and candidate on comparable work; not"
+            + " adopted");
   }
 
-  public synchronized String trialOutcome(String version, String worker, boolean success)
-      throws IOException {
+  public synchronized String trialOutcome(
+      String version, String worker, PolicyMeasurement measurement) throws IOException {
     if (trial != null && System.currentTimeMillis() > trial.expires) trial = null;
     if (trial == null
-        || !version.equals("trial:" + trial.candidate.version.id)
+        || !(version.equals("trial:" + trial.candidate.version.id)
+            || version.equals("control:" + trial.candidate.version.id))
         || !Objects.equals(worker, trial.worker)) return "";
-    if (!success) {
-      String id = trial.candidate.version.id;
-      trial = null;
-      rejected.add(id);
-      while (rejected.size() > 128) rejected.remove(rejected.iterator().next());
-      write(
-          new State(
-              active.version,
-              List.copyOf(history),
-              Set.copyOf(rejected),
-              strikes,
-              List.copyOf(replay),
-              liveValidated));
-      return "live_trial_suspended";
+    trial.observations++;
+    if (!measurement.relevant()) {
+      trial.ignored++;
+      return "live_trial_inconclusive: " + measurement.reason();
     }
-    if (++trial.successes < 3) return "live_trial_progress";
+    if (!measurement.success())
+      return "live_trial_attributed_failure_recorded; comparison still required";
+    var arm = version.startsWith("control:") ? trial.controls : trial.candidates;
+    arm.computeIfAbsent(measurement.context(), k -> new ArrayDeque<>()).addLast(measurement.cost());
+    while (arm.size() > 32) arm.remove(arm.keySet().iterator().next());
+    while (arm.getOrDefault(measurement.context(), new ArrayDeque<>()).size() > 8)
+      arm.get(measurement.context()).removeFirst();
+    var controls = trial.controls.get(measurement.context());
+    var candidates = trial.candidates.get(measurement.context());
+    if (controls == null || controls.isEmpty() || candidates == null || candidates.isEmpty())
+      return "live_trial_waiting_for_matching_comparison";
+    double control = controls.removeFirst(), candidateCost = candidates.removeFirst();
+    trial.comparisons++;
+    boolean better = candidateCost < control * .9, worse = candidateCost > control * 1.1;
+    if (better) trial.improvements++;
+    if (worse) trial.regressions++;
+    if (trial.regressions >= 3) {
+      trial = null;
+      return "live_trial_suspended_after_measured_regressions; candidate may be revised or retried";
+    }
+    if (trial.improvements < 3 || trial.regressions > 0)
+      return better
+          ? "live_trial_pair_improved"
+          : worse ? "live_trial_pair_regressed" : "live_trial_pair_inconclusive";
     Active candidate = trial.candidate;
     List<Version> nextHistory = new ArrayList<>(history);
     nextHistory.add(active.version);
@@ -178,14 +201,16 @@ public final class PolicyLibrary {
             Set.copyOf(rejected),
             0,
             List.copyOf(replay),
-            true));
+            true,
+            withVerified(candidate.version.id)));
     history.clear();
     history.addAll(nextHistory);
     active = candidate;
+    verified.add(candidate.version.id);
     liveValidated = true;
     strikes = 0;
     trial = null;
-    return "live_trial_adopted_after_three_observed_outcomes";
+    return "live_trial_adopted_after_three_measured_improvements";
   }
 
   public synchronized String trialStatus() {
@@ -195,8 +220,14 @@ public final class PolicyLibrary {
             + trial.candidate.version.id.substring(0, 12)
             + ", worker="
             + trial.worker
-            + ", successes="
-            + trial.successes;
+            + ", comparisons="
+            + trial.comparisons
+            + ", improvements="
+            + trial.improvements
+            + ", regressions="
+            + trial.regressions
+            + ", inconclusive="
+            + trial.ignored;
   }
 
   public synchronized List<PolicyCase> cases() {
@@ -279,7 +310,13 @@ public final class PolicyLibrary {
       // Publish only after persistence succeeds. No candidate can supply a path or execute host IO.
       write(
           new State(
-              version, List.copyOf(history), Set.copyOf(rejected), 0, List.copyOf(replay), false));
+              version,
+              List.copyOf(history),
+              Set.copyOf(rejected),
+              0,
+              List.copyOf(replay),
+              false,
+              Set.copyOf(verified)));
       strikes = 0;
       liveValidated = false;
       trial = null;
@@ -299,7 +336,9 @@ public final class PolicyLibrary {
               Set.copyOf(rejected),
               strikes,
               List.copyOf(replay),
-              liveValidated));
+              liveValidated,
+              success ? withVerified(active.version.id) : Set.copyOf(verified)));
+      if (success) verified.add(active.version.id);
       return false;
     }
     rollback();
@@ -307,24 +346,48 @@ public final class PolicyLibrary {
   }
 
   public synchronized void rollback() throws IOException {
-    trial = null;
-    liveValidated = false;
     Active old = active;
-    active = baseline();
-    strikes = 0;
-    if (!old.version.id.equals("baseline")) rejected.add(old.version.id);
-    while (rejected.size() > 128) rejected.remove(rejected.iterator().next());
-    // Conservative rollback always restores the known host baseline.
+    Set<String> rejectedNext = new LinkedHashSet<>(rejected);
+    if (!old.version.id.equals("baseline")) rejectedNext.add(old.version.id);
+    while (rejectedNext.size() > 128) rejectedNext.remove(rejectedNext.iterator().next());
+    Active restored = baseline();
+    for (int i = history.size() - 1; i >= 0; i--) {
+      Version previous = history.get(i);
+      if (!previous.id.equals(old.version.id)
+          && verified.contains(previous.id)
+          && !rejectedNext.contains(previous.id)) {
+        restored = new Active(previous, PolicyProgram.compile(previous.source));
+        break;
+      }
+    }
     write(
         new State(
-            baseline().version,
+            restored.version,
             List.copyOf(history),
-            Set.copyOf(rejected),
+            Set.copyOf(rejectedNext),
             0,
             List.copyOf(replay),
-            false));
-    active = baseline();
+            !restored.version.id.equals("baseline"),
+            Set.copyOf(verified)));
+    active = restored;
+    rejected.clear();
+    rejected.addAll(rejectedNext);
+    trial = null;
+    liveValidated = !restored.version.id.equals("baseline");
     strikes = 0;
+  }
+
+  private Set<String> withVerified(String id) {
+    Set<String> result = new HashSet<>(verified);
+    result.add(id);
+    // Keep only the live history; the state file remains bounded.
+    result.removeIf(
+        v ->
+            !v.equals("baseline")
+                && !v.equals(id)
+                && !v.equals(active.version.id)
+                && history.stream().noneMatch(h -> h.id.equals(v)));
+    return Set.copyOf(result);
   }
 
   private void write(State state) throws IOException {

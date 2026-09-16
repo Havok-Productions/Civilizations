@@ -150,6 +150,15 @@ class CoreAiIntegrationTest {
         core.outcome(
             core.begin("village", "worker", choice, "a"),
             false,
+            Map.of("interruption", "yielding", "attributable", false));
+      core.reviewSoon();
+      core.begin("village", "worker", choice, "a"); // queue barrier after review
+      await(() -> core.status().contains("observations=4"));
+      assertEquals(0, calls.get(), "Cooperative interruptions must not trigger model recovery");
+      for (int i = 0; i < 3; i++)
+        core.outcome(
+            core.begin("village", "worker", choice, "a"),
+            false,
             Map.of("reason", "observed unreachable target"));
       core.reviewSoon();
       await(() -> core.status().contains("Replay improved"));
@@ -208,7 +217,7 @@ class CoreAiIntegrationTest {
   @org.junit.jupiter.api.Tag("inference")
   @org.junit.jupiter.api.Tag("interaction")
   @Test
-  void liveRankingRequiresDistinctExecutorReceipts() throws Exception {
+  void liveRankingRequiresDistinctMeasuredComparisons() throws Exception {
     ModelBackend teacher =
         new ModelBackend() {
           public boolean ready() {
@@ -238,15 +247,27 @@ class CoreAiIntegrationTest {
       for (int i = 0; i < 3; i++)
         core.outcome(core.begin("v", "one", old, "a"), false, Map.of("reason", "blocked"));
       core.reviewSoon();
-      await(() -> core.status().contains("One-worker live trial staged"));
-      var choice = core.rank(CoreAiCoordinator.Scope.JOBS, options, "one");
-      assertTrue(choice.version().startsWith("trial:"));
-      var ticket = core.begin("v", "one", choice, "b");
-      for (int i = 0; i < 5; i++) core.outcome(ticket, true, Map.of("observed", "arrived"));
-      await(() -> core.status().contains("successes=1"));
-      assertEquals("baseline", core.rank(CoreAiCoordinator.Scope.JOBS, options).version());
-      for (int i = 0; i < 2; i++)
-        core.outcome(core.begin("v", "one", choice, "b"), true, Map.of("observed", "arrived"));
+      await(() -> core.status().contains("One-worker comparison staged"));
+      for (int pair = 0; pair < 3; pair++) {
+        var control = core.rank(CoreAiCoordinator.Scope.JOBS, options, "one");
+        assertTrue(control.version().startsWith("control:"));
+        var ticket = measured(core.begin("v", "one", control, "a"), 1000);
+        for (int duplicate = 0; duplicate < 5; duplicate++)
+          core.outcome(ticket, true, Map.of("executor_result", "world_changed"));
+        await(
+            () ->
+                core.rank(CoreAiCoordinator.Scope.JOBS, options, "one")
+                    .version()
+                    .startsWith("trial:"));
+        assertEquals("baseline", core.rank(CoreAiCoordinator.Scope.JOBS, options).version());
+        var candidate = core.rank(CoreAiCoordinator.Scope.JOBS, options, "one");
+        core.outcome(
+            measured(core.begin("v", "one", candidate, "b"), 500),
+            true,
+            Map.of("executor_result", "world_changed"));
+        int completed = pair + 1;
+        if (completed < 3) await(() -> core.status().contains("comparisons=" + completed));
+      }
       await(() -> core.status().contains("adopted_after_three"));
       assertEquals("b", core.rank(CoreAiCoordinator.Scope.JOBS, options).options().getFirst().id());
       assertTrue(warnings.isEmpty(), warnings.toString());
@@ -277,6 +298,18 @@ class CoreAiIntegrationTest {
     village.release("one");
     assertFalse(village.ownsBuildSite(site, "one", now));
     assertTrue(village.gatherProtected(site));
+  }
+
+  // Synthetic clock values exercise attribution and deduplication, not physical execution speed.
+  private CoreAiCoordinator.Ticket measured(CoreAiCoordinator.Ticket t, long elapsed) {
+    return new CoreAiCoordinator.Ticket(
+        t.id(),
+        t.village(),
+        t.worker(),
+        t.choice(),
+        t.selected(),
+        System.currentTimeMillis() - elapsed,
+        t.context());
   }
 
   private void await(java.util.function.BooleanSupplier ready) throws Exception {

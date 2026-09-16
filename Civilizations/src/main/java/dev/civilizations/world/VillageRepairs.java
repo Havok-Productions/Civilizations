@@ -29,7 +29,7 @@ public final class VillageRepairs {
   public static Map<String, Integer> survey(Settlement v, Terrain t) {
     int learned = 0, repairs = 0;
     for (Job job : v.jobs())
-      if (job.complete && job.everBuilt && job.kind == Job.Kind.PLACE && t.clear(job.target))
+      if (job.complete && job.everBuilt && job.kind == Job.Kind.PLACE && WorkState.damaged(job, t))
         v.damaged(job.id);
     for (Pos bed : v.beds())
       for (int x = -7; x <= 7; x++)

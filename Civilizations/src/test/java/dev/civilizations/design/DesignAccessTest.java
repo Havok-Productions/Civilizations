@@ -78,4 +78,20 @@ class DesignAccessTest {
             site, site.prepared, List.of(new Pos(79, 65, 0), new Pos(95, 90, 0)), true);
     assertTrue(reached.contains(DesignAccess.key(new Pos(79, 65, 0))));
   }
+
+  @Tag("design")
+  @Tag("navigation")
+  @Tag("interaction")
+  @Test
+  void bridgeAndGroundAreDistinctAndStaircaseConnectsTheActualLevel() {
+    var terrain = new Field();
+    for (int x = 0; x <= 8; x++) terrain.blocks.put(new Pos(x, 68, 0), "STONE");
+    var upper = site(terrain, new Pos(8, 69, 0));
+    assertNotEquals(DesignAccess.key(new Pos(8, 65, 0)), DesignAccess.key(new Pos(8, 69, 0)));
+    assertThrows(IllegalArgumentException.class, () -> DesignAccess.verify(upper));
+    for (int x = 0; x < 4; x++)
+      for (int y = 65; y <= 65 + x; y++) terrain.blocks.put(new Pos(x, y, 1), "STONE");
+    assertDoesNotThrow(() -> DesignAccess.verify(upper));
+    assertDoesNotThrow(() -> DesignAccess.verify(site(terrain, new Pos(8, 65, 0))));
+  }
 }

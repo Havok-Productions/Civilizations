@@ -66,22 +66,29 @@ class LiveLearningTest {
     var options = PolicyLibraryTest.guards().get(1).options();
     assertTrue(library.stageTrial("(- 0 base)", PolicyLibraryTest.TEACHER).accepted());
     assertEquals("baseline", library.version().id());
-    var pilot = library.rankForWorker(options, "one");
-    assertEquals("second", pilot.options().getFirst().id());
+    var control = library.rankForWorker(options, "one");
+    assertEquals("first", control.options().getFirst().id());
     assertEquals("first", library.rankForWorker(options, "two").options().getFirst().id());
-    assertEquals("", library.trialOutcome(pilot.version(), "two", true));
-    assertEquals("live_trial_progress", library.trialOutcome(pilot.version(), "one", true));
-    assertEquals("baseline", library.version().id());
-    library.trialOutcome(pilot.version(), "one", true);
-    assertEquals(
-        "live_trial_adopted_after_three_observed_outcomes",
-        library.trialOutcome(pilot.version(), "one", true));
+    assertEquals("", library.trialOutcome(control.version(), "two", measured("same-work", 1000)));
+    for (int i = 0; i < 3; i++) {
+      assertEquals("baseline", library.version().id());
+      var baseline = library.rankForWorker(options, "one");
+      assertTrue(baseline.version().startsWith("control:"));
+      library.trialOutcome(baseline.version(), "one", measured("same-work", 1000));
+      var pilot = library.rankForWorker(options, "one");
+      assertEquals("second", pilot.options().getFirst().id());
+      assertEquals(
+          i == 2
+              ? "live_trial_adopted_after_three_measured_improvements"
+              : "live_trial_pair_improved",
+          library.trialOutcome(pilot.version(), "one", measured("same-work", 700)));
+    }
     assertEquals(library.version(), new PolicyLibrary(root, PolicyLibraryTest.guards()).version());
   }
 
   @org.junit.jupiter.api.Tag("coreai")
   @Test
-  void oneFailedPilotSuspendsCandidateAndNoOpDoesNotCollectEvidence() throws Exception {
+  void environmentalFailureAndNoOpRemainInconclusiveAndDoNotBlacklistCandidate() throws Exception {
     var library = new PolicyLibrary(root, PolicyLibraryTest.guards());
     library.stageTrial("(+ base 1)", PolicyLibraryTest.TEACHER);
     assertEquals(
@@ -90,11 +97,58 @@ class LiveLearningTest {
     library.rollback();
     library.stageTrial("(- 0 base)", PolicyLibraryTest.TEACHER);
     var pilot = library.rankForWorker(PolicyLibraryTest.guards().get(1).options(), "one");
-    assertEquals("live_trial_suspended", library.trialOutcome(pilot.version(), "one", false));
+    assertTrue(
+        library
+            .trialOutcome(
+                pilot.version(), "one", PolicyMeasurement.ignored("player changed terrain"))
+            .startsWith("live_trial_inconclusive"));
     assertEquals("baseline", library.version().id());
-    assertFalse(
+    assertTrue(
         new PolicyLibrary(root, PolicyLibraryTest.guards())
             .stageTrial("(- 0 base)", PolicyLibraryTest.TEACHER)
             .accepted());
+  }
+
+  private static PolicyMeasurement measured(String context, double cost) {
+    return new PolicyMeasurement(context, cost, true, true, "verified execution");
+  }
+
+  @org.junit.jupiter.api.Tag("coreai")
+  @Test
+  void unmatchedAndUnimprovedSuccessesCannotPromote() throws Exception {
+    var library = new PolicyLibrary(root, PolicyLibraryTest.guards());
+    var options = PolicyLibraryTest.guards().get(1).options();
+    library.stageTrial("(- 0 base)", PolicyLibraryTest.TEACHER);
+    for (int i = 0; i < 8; i++) {
+      var choice = library.rankForWorker(options, "worker");
+      library.trialOutcome(choice.version(), "worker", measured(i % 2 == 0 ? "ore" : "bed", 1000));
+    }
+    assertEquals("baseline", library.version().id());
+    for (int i = 0; i < 6; i++) {
+      var choice = library.rankForWorker(options, "worker");
+      library.trialOutcome(choice.version(), "worker", measured("same", 1000));
+    }
+    assertEquals("baseline", library.version().id());
+    assertTrue(library.trialStatus().contains("improvements=0"));
+  }
+
+  @org.junit.jupiter.api.Tag("coreai")
+  @Test
+  void rollbackRestoresLastVerifiedPolicyAcrossRestart() throws Exception {
+    var library = new PolicyLibrary(root, PolicyLibraryTest.guards());
+    library.propose("(+ base (* failures 100))", PolicyLibraryTest.TEACHER);
+    String previous = library.version().id();
+    library.outcome(previous, true);
+    var options = PolicyLibraryTest.guards().get(1).options();
+    library.stageTrial("(- 0 base)", PolicyLibraryTest.TEACHER);
+    for (int i = 0; i < 6; i++) {
+      var choice = library.rankForWorker(options, "one");
+      library.trialOutcome(choice.version(), "one", measured("same", i % 2 == 0 ? 1000 : 700));
+    }
+    assertNotEquals(previous, library.version().id());
+    var restored = new PolicyLibrary(root, PolicyLibraryTest.guards());
+    restored.rollback();
+    assertEquals(previous, restored.version().id());
+    assertEquals(previous, new PolicyLibrary(root, PolicyLibraryTest.guards()).version().id());
   }
 }

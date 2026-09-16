@@ -62,11 +62,8 @@ public final class ToolActions {
     Map<String, Integer> inventory = InventoryOps.summary(actor.getInventory());
     if (ToolRecipes.tier(inventory) >= required) return new Preparation(true, "");
     String output =
-        required >= 2
-                && (ToolRecipes.tier(inventory) > 0
-                    || inventory.getOrDefault("COBBLESTONE", 0) >= 3)
-            ? "STONE_PICKAXE"
-            : "WOODEN_PICKAXE";
+        ToolRecipes.nextTool(
+            required, ToolRecipes.tier(inventory), inventory.getOrDefault("COBBLESTONE", 0) >= 3);
     return prepareItem(output, now, at);
   }
 
@@ -76,6 +73,7 @@ public final class ToolActions {
                     "CRAFTING_TABLE",
                     "WOODEN_PICKAXE",
                     "STONE_PICKAXE",
+                    "IRON_PICKAXE",
                     "FURNACE",
                     "GLASS",
                     "CHARCOAL",

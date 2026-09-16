@@ -11,7 +11,6 @@ import org.bukkit.block.*;
 import org.bukkit.block.data.*;
 import org.bukkit.block.data.type.Bed;
 import org.bukkit.entity.Villager;
-import org.bukkit.inventory.ItemStack;
 
 /** Bounded local construction/mining; callers own the entity and surrounding region. */
 public final class BuildingActions {
@@ -52,7 +51,9 @@ public final class BuildingActions {
   }
 
   private void place(Block block, long now) {
+    boolean reuse = WorkState.reusable(job, block);
     if (!replaceable(block)
+        && !reuse
         && plugin.experiments() != null
         && BlockObservation.learnedClear(
             plugin.experiments().rules(), entity.getUniqueId().toString(), block)) {
@@ -80,24 +81,42 @@ public final class BuildingActions {
       entity.swingMainHand();
       return;
     }
-    if ((!replaceable(block)
-            && !(job.material.equals("WHITE_BED") && block.getType() == Material.WHITE_BED))
-        || !dry(block)) {
+    if ((!replaceable(block) && !reuse) || !dry(block)) {
       fail(now, "Build site changed or became wet");
       return;
     }
     Material material = Material.valueOf(job.material);
-    Map<Material, Integer> cost = Map.of(material, 1);
+    Map<Material, Integer> cost = reuse ? Map.of() : Map.of(material, 1);
     if (!InventoryOps.has(entity.getInventory(), cost)) return;
     Block head = null;
     BlockData data = PlacementSpace.data(job);
+    Block oldHead = null;
     if (data instanceof Bed bed) {
       head = block.getRelative(bed.getFacing());
-      if (!replaceable(head)
+      if ((!replaceable(head)
+              && !(head.getType() == material
+                  && head.getBlockData() instanceof Bed h
+                  && h.getPart() == Bed.Part.HEAD
+                  && h.getFacing() == bed.getFacing()))
           || !head.getRelative(BlockFace.DOWN).getType().isSolid()
           || !plugin.mayChange(entity, head, "PLACE")) {
         fail(now, "Bed needs two clear supported spaces");
         return;
+      }
+      if (reuse
+          && block.getBlockData() instanceof Bed previous
+          && previous.getFacing() != bed.getFacing()) {
+        Block old = block.getRelative(previous.getFacing());
+        if (old.getType() == material
+            && old.getBlockData() instanceof Bed h
+            && h.getPart() == Bed.Part.HEAD
+            && h.getFacing() == previous.getFacing()) {
+          if (!plugin.mayChange(entity, old, "REORIENT_BED")) {
+            fail(now, "Old bed head is protected");
+            return;
+          }
+          oldHead = old;
+        }
       }
     }
     if ((material == Material.TORCH || data instanceof Bed)
@@ -105,7 +124,7 @@ public final class BuildingActions {
       fail(now, "Support block missing");
       return;
     }
-    if (!InventoryOps.canCraft(entity.getInventory(), material, cost)) {
+    if (!reuse && !InventoryOps.canCraft(entity.getInventory(), material, cost)) {
       fail(now, "Inventory full: cannot retain crafting leftovers");
       return;
     }
@@ -116,25 +135,30 @@ public final class BuildingActions {
       return;
     }
     BlockState previous = block.getState(), headBefore = head == null ? null : head.getState();
+    BlockState oldHeadBefore = oldHead == null ? null : oldHead.getState();
     try {
+      if (oldHead != null) oldHead.setType(Material.AIR, false);
       block.setBlockData(data, false);
       if (head != null) {
         Bed upper = (Bed) data.clone();
         upper.setPart(Bed.Part.HEAD);
         head.setBlockData(upper, false);
       }
-      if (block.getType() != material) throw new IllegalStateException("Placement did not persist");
+      if (!WorkState.satisfied(job, block))
+        throw new IllegalStateException("Requested block state did not persist");
     } catch (Exception e) {
       previous.update(true, false);
       if (headBefore != null) headBefore.update(true, false);
+      if (oldHeadBefore != null) oldHeadBefore.update(true, false);
       fail(now, "Placement failed; materials retained");
       return;
     }
-    InventoryOps.consumeRecipe(
-        entity.getInventory(),
-        material,
-        cost,
-        item -> entity.getWorld().dropItemNaturally(entity.getLocation(), item));
+    if (!reuse)
+      InventoryOps.consumeRecipe(
+          entity.getInventory(),
+          material,
+          cost,
+          item -> entity.getWorld().dropItemNaturally(entity.getLocation(), item));
     entity.swingMainHand();
     block.getWorld().playSound(block.getLocation(), Sound.BLOCK_STONE_PLACE, 0.4f, 1);
     complete(now);
@@ -157,33 +181,26 @@ public final class BuildingActions {
               + ")");
       return;
     }
-    Material type = block.getType(), drop = drop(type);
+    Material type = block.getType();
     if (!MiningTools.has(entity.getInventory(), type.name())) {
       fail(now, "Mine face requires an adequate crafted pickaxe");
       return;
     }
-    int amount = 1;
-    if (!room(drop, amount, now)) return;
+    var drops =
+        List.copyOf(block.getDrops(MiningTools.tool(entity.getInventory(), type.name()), entity));
+    if (!InventoryOps.canFit(entity.getInventory(), drops)) {
+      fail(now, "Inventory full; task materials retained");
+      return;
+    }
     block.setType(Material.AIR, false);
     if (!block.getType().isAir()) {
       fail(now, "Block removal failed");
       return;
     }
     MiningTools.used(entity.getInventory(), type.name());
-    give(drop, amount);
+    drops.forEach(item -> entity.getInventory().addItem(item));
     entity.swingMainHand();
     block.getWorld().playSound(block.getLocation(), Sound.BLOCK_STONE_BREAK, 0.4f, 1);
     complete(now);
-  }
-
-  private boolean room(Material material, int amount, long now) {
-    if (InventoryOps.canFit(entity.getInventory(), List.of(new ItemStack(material, amount))))
-      return true;
-    fail(now, "Inventory full; task materials retained");
-    return false;
-  }
-
-  private void give(Material material, int amount) {
-    entity.getInventory().addItem(new ItemStack(material, amount));
   }
 }

@@ -23,7 +23,14 @@ public final class CoreAiCoordinator implements AutoCloseable {
     }
   }
 
-  public record Ticket(String id, String village, String worker, Choice choice, String selected) {}
+  public record Ticket(
+      String id,
+      String village,
+      String worker,
+      Choice choice,
+      String selected,
+      long startedAt,
+      String context) {}
 
   private final Map<Scope, PolicyLibrary> libraries = new EnumMap<>(Scope.class);
   private final DataJournal journal;
@@ -122,6 +129,10 @@ public final class CoreAiCoordinator implements AutoCloseable {
   }
 
   public Ticket begin(String village, String worker, Choice choice, String selected) {
+    return begin(village, worker, choice, selected, "route");
+  }
+
+  public Ticket begin(String village, String worker, Choice choice, String selected, String work) {
     if (choice == null || choice.options.stream().noneMatch(o -> o.id().equals(selected)))
       return null;
     // A model override or a lost claim is not an outcome caused by the top-ranked policy choice.
@@ -129,7 +140,15 @@ public final class CoreAiCoordinator implements AutoCloseable {
         choice.options.getFirst().id().equals(selected)
             ? choice
             : new Choice(choice.scope, "host-or-model-override", choice.options);
-    Ticket ticket = new Ticket(UUID.randomUUID().toString(), village, worker, attributed, selected);
+    Ticket ticket =
+        new Ticket(
+            UUID.randomUUID().toString(),
+            village,
+            worker,
+            attributed,
+            selected,
+            System.currentTimeMillis(),
+            PolicyEvidence.context(attributed, work));
     enqueue(
         () -> {
           observations++;
@@ -143,6 +162,10 @@ public final class CoreAiCoordinator implements AutoCloseable {
 
   public void outcome(Ticket ticket, boolean success, Map<String, ?> evidence) {
     if (ticket == null) return;
+    PolicyMeasurement measurement =
+        PolicyEvidence.measure(ticket, success, evidence, System.currentTimeMillis());
+    boolean interrupted =
+        evidence.containsKey("interruption") || Boolean.FALSE.equals(evidence.get("attributable"));
     // Roundtrip freezes nested caller collections and limits payload before it crosses threads.
     String encoded = new Gson().toJson(evidence);
     if (encoded.length() > 32_000) encoded = "{\"error\":\"evidence size limit\"}";
@@ -162,11 +185,13 @@ public final class CoreAiCoordinator implements AutoCloseable {
                   "evidence",
                   new Gson().fromJson(snapshot, Object.class),
                   "basis",
-                  "executor observation");
+                  "executor observation",
+                  "measurement",
+                  measurement);
           record("outcomes", event);
           if (recent.size() == 16) recent.removeFirst();
           recent.addLast(event);
-          if (!success) {
+          if (!success && !interrupted) {
             failures++;
             record(
                 "roadblocks",
@@ -181,7 +206,7 @@ public final class CoreAiCoordinator implements AutoCloseable {
           PolicyLibrary library = libraries.get(ticket.choice.scope);
           try {
             String trialResult =
-                library.trialOutcome(ticket.choice.version, ticket.worker, success);
+                library.trialOutcome(ticket.choice.version, ticket.worker, measurement);
             if (!trialResult.isEmpty()) {
               last = trialResult;
               record(
@@ -189,8 +214,10 @@ public final class CoreAiCoordinator implements AutoCloseable {
                   Map.of(
                       "event", trialResult, "ticket", ticket.id, "version", ticket.choice.version));
             }
-            if (library.outcome(ticket.choice.version, success)) {
-              last = ticket.choice.scope + " rolled back after three consecutive observed failures";
+            if (measurement.relevant() && library.outcome(ticket.choice.version, success)) {
+              last =
+                  ticket.choice.scope
+                      + " restored previous validated policy after three attributed failures";
               record(
                   "proposals",
                   Map.of("event", "rollback", "version", ticket.choice.version, "reason", last));
@@ -198,13 +225,7 @@ public final class CoreAiCoordinator implements AutoCloseable {
           } catch (IOException error) {
             warning.accept("CoreAI policy persistence: " + error.getMessage());
           }
-          if (success)
-            library.remember(
-                new PolicyCase(
-                    ticket.id,
-                    "completed selected action; alternatives untested",
-                    ticket.choice.options,
-                    ticket.selected));
+          // A successful action alone does not label untested alternatives as worse.
         });
   }
 
@@ -358,7 +379,7 @@ public final class CoreAiCoordinator implements AutoCloseable {
             } catch (IOException e) {
               warning.accept(e.getMessage());
             }
-          last = "admin restored host baseline";
+          last = "admin restored previous validated policies";
           record("proposals", Map.of("event", "admin_rollback"));
         });
   }

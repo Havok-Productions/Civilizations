@@ -1,5 +1,19 @@
 # Controller adaptation and activity recovery
 
+## Alpha.31: measured policy learning and work continuity
+
+CoreAI policy trials alternate the incumbent and candidate on one worker. They pair verified work of the same kind/material and comparable option sets, including distance, elevation, supply and failure context. Three matched pairs with at least a 10% cost improvement and no observed regressions are required for adoption. Elapsed work time is recorded; route timing is normalized by distance. This is observational evidence, not proof of what would have happened under an untried choice. Already-satisfied work, overrides, unclassified failures and external interruptions are inconclusive. They do not permanently reject a candidate. Successful execution alone no longer creates a preference label against alternatives that were never tried. Rollback restores the most recent previously verified policy, including after restart.
+
+This is learning of controller policies and reusable recovery behavior; it does not train Qwen/DeepSeek's neural weights or create self-awareness. The existing local model proposes behavior; the executor records real outcomes. Trial progress, measured comparisons, inconclusive outcomes and adoption are written to the CoreAI journals.
+
+Full inventories can reserve physical item bundles for an unfinished project. The items carry unique persistent tags, remain separate from community stock, and can be reclaimed by workers on that project. Bundle records survive settlement saves and merges. Clearing/crafting can free capacity without abandoning the task; completed-project surplus follows the existing community-deposit rules. These are real item entities, not virtual stock or extra villager slots.
+
+Construction requests that an enrolled blocking villager move aside on its own entity scheduler. Both retain their tasks; reciprocal requests have a deterministic priority and expire. Completion checks include structural properties and both bed halves. Existing gates, stairs and beds can be corrected without consuming a duplicate item. Bed reorientation removes only its matching old head, and protection/collision checks remain in place.
+
+The harvesting catalog now connects natural ores, clay, several stone types and renewable cane/bamboo to implemented source and tool rules. Mining/gathering retain Minecraft's actual drops; upgraded pickaxes are prerequisites for harder ores, and the base of a renewable plant is preserved. Unsupported resources are identified explicitly; this is not universal coverage of every Minecraft material.
+
+Design access distinguishes X/Y/Z walking cells and validates successive construction stages, so a bridge cannot stand in for the ground below it. The search includes the full project footprint, including its gate, and prioritizes cells near the next requested stand. Focused contracts cover matched learning evidence, rollback, persistence/merging, tool prerequisites and multilevel access. The combined disposable-world scenario is documented in TESTING.md; it checks execution with inference disabled.
+
 ## Alpha.26: complete surveys, recovery revisions and construction receipts
 
 Retained layouts now receive the same footprint-sized survey used for new proposals. A failed full survey can still fall back to a small map for asking the architect to revise its coordinates; that small map is never used to revalidate the distant footprint. Fresh validation failures are included in the next model request. A layout extending 52 blocks from its origin no longer loops against a 32-block survey merely because its geometry was unchanged.

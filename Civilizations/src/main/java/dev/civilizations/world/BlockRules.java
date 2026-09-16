@@ -36,21 +36,22 @@ public final class BlockRules {
   }
 
   public static boolean natural(Block b) {
-    return Set.of(
-            Material.STONE,
-            Material.DEEPSLATE,
-            Material.GRANITE,
-            Material.DIORITE,
-            Material.ANDESITE,
-            Material.DIRT,
-            Material.GRASS_BLOCK,
-            Material.COAL_ORE,
-            Material.DEEPSLATE_COAL_ORE,
-            Material.IRON_ORE,
-            Material.DEEPSLATE_IRON_ORE,
-            Material.COPPER_ORE,
-            Material.DEEPSLATE_COPPER_ORE)
-        .contains(b.getType());
+    return dev.civilizations.core.HarvestCatalog.mineral(b.getType().name())
+        || Set.of(
+                Material.STONE,
+                Material.DEEPSLATE,
+                Material.GRANITE,
+                Material.DIORITE,
+                Material.ANDESITE,
+                Material.DIRT,
+                Material.GRASS_BLOCK,
+                Material.COAL_ORE,
+                Material.DEEPSLATE_COAL_ORE,
+                Material.IRON_ORE,
+                Material.DEEPSLATE_IRON_ORE,
+                Material.COPPER_ORE,
+                Material.DEEPSLATE_COPPER_ORE)
+            .contains(b.getType());
   }
 
   public static boolean dry(Block b) {

@@ -35,6 +35,8 @@ public final class VillagerWorker {
   private final ToolActions tools;
   private final NearbyWork nearby;
   private final DeliveryActions deliveries;
+  private final ProjectSupplies projectSupplies;
+  private final YieldActions yielding;
   private Map<String, Object> lastFailure = Map.of();
   private Map<String, Integer> requests = Map.of();
   private String lastStep = "";
@@ -48,6 +50,9 @@ public final class VillagerWorker {
   }
 
   private Map<String, Integer> needed(Job candidate) {
+    if (candidate != null
+        && owns(candidate.target, 1)
+        && WorkState.reusable(candidate, location(candidate.target).getBlock())) return Map.of();
     return tools.needed(candidate, inventory(), here(), System.currentTimeMillis());
   }
 
@@ -93,6 +98,8 @@ public final class VillagerWorker {
     navigation = new WorkerNavigation(plugin, entity, village, this::navigationFailed);
     emergency = new WorkerEmergency(plugin, entity, village);
     deliveries = new DeliveryActions(plugin, entity, village, navigation);
+    projectSupplies = new ProjectSupplies(plugin, entity, village, navigation);
+    yielding = new YieldActions(plugin, entity, village, navigation);
     recovery = new RecoveryPolicy(System.currentTimeMillis(), plugin.reasoningCooldown());
     gathering = new GatheringActions(plugin, entity, village, navigation, recovery, this::fail);
     tools = new ToolActions(plugin, entity, village, navigation, this::fail);
@@ -241,6 +248,7 @@ public final class VillagerWorker {
             Map.of("result", "Continuing validated work; stale answer ignored"));
       }
       if (village.paused()) {
+        excludeLearning("village paused");
         deliveries.cancel();
         navigation.stop();
         movementControl.working(false);
@@ -250,6 +258,7 @@ public final class VillagerWorker {
         return;
       }
       if (emergency.needed()) {
+        excludeLearning("physical emergency");
         if (!escaping) {
           navigation.stop();
           deliveries.cancel();
@@ -305,10 +314,25 @@ public final class VillagerWorker {
           || supplyFor != null && !village.renew(supplyFor.id, id, now)) reset();
       // Observe completed work before publishing supplies, gathering, or accepting a courier.
       if (completeIfSatisfied(now)) return;
+      if (yielding.tick(now)) {
+        movementControl.working(true);
+        recovery.pause(now);
+        excludeLearning("yielding to another worker");
+        display = "moving aside for construction; own task retained";
+        return;
+      }
       requests = currentRequests();
+      if (job != null && projectSupplies.obtain(job, requests, at, now)) {
+        movementControl.working(true);
+        recovery.pause(now);
+        excludeLearning("retrieving reserved project supplies");
+        display = "retrieving reserved project supplies";
+        return;
+      }
       deliveries.publish(at, job, supplyFor, requests, now);
       nearby.tick(requests, now);
       if (!navigation.experimentActive() && deliveries.tick(now)) {
+        excludeLearning("cooperative delivery");
         movementControl.working(true);
         recovery.pause(now);
         display = deliveries.status();
@@ -316,6 +340,7 @@ public final class VillagerWorker {
       }
       var incoming = village.deliveries().incoming(id, now);
       if (incoming != null && !navigation.experimentActive()) {
+        excludeLearning("awaiting courier");
         navigation.stop();
         movementControl.working(true);
         recovery.pause(now);
@@ -357,7 +382,7 @@ public final class VillagerWorker {
         mode = "idle";
       }
       if (mode.equals("idle")) choose(now, at);
-      movementControl.working(Set.of("work", "gather", "deposit").contains(mode));
+      movementControl.working(Set.of("work", "gather", "deposit", "supplies").contains(mode));
       if (navigation.experimentTick(now)) {
         display = navigation.status();
         return;
@@ -370,6 +395,9 @@ public final class VillagerWorker {
         case "work" -> work(now, at);
         case "gather" -> gather(now, at);
         case "deposit" -> deposit(now, at);
+        case "supplies" -> {
+          if (!projectSupplies.surplus(at, now)) mode = "idle";
+        }
         case "rest" -> {
           if (now >= nextWork) mode = "idle";
         }
@@ -406,7 +434,9 @@ public final class VillagerWorker {
     if (job != null) {
       // Requests describe the executable prerequisite and the finished block, not incompatible
       // alternative recipes inferred from the old fixed recipe catalog.
-      if (job.kind == Job.Kind.PLACE && inventory().getOrDefault(job.material, 0) == 0)
+      if (job.kind == Job.Kind.PLACE
+          && inventory().getOrDefault(job.material, 0) == 0
+          && !(owns(job.target, 1) && WorkState.reusable(job, location(job.target).getBlock())))
         result.put(
             job.material, village.placementDemand(id, job.material, System.currentTimeMillis()));
       if ((job.kind == Job.Kind.MINE
@@ -574,6 +604,7 @@ public final class VillagerWorker {
         sites.put(r, plugin.resources(village.id(), r).size());
       report.put("resource_sites", sites);
       report.put("material_sources", MaterialSources.knowledge());
+      report.put("harvesting_capabilities", HarvestCatalog.report());
       report.put("current_project", village.taskProject(id));
       report.put("unfinished_steps", village.checkpoints(id));
       report.put("deposit_allowed", village.mayShareSurplus(id) && village.chest() != null);
@@ -675,7 +706,14 @@ public final class VillagerWorker {
     policyTicket =
         plugin.coreAi() == null
             ? null
-            : plugin.coreAi().begin(village.id(), id, policyChoice, candidate.id);
+            : plugin
+                .coreAi()
+                .begin(
+                    village.id(),
+                    id,
+                    policyChoice,
+                    candidate.id,
+                    candidate.kind + ":" + candidate.material + ":" + candidate.expected);
     village.taskProject(id, candidate.project);
     mode = "work";
     gathering.reset();
@@ -755,6 +793,12 @@ public final class VillagerWorker {
   }
 
   private void fallback(long now, Pos at) {
+    if (projectSupplies.surplus(at, now)) {
+      mode = "supplies";
+      movementControl.working(true);
+      recovery.pause(now);
+      return;
+    }
     List<Job> candidates = offered(now, at);
     var continuation =
         village.resume(
@@ -795,7 +839,7 @@ public final class VillagerWorker {
 
   private void complete(long now) {
     workPose.reset();
-    String after = location(job.target).getBlock().getBlockData().getAsString();
+    String after = WorkState.snapshot(job, location(job.target).getBlock());
     boolean changed = !after.equals(workBlockBefore);
     String effect = changed ? "world_changed" : "already_satisfied";
     boolean committed = village.done(job.id, id, effect);
@@ -874,6 +918,8 @@ public final class VillagerWorker {
 
   private boolean ingredients(long now, Pos at) {
     if (job.kind == Job.Kind.PLACE) {
+      if (owns(job.target, 1) && WorkState.reusable(job, location(job.target).getBlock()))
+        return true;
       ToolActions.Preparation p = tools.prepareItem(job.material, now, at);
       if (p.ready()) return true;
       if (!p.gather().isEmpty()) {
@@ -965,7 +1011,7 @@ public final class VillagerWorker {
       return;
     }
     Block block = location(job.target).getBlock();
-    workBlockBefore = block.getBlockData().getAsString();
+    workBlockBefore = WorkState.snapshot(job, block);
     if (job.kind == Job.Kind.PLACE) {
       var obstruction = PlacementSpace.obstruction(block, PlacementSpace.data(job));
       if (obstruction != null) {
@@ -1019,14 +1065,8 @@ public final class VillagerWorker {
   private boolean completeIfSatisfied(long now) {
     if (job == null || !owns(job.target, 1)) return false;
     Block block = location(job.target).getBlock();
-    boolean satisfied =
-        (job.kind == Job.Kind.MINE || job.kind == Job.Kind.CLEAR) && block.getType().isAir()
-            || job.kind == Job.Kind.PLACE
-                && block.getType().name().equals(job.material)
-                && (!(block.getBlockData() instanceof Bed bed)
-                    || block.getRelative(bed.getFacing()).getType() == block.getType());
-    if (!satisfied) return false;
-    workBlockBefore = block.getBlockData().getAsString();
+    if (!WorkState.satisfied(job, block)) return false;
+    workBlockBefore = WorkState.snapshot(job, block);
     complete(now);
     return true;
   }
@@ -1053,6 +1093,8 @@ public final class VillagerWorker {
                   ? "; no clear supported stand observed yet"
                   : " toward " + stand.key()));
     } else {
+      yielding.request(obstruction, job, now);
+      excludeLearning("construction occupied by another entity");
       navigation.stop();
       entity.getPathfinder().stopPathfinding();
       workWait(
@@ -1081,7 +1123,8 @@ public final class VillagerWorker {
       gathering.reset();
       return;
     }
-    if (Set.of("COAL", "COBBLESTONE").contains(resource) && !prepareTools(1, now, at)) return;
+    if (HarvestCatalog.required(resource) > 0
+        && !prepareTools(HarvestCatalog.required(resource), now, at)) return;
     if (!needed(job).containsKey(resource)) {
       mode = "work";
       gathering.reset();
@@ -1213,10 +1256,18 @@ public final class VillagerWorker {
   }
 
   private void navigationFailed(long now, String reason) {
-    if (!deliveries.failed(now, reason)) fail(now, reason);
+    if (!yielding.failed(now, reason) && !deliveries.failed(now, reason)) fail(now, reason);
   }
 
   private void fail(long now, String reason) {
+    String lower = reason.toLowerCase(Locale.ROOT);
+    if ((lower.contains("inventory full") || lower.contains("no room for"))
+        && projectSupplies.makeRoom(job, reason)) {
+      recovery.pause(now);
+      excludeLearning("inventory capacity interruption");
+      workWait("reserved a project supply bundle; retrying the same task");
+      return;
+    }
     lastFailure = FailureEvidence.inspect(plugin, entity, village, job, reason, needed(job), now);
     var evidence = new java.util.LinkedHashMap<String, Object>(lastFailure);
     evidence.put("navigation", navigation.evidence());
@@ -1247,6 +1298,7 @@ public final class VillagerWorker {
   private void reset() {
     village.checkpoint(id, job, supplyFor, "Interrupted; retained for resumption");
     deliveries.cancel();
+    yielding.cancel();
     mind.cancel("worker_reset");
     workPose.reset();
     waitingReason = "";
@@ -1261,5 +1313,14 @@ public final class VillagerWorker {
     generation++;
     village.release(id);
     navigation.stop();
+  }
+
+  private void excludeLearning(String reason) {
+    if (policyTicket != null) {
+      plugin
+          .coreAi()
+          .outcome(policyTicket, false, Map.of("interruption", reason, "attributable", false));
+      policyTicket = null;
+    }
   }
 }

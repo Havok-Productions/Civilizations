@@ -7,26 +7,24 @@ import java.util.*;
 /** Rejects disconnected islands and cliff-top sites before villagers are assigned work. */
 final class DesignAccess {
   static void verify(DesignSite s) {
-    var targets =
-        s.jobs.getFirst().kind == dev.civilizations.core.Job.Kind.MINE
-            ? List.of(s.jobs.getFirst().stand)
-            : s.jobs.stream()
-                .filter(j -> j.kind != dev.civilizations.core.Job.Kind.CLEAR)
-                .map(j -> j.stand)
-                .toList();
-    if (targets.isEmpty()) return; // Clearing stages already verified their own approaches.
-    Set<String> reached = reachable(s, s.prepared, targets, false);
-    if (s.jobs.getFirst().kind == dev.civilizations.core.Job.Kind.MINE)
+    if (s.jobs.getFirst().kind == dev.civilizations.core.Job.Kind.MINE) {
+      var entrance = s.jobs.getFirst().stand;
       s.require(
-          reached.contains(key(s.jobs.getFirst().stand)),
+          reachable(s, s.prepared, List.of(entrance), false).contains(key(entrance)),
           "Mine entrance is disconnected from village walking ground");
-    else
-      for (var j : s.jobs)
-        if (j.kind != dev.civilizations.core.Job.Kind.CLEAR)
-          s.require(
-              reached.contains(key(j.stand)),
-              "Design work site is disconnected by water, structures or cliffs at "
-                  + j.stand.key());
+      return;
+    }
+    // A house's floor creates real standing space one level above the original ground.
+    // Validate each stage against preceding work, never equate it with the floor below.
+    Map<Pos, String> staged = new HashMap<>(s.prepared);
+    for (var j : s.jobs) {
+      if (j.kind == dev.civilizations.core.Job.Kind.CLEAR) continue;
+      s.require(
+          reachable(s, staged, List.of(j.stand), false).contains(key(j.stand)),
+          "Design work site is disconnected by water, structures or cliffs at " + j.stand.key());
+      if (j.kind == dev.civilizations.core.Job.Kind.PLACE) staged.put(j.target, j.material);
+      else if (j.kind == dev.civilizations.core.Job.Kind.PATH) staged.put(j.target, "DIRT_PATH");
+    }
   }
 
   /** Search only until the requested work positions (or one next clearing approach) are reached. */
@@ -58,10 +56,17 @@ final class DesignAccess {
           }
         };
     Set<String> reached = new HashSet<>();
-    ArrayDeque<Pos> queue = new ArrayDeque<>();
+    // Visit cells nearest a requested stand first. Exhaustion still explores the same 3D graph,
+    // but staged construction need not flood an entire distant village for every single block.
+    Queue<Pos> queue =
+        new PriorityQueue<>(
+            Comparator.comparingLong(
+                p -> targets.stream().mapToLong(p::distance2).min().orElse(0)));
     Pos c = s.center;
     int extent =
-        targets.stream()
+        java.util.stream.Stream.concat(
+                    targets.stream(),
+                    s.jobs.stream().flatMap(j -> java.util.stream.Stream.of(j.target, j.stand)))
                 .mapToInt(
                     j ->
                         (int)
@@ -78,8 +83,9 @@ final class DesignAccess {
     for (int r = 0; r <= 4; r++)
       for (int x = -r; x <= r; x++)
         for (int z = -r; z <= r; z++) {
-          Pos p = walk(terrain, c.x() + x, c.z() + z, c.y(), 3);
-          if (p != null && Math.abs(p.y() - c.y()) <= 3) {
+          List<Pos> starts = walk(terrain, c.x() + x, c.z() + z, c.y(), 3);
+          if (!starts.isEmpty()) {
+            Pos p = starts.getFirst();
             queue.add(p);
             reached.add(key(p));
             if (pending.remove(key(p)) && (any || pending.isEmpty())) return reached;
@@ -92,34 +98,36 @@ final class DesignAccess {
       for (int[] d : new int[][] {{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
         int x = p.x() + d[0], z = p.z() + d[1];
         if (Math.abs((long) x - c.x()) > extent || Math.abs((long) z - c.z()) > extent) continue;
-        Pos q = walk(terrain, x, z, p.y(), 1);
-        if (q != null && Math.abs(q.y() - p.y()) <= 1 && reached.add(key(q))) {
-          if (pending.remove(key(q)) && (any || pending.isEmpty())) return reached;
-          s.require(
-              reached.size() < 20000,
-              "Access search incomplete after "
-                  + reached.size()
-                  + " walking cells; still seeking "
-                  + pending.stream().sorted().limit(4).toList()
-                  + "; this is a search budget limit, not proof of disconnected terrain");
-          queue.add(q);
-        }
+        for (Pos q : walk(terrain, x, z, p.y(), 1))
+          if (reached.add(key(q))) {
+            if (pending.remove(key(q)) && (any || pending.isEmpty())) return reached;
+            s.require(
+                reached.size() < 20000,
+                "Access search incomplete after "
+                    + reached.size()
+                    + " walking cells; still seeking "
+                    + pending.stream().sorted().limit(4).toList()
+                    + "; this is a search budget limit, not proof of disconnected terrain");
+            queue.add(q);
+          }
       }
     }
     return reached;
   }
 
   static String key(Pos p) {
-    return p.x() + "," + p.z();
+    return p.key();
   }
 
-  private static Pos walk(Terrain t, int x, int z, int nearY, int range) {
-    if (!t.available(x, z)) return null;
+  private static List<Pos> walk(Terrain t, int x, int z, int nearY, int range) {
+    if (!t.available(x, z)) return List.of();
+    List<Pos> result = new ArrayList<>();
     // A heightmap reports roofs and tree tops. Navigation needs the walking floor beneath them.
     for (int offset = 0; offset <= range; offset++)
       for (int direction : new int[] {1, -1}) {
         Pos feet = new Pos(x, nearY + offset * direction, z), ground = feet.add(0, -1, 0);
         String support = t.type(ground);
+        if (offset == 0 && direction == -1) continue;
         if ((t.natural(ground)
                 || support.endsWith("_PLANKS")
                 || support.endsWith("_STAIRS")
@@ -127,9 +135,9 @@ final class DesignAccess {
                 || Set.of("DIRT_PATH", "FARMLAND", "COBBLESTONE", "STONE_BRICKS").contains(support))
             && walkThrough(t, feet)
             && walkThrough(t, feet.add(0, 1, 0))
-            && !t.fluid(ground)) return feet;
+            && !t.fluid(ground)) result.add(feet);
       }
-    return null;
+    return result;
   }
 
   private static boolean walkThrough(Terrain t, Pos p) {

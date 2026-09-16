@@ -13,6 +13,13 @@ public final class MiningTools {
     return slot(inv, ToolRecipes.required(block)) >= 0 || ToolRecipes.required(block) == 0;
   }
 
+  public static ItemStack tool(Inventory inv, String block) {
+    int index = slot(inv, ToolRecipes.required(block));
+    return index < 0 || ToolRecipes.required(block) == 0
+        ? new ItemStack(org.bukkit.Material.AIR)
+        : inv.getItem(index).clone();
+  }
+
   private static int slot(Inventory inv, int needed) {
     for (int i = 0; i < inv.getSize(); i++) {
       ItemStack item = inv.getItem(i);

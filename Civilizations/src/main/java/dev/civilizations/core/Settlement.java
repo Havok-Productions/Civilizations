@@ -6,6 +6,8 @@ import java.util.*;
 public final class Settlement {
   public record Memory(long time, String result) {}
 
+  public record SupplyCache(String entity, String project, String owner, Pos position) {}
+
   public static final class Agent {
     public String id;
     public String role;
@@ -50,6 +52,7 @@ public final class Settlement {
     public List<VillageKnowledge.Blockage> blockedFacts = new ArrayList<>();
     public List<VillageKnowledge.Supply> supplyNeeds = new ArrayList<>();
     public Map<String, VillageKnowledge.Progress> progress = new LinkedHashMap<>();
+    public Map<String, SupplyCache> supplyCaches = new LinkedHashMap<>();
   }
 
   public synchronized List<RepairBlock> repairBlocks() {
@@ -111,6 +114,24 @@ public final class Settlement {
 
   public DeliveryBoard deliveries() {
     return deliveries;
+  }
+
+  private final YieldBoard yielding = new YieldBoard();
+
+  public YieldBoard yielding() {
+    return yielding;
+  }
+
+  public synchronized void cache(SupplyCache cache) {
+    data.supplyCaches.put(cache.entity(), cache);
+  }
+
+  public synchronized void removeCache(String entity) {
+    data.supplyCaches.remove(entity);
+  }
+
+  public synchronized List<SupplyCache> caches() {
+    return List.copyOf(data.supplyCaches.values());
   }
 
   private final StorageCapacity storageCapacity = new StorageCapacity();
@@ -252,6 +273,7 @@ public final class Settlement {
 
   public synchronized void finishTasks(String worker) {
     if (!taskComplete(worker)) return;
+    if (data.supplyCaches.values().stream().anyMatch(c -> c.owner().equals(worker))) return;
     Agent a = data.agents.get(worker);
     a.taskProject = "";
     a.committedProjects = new HashSet<>();
@@ -261,6 +283,7 @@ public final class Settlement {
     this.data = data;
     if (data.repairBlocks == null) data.repairBlocks = new ArrayList<>();
     if (data.chests == null) data.chests = new ArrayList<>();
+    if (data.supplyCaches == null) data.supplyCaches = new LinkedHashMap<>();
     if (data.chest != null && !data.chests.contains(data.chest)) data.chests.add(data.chest);
     if (data.areas == null) data.areas = new ArrayList<>();
     if (data.areas.isEmpty()) data.areas.add(data.center);
@@ -756,6 +779,7 @@ public final class Settlement {
     d.blockedFacts = knowledge.blocks();
     d.supplyNeeds = knowledge.supplySnapshot();
     d.progress = knowledge.progressSnapshot();
+    d.supplyCaches = new LinkedHashMap<>(data.supplyCaches);
     data.agents.forEach(
         (id, a) -> {
           Agent b = new Agent(id, a.role);

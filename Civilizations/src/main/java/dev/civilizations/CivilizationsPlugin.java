@@ -846,12 +846,7 @@ public final class CivilizationsPlugin extends JavaPlugin
                             && j.everBuilt
                             && (j.kind == Job.Kind.PLACE || j.kind == Job.Kind.PATH)
                             && terrain.available(j.target.x(), j.target.z())) {
-                          String actual = terrain.type(j.target);
-                          if (!actual.equals("UNKNOWN")
-                              && (!actual.equals(j.material)
-                                  || j.material.equals("WHITE_BED")
-                                      && !terrain.type(j.target.add(0, 0, 1)).equals("WHITE_BED")))
-                            v.damaged(j.id);
+                          if (WorkState.damaged(j, terrain)) v.damaged(j.id);
                         }
                       if (!adaptiveDesign
                           && expand

@@ -51,6 +51,7 @@ public interface Terrain {
 
   default boolean natural(Pos p) {
     return dev.civilizations.core.SiteMaterials.soil(type(p))
+        || dev.civilizations.core.HarvestCatalog.mineral(type(p))
         || Set.of(
                 "STONE",
                 "DEEPSLATE",

@@ -21,13 +21,18 @@ public final class WorkerPlan {
     if (job.kind == Job.Kind.MINE) {
       int tier = Math.max(1, ToolRecipes.required(job.expected));
       if (ToolRecipes.tier(inv) >= tier) return Map.of();
-      output = tier >= 2 && ToolRecipes.tier(inv) > 0 ? "STONE_PICKAXE" : "WOODEN_PICKAXE";
+      output =
+          ToolRecipes.nextTool(
+              tier, ToolRecipes.tier(inv), inv.getOrDefault("COBBLESTONE", 0) >= 3);
     }
     CraftingBook.Step step = recipes.next(output, inv, table, furnace);
     if (step.action().equals("gather")
-        && Set.of("COAL", "COBBLESTONE").contains(step.item())
-        && ToolRecipes.tier(inv) == 0) {
-      output = "WOODEN_PICKAXE";
+        && HarvestCatalog.required(step.item()) > ToolRecipes.tier(inv)) {
+      output =
+          ToolRecipes.nextTool(
+              HarvestCatalog.required(step.item()),
+              ToolRecipes.tier(inv),
+              inv.getOrDefault("COBBLESTONE", 0) >= 3);
       step = recipes.next(output, inv, table, furnace);
     }
     if (!step.action().equals("gather")) return Map.of();

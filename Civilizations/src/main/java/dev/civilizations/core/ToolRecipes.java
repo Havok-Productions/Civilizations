@@ -17,20 +17,39 @@ public final class ToolRecipes {
   }
 
   public static int required(String block) {
+    if (Set.of(
+            "GOLD_ORE",
+            "DEEPSLATE_GOLD_ORE",
+            "DIAMOND_ORE",
+            "DEEPSLATE_DIAMOND_ORE",
+            "EMERALD_ORE",
+            "DEEPSLATE_EMERALD_ORE",
+            "REDSTONE_ORE",
+            "DEEPSLATE_REDSTONE_ORE")
+        .contains(block)) return 3;
+    if (Set.of("LAPIS_ORE", "DEEPSLATE_LAPIS_ORE").contains(block)) return 2;
     if (Set.of("IRON_ORE", "DEEPSLATE_IRON_ORE", "COPPER_ORE", "DEEPSLATE_COPPER_ORE")
         .contains(block)) return 2;
     return Set.of(
-                "STONE",
-                "DEEPSLATE",
-                "GRANITE",
-                "DIORITE",
-                "ANDESITE",
-                "COAL_ORE",
-                "DEEPSLATE_COAL_ORE",
-                "COBBLESTONE")
-            .contains(block)
+                    "STONE",
+                    "DEEPSLATE",
+                    "GRANITE",
+                    "DIORITE",
+                    "ANDESITE",
+                    "COAL_ORE",
+                    "DEEPSLATE_COAL_ORE",
+                    "COBBLESTONE")
+                .contains(block)
+            || Set.of("TUFF", "CALCITE", "NETHER_QUARTZ_ORE").contains(block)
         ? 1
         : 0;
+  }
+
+  public static String nextTool(int required, int carriedTier, boolean cobblestoneAvailable) {
+    if (required >= 3 && carriedTier >= 2) return "IRON_PICKAXE";
+    return required >= 2 && (carriedTier > 0 || cobblestoneAvailable)
+        ? "STONE_PICKAXE"
+        : "WOODEN_PICKAXE";
   }
 
   public static Step next(Map<String, Integer> inv, boolean table, int required) {

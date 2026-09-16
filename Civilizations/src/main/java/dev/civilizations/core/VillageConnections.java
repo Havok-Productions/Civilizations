@@ -57,6 +57,12 @@ public final class VillageConnections {
       for (Pos p : from.areas) if (!d.areas.contains(p)) d.areas.add(p);
       for (Pos p : from.beds) if (!d.beds.contains(p)) d.beds.add(p);
       from.projects.forEach(p -> d.projects.add(project.apply(p)));
+      from.supplyCaches.forEach(
+          (id, cache) ->
+              d.supplyCaches.putIfAbsent(
+                  id,
+                  new Settlement.SupplyCache(
+                      id, project.apply(cache.project()), cache.owner(), cache.position())));
       for (Job j : from.jobs) {
         j.project = project.apply(j.project);
         d.jobs.add(j);
