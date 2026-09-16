@@ -34,7 +34,9 @@ public class Fixture extends JavaPlugin {
         return;
       }
       case RULE_LEARNING -> {
-        new RuleLearningChecks(this).start();
+        if (Boolean.getBoolean("civilizations.test.lesson-memory"))
+          new LessonMemoryChecks(this).start();
+        else new RuleLearningChecks(this).start();
         return;
       }
       case LIVE_SKILL -> {

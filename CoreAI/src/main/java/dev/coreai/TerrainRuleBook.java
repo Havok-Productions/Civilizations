@@ -46,6 +46,10 @@ public final class TerrainRuleBook {
 
   private final Path file;
   private final LinkedHashMap<String, Rule> rules = new LinkedHashMap<>();
+  // Region threads publish verified observations here without disk IO. A flush commits a snapshot
+  // and removes only those exact entries, so observations arriving during a write cannot be lost.
+  private final Map<String, Rule> observations = new LinkedHashMap<>();
+  private final Object persistence = new Object();
   private final Map<String, Pilot> pilots = new HashMap<>();
   private int searchRadius;
   private final Map<String, Integer> parameters = new LinkedHashMap<>();
@@ -54,10 +58,8 @@ public final class TerrainRuleBook {
     Files.createDirectories(root);
     file = root.resolve("terrain.json");
     if (Files.exists(file)) {
-      if (Files.size(file) > 1_000_000) throw new IOException("Terrain rule size limit");
       try {
         State saved = new Gson().fromJson(Files.readString(file), State.class);
-        if (saved.rules().size() > 256) throw new IllegalArgumentException("Rule storage capacity");
         for (Rule r : saved.rules()) {
           validate(r.facts(), r.category());
           rules.put(key(r.facts().material(), r.facts().state()), r);
@@ -95,7 +97,32 @@ public final class TerrainRuleBook {
     String key = key(material, state);
     for (Pilot p : pilots.values())
       if (p.worker.equals(worker) && p.rules.containsKey(key)) return p.rules.get(key);
-    return rules.get(key);
+    return observations.getOrDefault(key, rules.get(key));
+  }
+
+  /** A measured fact is useful immediately, independently of a behavioral pilot's outcome. */
+  public synchronized boolean learn(Facts facts, String category, String source, String teacher) {
+    validate(facts, category);
+    String key = key(facts.material(), facts.state());
+    Rule known = observations.getOrDefault(key, rules.get(key));
+    if (known != null && known.facts().equals(facts) && known.category().equals(category))
+      return false;
+    observations.put(key, new Rule(facts, category, source, teacher, System.currentTimeMillis()));
+    return true;
+  }
+
+  public synchronized boolean dirty() {
+    return !observations.isEmpty();
+  }
+
+  public synchronized boolean learnIfAbsent(
+      Facts facts, String category, String source, String teacher) {
+    if (rule("", facts.material(), facts.state()) != null) return false;
+    return learn(facts, category, source, teacher);
+  }
+
+  public State flush() throws IOException {
+    return finish("", false);
   }
 
   public synchronized Rule stage(
@@ -153,31 +180,36 @@ public final class TerrainRuleBook {
    * Called on the learning IO thread. Preserve validated facts independently of behavior success.
    */
   public State finish(String trial, boolean success) throws IOException {
+    synchronized (persistence) {
+      return commit(trial, success);
+    }
+  }
+
+  private State commit(String trial, boolean success) throws IOException {
     State state;
+    Map<String, Rule> captured;
     synchronized (this) {
       Pilot p = pilots.get(trial);
-      if (p == null || (!success && p.rules.isEmpty())) {
+      if (observations.isEmpty() && (p == null || (!success && p.rules.isEmpty()))) {
         pilots.remove(trial);
         return snapshot();
       }
+      captured = Map.copyOf(observations);
       var next = new LinkedHashMap<>(rules);
-      p.rules.forEach(
-          (key, value) -> {
-            next.remove(key);
-            next.put(key, value);
-          });
-      while (next.size() > 256) next.remove(next.keySet().iterator().next());
+      if (p != null)
+        p.rules.forEach(
+            (key, value) -> {
+              next.remove(key);
+              next.put(key, value);
+            });
+      next.putAll(captured);
       var nextParameters = new LinkedHashMap<>(parameters);
-      if (success) nextParameters.putAll(p.parameters);
+      if (success && p != null) nextParameters.putAll(p.parameters);
       state =
           new State(
               List.copyOf(next.values()),
-              !success || p.radius == 0 ? searchRadius : p.radius,
+              !success || p == null || p.radius == 0 ? searchRadius : p.radius,
               nextParameters);
-      while (new Gson().toJson(state).length() > 900000 && next.size() > 1) {
-        next.remove(next.keySet().iterator().next());
-        state = new State(List.copyOf(next.values()), state.searchRadius(), state.parameters());
-      }
     }
     // Disk IO never holds the lock used by region-thread probes.
     try {
@@ -190,6 +222,7 @@ public final class TerrainRuleBook {
       pilots.remove(trial);
       rules.clear();
       for (Rule r : state.rules()) rules.put(key(r.facts().material(), r.facts().state()), r);
+      captured.forEach((key, value) -> observations.remove(key, value));
       parameters.clear();
       parameters.putAll(state.parameters());
       searchRadius = state.searchRadius();
@@ -209,11 +242,14 @@ public final class TerrainRuleBook {
 
   public synchronized Map<String, Rule> view(String worker) {
     var result = new LinkedHashMap<>(rules);
+    result.putAll(observations);
     for (Pilot p : pilots.values()) if (p.worker.equals(worker)) result.putAll(p.rules);
     return Map.copyOf(result);
   }
 
   public synchronized State snapshot() {
-    return new State(List.copyOf(rules.values()), searchRadius, parameters);
+    var known = new LinkedHashMap<>(rules);
+    known.putAll(observations);
+    return new State(List.copyOf(known.values()), searchRadius, parameters);
   }
 }

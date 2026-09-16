@@ -48,6 +48,8 @@ public final class RecoveryExperiments implements AutoCloseable {
   private final Consumer<String> warning;
   private final AtomicReference<Trial> active = new AtomicReference<>();
   private final AtomicLong nextRequest = new AtomicLong();
+  private final AtomicBoolean factsQueued = new AtomicBoolean();
+  private volatile long nextFactsRetry;
   private volatile boolean closed;
 
   public RecoveryExperiments(
@@ -73,6 +75,24 @@ public final class RecoveryExperiments implements AutoCloseable {
               return t;
             },
             new ThreadPoolExecutor.AbortPolicy());
+    enqueue(
+        () -> {
+          try {
+            int restored = LessonRecovery.restore(root, rules);
+            if (restored > 0)
+              journal.append(
+                  "lessons",
+                  Map.of(
+                      "time",
+                      System.currentTimeMillis(),
+                      "event",
+                      "historical_facts_restored",
+                      "count",
+                      restored));
+          } catch (IOException error) {
+            warning.accept("Historical block lessons could not be restored: " + error);
+          }
+        });
   }
 
   private boolean enqueue(Runnable task) {
@@ -90,6 +110,50 @@ public final class RecoveryExperiments implements AutoCloseable {
       warning.accept("Live experiment queue unavailable");
       return false;
     }
+  }
+
+  /** Live physical facts require no teacher request and no successful route to be remembered. */
+  public synchronized boolean remember(
+      TerrainRuleBook.Facts facts, String category, String source, String provenance) {
+    if (closed) return false;
+    boolean changed = rules.learn(facts, category, source, provenance);
+    flushFacts();
+    return changed;
+  }
+
+  private void flushFacts() {
+    if (System.currentTimeMillis() < nextFactsRetry
+        || !rules.dirty()
+        || !factsQueued.compareAndSet(false, true)) return;
+    if (!enqueue(
+        () -> {
+          boolean saved = false;
+          try {
+            var state = rules.flush();
+            journal.append(
+                "lessons",
+                Map.of(
+                    "time",
+                    System.currentTimeMillis(),
+                    "event",
+                    "facts_saved",
+                    "classifications",
+                    state.rules().size(),
+                    "basis",
+                    "verified physical observations"));
+            saved = true;
+          } catch (IOException error) {
+            nextFactsRetry = System.currentTimeMillis() + 5000;
+            warning.accept("Block lessons not persisted; retained for retry: " + error);
+          } finally {
+            factsQueued.set(false);
+            if (saved && !closed) flushFacts();
+          }
+        })) factsQueued.set(false);
+  }
+
+  public void saveLessons() {
+    if (!closed) flushFacts();
   }
 
   public Trial request(String village, String worker, SkillContext context, long now) {
@@ -495,11 +559,27 @@ public final class RecoveryExperiments implements AutoCloseable {
         + (learned.searchRadius() == 0 ? "configured default" : learned.searchRadius());
   }
 
-  public void close() {
+  public synchronized void close() {
+    if (closed) return;
     closed = true;
     Trial t = active.get();
     if (t != null) cancel(t, "server_shutdown");
+    // A final write runs after any in-flight snapshot, even when a coalesced flush already exists.
+    enqueue(
+        () -> {
+          try {
+            rules.flush();
+          } catch (IOException error) {
+            warning.accept("Final block lesson save failed: " + error);
+          }
+        });
     io.shutdown();
+    try {
+      if (!io.awaitTermination(5, TimeUnit.SECONDS))
+        warning.accept("Learning IO still draining during shutdown");
+    } catch (InterruptedException error) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   private static final String SYSTEM =

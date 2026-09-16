@@ -14,6 +14,50 @@ class TerrainRuleBookTest {
 
   @org.junit.jupiter.api.Tag("coreai")
   @Test
+  void ordinaryFactsSurviveFailedTrialsReloadAndMoreThanTheOldRuleCapacity() throws Exception {
+    var book = new TerrainRuleBook(root);
+    var carrot =
+        new TerrainRuleBook.Facts(
+            "CARROTS", "minecraft:carrots[age=0]", true, true, false, true, false, false, false);
+    assertTrue(book.learn(carrot, "PASSABLE", "observed", "host"));
+    assertNotNull(book.rule("another-worker", carrot.material(), carrot.state()));
+    assertFalse(book.learn(carrot, "PASSABLE", "observed again", "host"));
+    book.stageRadius("failed", "worker", 80);
+    book.stageParameter("failed", "worker", "navigation.retry_ms", 200);
+    book.finish("failed", false);
+    for (int i = 0; i < 300; i++)
+      book.learn(
+          new TerrainRuleBook.Facts(
+              "FIXTURE_BLOCK", "fixture-state-" + i, true, true, false, true, false, false, false),
+          "PASSABLE",
+          "fixture",
+          "host");
+    book.flush();
+    var restored = new TerrainRuleBook(root);
+    assertEquals(301, restored.snapshot().rules().size());
+    assertNotNull(restored.rule("worker", carrot.material(), carrot.state()));
+    assertNull(restored.rule("worker", carrot.material(), "minecraft:carrots[age=7]"));
+    assertEquals(20, restored.radius("worker", 20, 0));
+    assertEquals(15000, restored.parameter("worker", "navigation.retry_ms", 15000));
+  }
+
+  @org.junit.jupiter.api.Tag("coreai")
+  @Test
+  void failedObservationSaveKeepsTheLessonForRetry() throws Exception {
+    var book = new TerrainRuleBook(root);
+    book.learn(clutter, "PASSABLE", "observed", "host");
+    java.nio.file.Files.createDirectory(root.resolve("terrain.tmp"));
+    assertThrows(java.io.IOException.class, book::flush);
+    assertTrue(book.dirty());
+    assertNotNull(book.rule("worker", clutter.material(), clutter.state()));
+    java.nio.file.Files.delete(root.resolve("terrain.tmp"));
+    book.flush();
+    assertFalse(book.dirty());
+    assertNotNull(new TerrainRuleBook(root).rule("worker", clutter.material(), clutter.state()));
+  }
+
+  @org.junit.jupiter.api.Tag("coreai")
+  @Test
   void collisionDamageAndUnobservedSpaceCannotBeRewrittenAway() {
     assertThrows(
         IllegalArgumentException.class,

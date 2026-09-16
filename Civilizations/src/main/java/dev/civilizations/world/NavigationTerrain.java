@@ -43,7 +43,8 @@ public final class NavigationTerrain {
           else if (BlockObservation.dangerous(type, state)) kind = NavigationMap.Kind.HAZARD;
           else if (terrain.fluid(p) || state != null && state.contains("waterlogged=true"))
             kind = NavigationMap.Kind.FLUID;
-          else if (rule != null) kind = learnedKind(rule, protectedBlocks.contains(p));
+          else if (rule != null && !rule.facts().solid())
+            kind = learnedKind(rule, protectedBlocks.contains(p));
           else if (type.equals("COBWEB")) kind = NavigationMap.Kind.OBSTACLE;
           else if (material.isAir()
               || terrain.clear(p)

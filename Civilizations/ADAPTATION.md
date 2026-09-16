@@ -1,5 +1,15 @@
 # Controller adaptation and activity recovery
 
+## Alpha.40: durable physical lessons
+
+Ordinary workers observe nearby non-solid blocks on their owning region and record verified block facts before harvesting, clearing or farming changes the block. These observations require no teacher call. Measured passability is shared between workers immediately and saved in `CoreAI/rules/terrain.json` independently of whether a later task succeeds. Exact block states identify facts; changed crop growth or other state is observed afresh. Solid earth keeps its normal natural-clearance and structural-protection checks even when a remembered fact calls it an obstacle.
+
+The learning IO service coalesces saves without doing disk work on a worker's region, retains pending facts for retry after a failed write, and drains a final save on orderly shutdown. It no longer silently evicts older classifications at 256 entries. Debug events distinguish `block_lesson_learned` from `block_lesson_reused`; `CoreAI/data/lessons.jsonl` records persistence and historical recovery. Saving a fact does not make a failed recovery program successful or promote its proposed behavior parameters.
+
+On the first run of this version, an asynchronous migration reads retained experiment journals, including rotated archives, and restores matching physical probes and validated classifications that older unsuccessful trials discarded. It does not overwrite existing lessons or adopt behavioral claims. A marker prevents repeating the import. Only facts still present in retained journals can be recovered.
+
+The disposable `rule-learning` scenario with `-Dcivilizations.test.lesson-memory=true` checks two actual repairs through carrots with inference disabled. Between workers it closes and recreates the learning service from disk, then checks reuse of age-zero carrots and a fresh lesson for age-seven carrots. This is a service reload, not a full process restart. Persistence, failed-write retry, failed-task independence and archival import also have focused JVM checks. These are evidence of retained physical knowledge, not neural-weight training or general autonomous problem-solving success.
+
 ## Alpha.39: focused model context and local execution
 
 CoreAI retains the task, supply-parent checkpoints and physical execution. The teacher receives a focused snapshot when a plan or recovery decision is needed. An in-flight teacher does not own ordinary movement or crafting. Delayed advice is tied to its originating project and observation deadline, and is cleared on worker reset; it cannot displace a newer commitment.

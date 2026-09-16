@@ -115,6 +115,7 @@ public final class SkillRuleActions {
         throw new IllegalArgumentException("Classification target changed since observation");
       var proposed =
           rules.stage(trial.id, trial.worker, facts, step.material(), explanation, trial.teacher);
+      plugin.experiments().remember(facts, step.material(), explanation, trial.teacher);
       receipt =
           Map.of(
               "instruction",

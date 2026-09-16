@@ -314,6 +314,13 @@ final class RuleLearningChecks {
       field.set(plugin, service);
       plugin.navigation().rules(service.rules(), 48);
       VillagerWorker worker = new VillagerWorker(plugin, actor, village);
+      // This selector deliberately isolates generated recovery programs. The lesson-memory
+      // selector exercises normal automatic observation without asking a teacher first.
+      var lessonsField = VillagerWorker.class.getDeclaredField("lessons");
+      lessonsField.setAccessible(true);
+      var observeAt = BlockLessons.class.getDeclaredField("nextObservation");
+      observeAt.setAccessible(true);
+      observeAt.setLong(lessonsField.get(worker), Long.MAX_VALUE);
       var workers = CivilizationsPlugin.class.getDeclaredField("workers");
       workers.setAccessible(true);
       ((Map<String, VillagerWorker>) workers.get(plugin))

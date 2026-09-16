@@ -20,6 +20,7 @@ public final class FarmingActions {
     if (!hydrated(soil)) return new Result(false, "Farm soil is not hydrated by nearby water");
     if (!plugin.mayChange(actor, crop, "FARM") || !plugin.mayChange(actor, soil, "TILL"))
       return new Result(false, "Farm protected");
+    BlockLessons.remember(plugin, actor, crop, "farming_observation");
     if (crop.getType() == Material.WHEAT && crop.getBlockData() instanceof Ageable age) {
       if (age.getAge() < age.getMaximumAge())
         return new Result(true, "Wheat is growing; wait for maturity");

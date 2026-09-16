@@ -12,6 +12,7 @@
     "diagnostics": "Failure classification, journal persistence and outcome evidence"
   },
   "source_rules": [
+    {"patterns": ["*/BlockLessons.java", "*/LessonRecovery.java"], "sections": ["coreai", "navigation", "diagnostics", "tasks"]},
     {"patterns": ["*/ai/ModelContext.java", "*/ai/PromptBudget.java"], "sections": ["inference", "design", "runtime"]},
     {"patterns": ["*/ai/DecisionHandoff.java"], "sections": ["inference", "tasks"]},
     {"patterns": ["*/SurfaceSwimming.java", "*/SurfaceEscape.java"], "sections": ["navigation"]},

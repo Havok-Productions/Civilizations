@@ -161,6 +161,7 @@ public final class RouteClearance {
       if (!InventoryOps.canFit(actor.getInventory(), List.copyOf(drops)))
         return blocked("inventory_full_for_obstacle_drops", p, map);
       String material = b.getType().name();
+      BlockLessons.remember(plugin, actor, b, "route_clearance_observation");
       b.setType(Material.AIR, false);
       if (!b.getType().isAir()) return blocked("obstacle_removal_did_not_persist", p, map);
       drops.forEach(item -> actor.getInventory().addItem(item));

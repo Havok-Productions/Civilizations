@@ -71,12 +71,14 @@ public final class VillagerWorker {
   private volatile boolean stopped;
   private boolean night, fleeing;
   private volatile String display = "starting";
+  private final BlockLessons lessons;
 
   public VillagerWorker(CivilizationsPlugin plugin, Villager entity, Settlement village) {
     this.plugin = plugin;
     this.entity = entity;
     this.village = village;
     this.id = entity.getUniqueId().toString();
+    lessons = new BlockLessons(plugin, entity, village);
     mind =
         new VillagerMind(
             id,
@@ -311,6 +313,7 @@ public final class VillagerWorker {
     try {
       long now = System.currentTimeMillis();
       Pos at = here();
+      lessons.observe(now);
       if (awaiting && now >= responseDeadline) {
         awaiting = false;
         generation++;

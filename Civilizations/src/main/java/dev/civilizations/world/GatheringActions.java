@@ -290,6 +290,7 @@ public final class GatheringActions {
       return;
     }
     String mined = block.getType().name();
+    BlockLessons.remember(plugin, entity, block, "harvest_observation");
     block.setType(Material.AIR, false);
     if (!block.getType().isAir()) {
       fail(now, "Resource removal failed");
@@ -392,6 +393,7 @@ public final class GatheringActions {
       fail(now, "Inventory full; seeds not harvested");
       return;
     }
+    BlockLessons.remember(plugin, entity, block, "seed_harvest_observation");
     block.setType(Material.AIR, false);
     drops.forEach(i -> entity.getInventory().addItem(i));
     // Breaking grass without finding a seed is not task progress.

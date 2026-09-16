@@ -49,6 +49,7 @@ public final class ClearingActions {
     List<ItemStack> drops = new ArrayList<>(block.getDrops());
     if (!InventoryOps.canFit(actor.getInventory(), drops))
       return "No room for site-clearance drops; resources retained";
+    BlockLessons.remember(plugin, actor, block, "clearance_observation");
     block.setType(Material.AIR, false);
     if (!block.getType().isAir()) return "Site clearance did not persist";
     drops.forEach(item -> actor.getInventory().addItem(item));
