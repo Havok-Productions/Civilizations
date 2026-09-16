@@ -39,7 +39,11 @@ public final class SiteObservations {
       for (Pos hub :
           hubs.stream()
               .distinct()
-              .sorted(Comparator.comparingLong(village.center()::distance2))
+              .sorted(
+                  Comparator.<Pos>comparingInt(
+                          p ->
+                              village.beds().contains(p) ? 0 : village.chests().contains(p) ? 1 : 2)
+                      .thenComparingLong(village.center()::distance2))
               .limit(9)
               .toList())
         for (Blueprint alternative : WallAlternatives.around(hub, village.center())) {

@@ -5,6 +5,8 @@ import java.util.*;
 
 /** Survey bounds include construction and its access origin, without a mirrored empty area. */
 public record DesignSurvey(Pos center, int radius) {
+  public static final int CONTEXT_RADIUS = 32;
+
   public static DesignSurvey proposal(Blueprint b, Pos origin) {
     return proposal(b, origin, true);
   }
@@ -65,7 +67,7 @@ public record DesignSurvey(Pos center, int radius) {
     long radius = Math.max(Math.max(x - minX, maxX - x), Math.max(z - minZ, maxZ - z)) + margin;
     Pos center =
         new Pos(Math.toIntExact(origin.x() + x), origin.y(), Math.toIntExact(origin.z() + z));
-    int r = Math.toIntExact(Math.max(32, radius));
+    int r = Math.toIntExact(Math.max(CONTEXT_RADIUS, radius));
     Math.subtractExact(center.x(), r);
     Math.addExact(center.x(), r);
     Math.subtractExact(center.z(), r);

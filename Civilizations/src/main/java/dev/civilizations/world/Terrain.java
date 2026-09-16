@@ -60,6 +60,8 @@ public interface Terrain {
                 "ANDESITE",
                 "DIRT",
                 "GRASS_BLOCK",
+                "DIRT_PATH",
+                "GRAVEL",
                 "COAL_ORE",
                 "DEEPSLATE_COAL_ORE",
                 "IRON_ORE",

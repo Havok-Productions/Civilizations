@@ -69,6 +69,44 @@ public final class DesignCoordinator implements AutoCloseable {
       String worker,
       Pos position,
       BooleanSupplier requested) {
+    return CompletableFuture.supplyAsync(
+            () ->
+                connections.change(
+                    () -> {
+                      if (closed || v.retired() || !requested.getAsBoolean())
+                        throw new CancellationException(
+                            "Trial preparation cancelled or village changed");
+                      var current =
+                          v.proposals().stream()
+                              .filter(p -> p.id().equals(proposal.id()))
+                              .findFirst()
+                              .orElseThrow(
+                                  () ->
+                                      new IllegalStateException("Proposal is no longer retained"));
+                      return localize(v, current);
+                    }),
+            executor)
+        .thenCompose(local -> trialLocal(v, world, local, worker, position, requested))
+        .whenComplete(
+            (result, error) -> {
+              if (error != null) {
+                var latest =
+                    v.proposals().stream()
+                        .filter(p -> p.id().equals(proposal.id()))
+                        .findFirst()
+                        .orElse(proposal);
+                rejection(v, latest, "trial_survey", error.toString(), null);
+              }
+            });
+  }
+
+  private CompletableFuture<DesignProposals.Trial> trialLocal(
+      Settlement v,
+      World world,
+      DesignProposal proposal,
+      String worker,
+      Pos position,
+      BooleanSupplier requested) {
     try {
       Blueprint blueprint = Blueprint.parse(proposal.blueprint());
       blueprint.validateGeometry();
@@ -96,6 +134,13 @@ public final class DesignCoordinator implements AutoCloseable {
                                 + " retry");
                       long now = System.currentTimeMillis();
                       var result = DesignProposals.trial(v, current, terrain, occupied(v), now);
+                      if (!result.admission().accepted())
+                        rejection(
+                            v,
+                            result.admission().proposal(),
+                            "trial_compilation",
+                            result.admission().proposal().reason(),
+                            terrain);
                       if (result.admission().accepted())
                         v.jobs().stream()
                             .filter(j -> j.project.equals(result.admission().design().project()))
@@ -134,6 +179,7 @@ public final class DesignCoordinator implements AutoCloseable {
               .min(Comparator.comparingLong(DesignProposal::retryAt))
               .orElse(null);
       if (retry != null) {
+        retry = localize(v, retry);
         next.put(v.id(), now + interval);
         if (retry.needsSalvage()) salvageSurvey(v, world, retry, resourceSites);
         else survey(v, world, retry);
@@ -463,8 +509,9 @@ public final class DesignCoordinator implements AutoCloseable {
       Settlement v,
       World world,
       DesignProposal proposal,
-      Blueprint response,
+      Blueprint rawResponse,
       List<Map<String, Object>> examples) {
+    Blueprint response = localResponse(v, proposal.origin(), rawResponse);
     boolean usable = usableRevision(v, proposal, response);
     Blueprint revision = usable ? response : ProposalSalvage.alternative(proposal, examples);
     if (revision == null) {
@@ -539,6 +586,7 @@ public final class DesignCoordinator implements AutoCloseable {
                       ? "Model salvage of retained proposal"
                       : "Observed local salvage of retained proposal",
                   System.currentTimeMillis() + 2 * interval);
+          candidate = localize(current, candidate);
           current.proposal(candidate);
           revised.set(candidate);
           write(current, "salvage", candidate);
@@ -621,9 +669,13 @@ public final class DesignCoordinator implements AutoCloseable {
           if (v == null || closed) return;
           DesignProposal p =
               DesignProposals.retain(v, blueprint, origin, System.currentTimeMillis());
+          p = localize(v, p);
           retained.set(p);
           write(v, "proposal", p);
-          if (p.status().equals("needs_revision")) feedback(v, p.reason());
+          if (p.status().equals("needs_revision")) {
+            feedback(v, p.reason());
+            rejection(v, p, "geometry", p.reason(), null);
+          }
         });
     DesignProposal proposal = retained.get();
     if (proposal == null || proposal.status().equals("needs_revision")) {
@@ -700,6 +752,7 @@ public final class DesignCoordinator implements AutoCloseable {
               DesignProposals.defer(v, proposal, reason, System.currentTimeMillis() + 2 * interval);
           result.set(waiting);
           write(v, "proposal", waiting);
+          rejection(v, waiting, "survey", reason, null);
           feedback(v, "Retained " + proposal.kind() + ": " + reason);
           next.put(v.id(), System.currentTimeMillis() + interval);
         });
@@ -726,6 +779,7 @@ public final class DesignCoordinator implements AutoCloseable {
           next.put(v.id(), System.currentTimeMillis() + interval);
           if (!result.accepted()) {
             write(v, "proposal", result.proposal());
+            rejection(v, result.proposal(), "compilation", result.proposal().reason(), terrain);
             feedback(v, "Retained " + proposal.kind() + ": " + result.proposal().reason());
             return;
           }
@@ -764,6 +818,47 @@ public final class DesignCoordinator implements AutoCloseable {
         "x", p.x() - v.center().x(), "y", p.y() - v.center().y(), "z", p.z() - v.center().z());
   }
 
+  private DesignProposal localize(Settlement village, DesignProposal proposal) {
+    DesignProposal local = LocalBlueprints.apply(village, proposal);
+    if (local != proposal) {
+      village.proposal(local);
+      write(
+          village,
+          "coordinate-recovery",
+          Map.of(
+              "proposal_id",
+              proposal.id(),
+              "original_blueprint",
+              proposal.blueprint(),
+              "revised_blueprint",
+              local.blueprint(),
+              "saved_origin",
+              proposal.origin(),
+              "reason",
+              local.reason()));
+      feedback(village, "Recovered local " + local.kind() + " placement: " + local.reason());
+    }
+    return local;
+  }
+
+  private Blueprint localResponse(Settlement village, Pos origin, Blueprint response) {
+    if (response == null) return null;
+    try {
+      var correction = LocalBlueprints.resolve(village, response, origin);
+      if (correction.changed()) write(village, "response-coordinate-recovery", correction);
+      return correction.blueprint();
+    } catch (RuntimeException invalid) {
+      return response;
+    }
+  }
+
+  private void rejection(
+      Settlement village, DesignProposal proposal, String phase, String reason, Terrain terrain) {
+    var details = DesignDiagnostics.rejected(village, proposal, phase, reason, terrain);
+    observer.accept(village.id(), details);
+    write(village, "rejection", details);
+  }
+
   private void feedback(Settlement v, String message) {
     observer.accept(v.id(), Map.of("stage", "validation", "message", message));
     v.designFeedback(message);
@@ -800,6 +895,7 @@ public final class DesignCoordinator implements AutoCloseable {
       """
       You are the village architect. Propose one useful project from supported kinds using observations, needs, resources and prior failures. Return a JSON blueprint. Declare coordinate_space: relative for offsets from survey_origin or world for absolute world positions. The host converts explicitly declared world coordinates to offsets before validation. Prefer relative offsets. Survey_origin is an inhabited work area rather than necessarily the old settlement center. Examples are optional suggestions, not a whitelist: you may change coordinates, dimensions and routes. There are no configured numeric proposal ranges. World checks validate actual support, access, resources, collision and protected blocks. Larger work may need independently buildable stages when execution resources are exhausted; explain the useful first stage rather than claiming a whole village is finished.
       Respond wait if no physically meaningful project is available. Recent hostile mobs and missing defenses are urgent: propose a local wall protecting an inhabited bed/storage area even when other houses remain unfinished. A merged village can have multiple local defenses. A wall need not include every distant chest or the historic village center. Do not build a wall around nothing. retained_proposals are remembered intentions, not completed work. Address their recorded blocker or propose a revised layout; capacity and unavailable observations can be temporary. A duplicate closing corner is accepted, and the host can relocate/orient a gate on its nearest straight segment while retaining your contour. Avoid repeating the same failed geometry. site_rejections provides actual reasons candidates failed.
+      Build in the inhabited local area shown in observations. A bed listed with relative x/z is already an offset; do not label that offset as world coordinates. Local offsets are added to survey_origin once. The host records and repairs misplaced remote layouts by translating the same shape locally, then checks fresh terrain. This is coordinate/site recovery, not permission to claim construction succeeded. Prefer locations beside current workers, beds, and shared storage. Size and route can still expand beyond the initial map when supported by observations and buildable stages.
       house: x/z minimum corner, width/depth footprint, height walls, direction entrance, optional points bed feet facing south. Leave headroom and room for the two-block beds. wall: simple closed axis-aligned polygon points, x/z a gate point on a straight segment, height positive, direction gate orientation. path: ordered axis-aligned points and width1. farm: x/z footprint, width/depth; needs soil and existing water. lights: points with support. mine: x/z entrance, direction staircase, depth descending steps and width horizontal continuation. Workers need actual tools and materials. Survey observations, not model recollection, determine what exists. A zero-coal mine is exploration, not guaranteed fuel. End with the final blueprint; never attest completed world work.
       """;
 }

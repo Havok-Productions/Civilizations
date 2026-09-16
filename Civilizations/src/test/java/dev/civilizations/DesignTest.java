@@ -226,7 +226,7 @@ class DesignTest {
 
   @org.junit.jupiter.api.Tag("design")
   @Test
-  void wallRejectsMissingGateWaterSelfIntersectionAndExcludingBeds() {
+  void wallRejectsMissingGateWaterSelfIntersectionAndEmptyPurposeButCanDefendWorkCenter() {
     Blueprint badGate = new Blueprint("wall", "Defense", 1, 1, 0, 0, 3, "north", wall().points());
     assertThrows(IllegalArgumentException.class, () -> compile(badGate, new CoreTest.Flat()));
     Blueprint crossing =
@@ -244,8 +244,7 @@ class DesignTest {
     CoreTest.Flat wet = new CoreTest.Flat();
     wet.overrides.put(new Pos(8, 64, 0), "WATER");
     assertThrows(IllegalArgumentException.class, () -> compile(wall(), wet));
-    assertThrows(
-        IllegalArgumentException.class,
+    assertDoesNotThrow(
         () ->
             new DesignCompiler()
                 .compile(
@@ -255,6 +254,17 @@ class DesignTest {
                     "design-wall-test",
                     q -> false,
                     List.of(new Pos(-5, 65, 6))));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            new DesignCompiler()
+                .compile(
+                    DesignTrialTest.wall(),
+                    new CoreTest.Flat(),
+                    new Pos(0, 65, 0),
+                    "empty-wall",
+                    q -> false,
+                    List.of(new Pos(30, 65, 30))));
   }
 
   @org.junit.jupiter.api.Tag("design")

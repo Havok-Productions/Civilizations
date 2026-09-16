@@ -88,7 +88,9 @@ class ProposalSalvageTest {
   void exhaustedFullSurveyUsesSmallMapOnlyForRevisionWithoutOverwritingRealFailure() {
     Settlement v = CoreTest.village();
     v.enroll("worker", 5);
-    Blueprint b = DesignTest.house(4100, 1200, 5, 5, "north");
+    // A connected but enormous local footprint still needs survey-budget recovery.
+    // A small distant house now relocates locally before requesting its survey.
+    Blueprint b = DesignTest.house(0, 0, 4100, 1200, "north");
     var saved =
         DesignProposals.retain(v, b, v.center(), 0)
             .waiting("needs_revision", "snapshot_resource_budget_exceeded", 0);
@@ -200,8 +202,11 @@ class ProposalSalvageTest {
       coordinator.consider(village, null, new CoreTest.Flat(), Map.of());
       assertTrue(acceptedSignal.await(5, TimeUnit.SECONDS), village.designFeedback().toString());
       assertEquals(
-          2, captures.size(), "One village context and one fresh alternative-footprint survey");
-      assertEquals(modelRepeatsBadCoordinates, offline.request.get() != null);
+          1,
+          captures.size(),
+          "Coordinate repair preserves the shape and needs only its fresh local survey");
+      assertNull(
+          offline.request.get(), "Known coordinate errors must not need another model response");
       assertTrue(village.proposals().isEmpty(), village.designFeedback().toString());
       assertEquals(1, village.designs().size());
       var accepted = village.designs().getFirst();

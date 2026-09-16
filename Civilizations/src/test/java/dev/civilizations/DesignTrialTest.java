@@ -8,6 +8,79 @@ import java.util.*;
 import org.junit.jupiter.api.*;
 
 class DesignTrialTest {
+  @Test
+  @Tag("design")
+  @Tag("inference")
+  @Tag("diagnostics")
+  @Tag("interaction")
+  void trialRelocatesRemoteProposalBeforeSurveyAndPreservesItsIdentity(
+      @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+    var v = CoreTest.village();
+    v.enroll("worker", 5);
+    var distant =
+        new Blueprint(
+            "wall",
+            "Local defense",
+            1002,
+            1000,
+            0,
+            0,
+            1,
+            "north",
+            List.of(
+                new Blueprint.Point(1000, 1000),
+                new Blueprint.Point(1004, 1000),
+                new Blueprint.Point(1004, 1004),
+                new Blueprint.Point(1000, 1004)));
+    var p = DesignProposals.retain(v, distant, v.center(), 0);
+    var captures = new ArrayList<DesignSurvey>();
+    var backend =
+        new dev.civilizations.ai.ModelBackend() {
+          public boolean ready() {
+            return false;
+          }
+
+          public String status() {
+            return "offline";
+          }
+
+          public String complete(String system, String user) {
+            throw new AssertionError("Coordinate repair must not call a model");
+          }
+
+          public void close() {}
+        };
+    try (var queue = new dev.civilizations.ai.InferenceQueue(backend, 4);
+        var coordinator =
+            new DesignCoordinator(
+                queue,
+                new VillageConnections(),
+                (world, center, radius) -> {
+                  captures.add(new DesignSurvey(center, radius));
+                  return java.util.concurrent.CompletableFuture.completedFuture(
+                      new CoreTest.Flat());
+                },
+                Runnable::run,
+                () -> List.of(v),
+                directory,
+                1000,
+                2,
+                message -> {})) {
+      var result =
+          coordinator
+              .trial(v, null, p, "worker", v.center(), () -> true)
+              .get(5, java.util.concurrent.TimeUnit.SECONDS);
+      assertTrue(result.admission().accepted(), result.admission().proposal().reason());
+      assertEquals(List.of(new DesignSurvey(v.center(), 32)), captures);
+      assertEquals(DesignProposals.project(p), result.admission().design().project());
+      assertTrue(v.jobs().stream().allMatch(j -> j.target.horizontal2(v.center()) < 20));
+      assertTrue(
+          java.nio.file.Files.readString(directory.resolve(v.id() + "-coordinate-recovery.json"))
+              .contains("Translated remote"));
+      assertEquals(p.original(), result.admission().proposal().original());
+    }
+  }
+
   static Blueprint wall() {
     return new Blueprint(
         "wall",
