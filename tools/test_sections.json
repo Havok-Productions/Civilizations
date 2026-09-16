@@ -12,6 +12,7 @@
     "diagnostics": "Failure classification, journal persistence and outcome evidence"
   },
   "source_rules": [
+    {"patterns": ["*/SourceRejections.java", "*/SourceConditions.java"], "sections": ["navigation", "crafting", "diagnostics"]},
     {"patterns": ["*/TaskProbe.java", "*/WorkerProbe.java", "*/ProbeCommand.java"], "sections": ["tasks", "diagnostics"]},
     {"patterns": ["*/WorkFailure.java"], "sections": ["tasks", "storage", "crafting", "navigation"]},
     {"patterns": ["*/ProjectSupplies.java"], "sections": ["storage", "tasks"]},

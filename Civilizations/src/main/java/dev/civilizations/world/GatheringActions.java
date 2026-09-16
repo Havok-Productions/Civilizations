@@ -29,6 +29,12 @@ public final class GatheringActions {
   private List<Pos> nearbySites = List.of();
   private boolean needsSupply;
   private boolean selectionUnavailable;
+  private final SourceRejections rejectedSources = new SourceRejections();
+
+  private boolean rejectedSource(Pos p) {
+    return rejectedSources.unchanged(
+        resource, p, () -> owns(p, 1) ? SourceConditions.signature(location(p).getBlock()) : null);
+  }
 
   public boolean selectionUnavailable() {
     return selectionUnavailable;
@@ -118,6 +124,7 @@ public final class GatheringActions {
           candidates.stream()
               .filter(p -> !village.gatherProtected(p) && !plugin.playerProtected(village, p))
               .filter(p -> !village.knowledge().blocked("route:" + p.key(), now))
+              .filter(p -> !rejectedSource(p))
               .sorted(Comparator.comparingLong(p -> p.distance2(at)))
               .filter(p -> village.reserveGather(p, id, now))
               .findFirst()
@@ -128,6 +135,7 @@ public final class GatheringActions {
             expanded.stream()
                 .filter(p -> !village.gatherProtected(p) && !plugin.playerProtected(village, p))
                 .filter(p -> !village.knowledge().blocked("route:" + p.key(), now))
+                .filter(p -> !rejectedSource(p))
                 .sorted(Comparator.comparingLong(at::distance2))
                 .filter(p -> village.reserveGather(p, id, now))
                 .findFirst()
@@ -154,6 +162,10 @@ public final class GatheringActions {
                 candidates.stream()
                     .filter(p -> village.knowledge().blocked("route:" + p.key(), now))
                     .count(),
+                "unchanged_rejected_sources",
+                candidates.stream().filter(this::rejectedSource).count(),
+                "source_rejection_reasons",
+                rejectedSources.reasons(),
                 "result",
                 "No unreserved, unprotected candidate with an unblocked route"));
         needsSupply = !Set.of("SAND", "RED_SAND").contains(resource);
@@ -217,6 +229,9 @@ public final class GatheringActions {
             || capability != null && capability.preserveBase();
     boolean safe = sand ? drySand(block) : dry(block);
     if (!match || !safe || !safeMining(block)) {
+      String reason =
+          !match ? "source_changed" : !safe ? "would_expose_fluid" : "falling_block_above";
+      rejectedSources.reject(resource, target, SourceConditions.signature(block), reason);
       plugin.debug(
           village.id(),
           id,
@@ -228,8 +243,15 @@ public final class GatheringActions {
               target,
               "actual",
               block.getType().name(),
+              "nearby_fluids",
+              SourceConditions.fluids(block),
+              "block_above",
+              block.getRelative(BlockFace.UP).getBlockData().getAsString(),
+              "next_action",
+              "Skip this unchanged source; observe other candidates. Retry immediately when its"
+                  + " neighborhood changes.",
               "reason",
-              !match ? "source_changed" : !safe ? "would_expose_fluid" : "falling_block_above"));
+              reason));
       exhausted(target);
       target = null;
       return;

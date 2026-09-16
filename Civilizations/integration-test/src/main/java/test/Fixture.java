@@ -70,7 +70,9 @@ public class Fixture extends JavaPlugin {
         return;
       }
       case OBSERVATIONS -> {
-        new ObservationChecks(this).start();
+        if (Boolean.getBoolean("civilizations.test.source-recovery"))
+          new SourceRecoveryChecks(this).start();
+        else new ObservationChecks(this).start();
         return;
       }
       case WORKFLOW -> {
