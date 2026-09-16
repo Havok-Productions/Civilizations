@@ -2,6 +2,7 @@ package dev.civilizations.core;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.Instant;
@@ -18,6 +19,7 @@ public final class DebugJournal implements AutoCloseable {
   private final long maxBytes;
   private final Consumer<String> warning;
   private volatile boolean closing;
+  private volatile long closeDeadline = Long.MAX_VALUE;
   private final Thread writer;
 
   public DebugJournal(Path directory, long maxBytes, Consumer<String> warning) {
@@ -43,37 +45,62 @@ public final class DebugJournal implements AutoCloseable {
 
   private void writeLoop() {
     Gson gson = new GsonBuilder().serializeNulls().create();
-    try {
-      Files.createDirectories(directory);
-      Path file = directory.resolve("events.jsonl");
-      while (!closing || !queue.isEmpty()) {
-        Map<String, Object> next = queue.poll(250, TimeUnit.MILLISECONDS);
-        if (next == null) continue;
-        long lost = dropped.getAndSet(0);
-        if (lost > 0) next.put("dropped_since_previous", lost);
-        byte[] bytes = (gson.toJson(next) + "\n").getBytes(StandardCharsets.UTF_8);
-        if (Files.exists(file) && Files.size(file) + bytes.length > maxBytes) {
-          Files.deleteIfExists(directory.resolve("events.4.jsonl"));
-          for (int i = 3; i >= 1; i--) {
-            Path old = directory.resolve("events." + i + ".jsonl");
-            if (Files.exists(old))
-              Files.move(
-                  old,
-                  directory.resolve("events." + (i + 1) + ".jsonl"),
-                  StandardCopyOption.REPLACE_EXISTING);
-          }
-          Files.move(
-              file, directory.resolve("events.1.jsonl"), StandardCopyOption.REPLACE_EXISTING);
-        }
-        Files.write(file, bytes, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+    var file = new RotatingJournalFile(directory, maxBytes);
+    byte[] pending = null;
+    long nextWarning = 0;
+    boolean recovering = false;
+    while (pending != null || !closing || !queue.isEmpty()) {
+      if (closing && recovering && System.nanoTime() >= closeDeadline) {
+        warning.accept(
+            "Debug journal closed with "
+                + (queue.size() + (pending == null ? 0 : 1))
+                + " unsaved events after repeated I/O failure");
+        return;
       }
-    } catch (Exception e) {
-      warning.accept("Debug journal unavailable: " + e.getMessage());
+      try {
+        if (pending == null) {
+          Map<String, Object> next = queue.poll(250, TimeUnit.MILLISECONDS);
+          if (next == null) continue;
+          long lost = dropped.getAndSet(0);
+          if (lost > 0) next.put("dropped_since_previous", lost);
+          pending = (gson.toJson(next) + "\n").getBytes(StandardCharsets.UTF_8);
+        }
+        file.append(pending);
+        pending = null;
+        if (recovering) {
+          warning.accept("Debug journal recovered; queued events are draining");
+          recovering = false;
+          nextWarning = 0;
+        }
+      } catch (IOException error) {
+        recovering = true;
+        long now = System.nanoTime();
+        if (now >= nextWarning) {
+          warning.accept(
+              "Debug journal write deferred; event retained for retry: " + error.getMessage());
+          nextWarning = now + TimeUnit.SECONDS.toNanos(10);
+        }
+        // This is the dedicated writer, never a Folia region thread.
+        try {
+          Thread.sleep(100);
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          return;
+        }
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        return;
+      } catch (RuntimeException invalidEvent) {
+        dropped.incrementAndGet();
+        warning.accept("Debug event could not be serialized: " + invalidEvent.getMessage());
+      }
     }
   }
 
   @Override
   public void close() {
+    if (closing) return;
+    closeDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
     closing = true;
   }
 

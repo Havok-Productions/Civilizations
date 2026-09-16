@@ -30,6 +30,18 @@ public final class CraftingBook {
 
   private final Map<String, List<Recipe>> recipes;
 
+  private record PlanKey(
+      String output, Map<String, Integer> inventory, boolean table, boolean furnace) {}
+
+  // Cache eviction only discards computed answers; every server recipe remains available.
+  private final Map<PlanKey, Step> plans =
+      new LinkedHashMap<>(128, .75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<PlanKey, Step> entry) {
+          return size() > 128;
+        }
+      };
+
   public CraftingBook(List<Recipe> source) {
     Map<String, List<Recipe>> map = new LinkedHashMap<>();
     for (Recipe r : source) map.computeIfAbsent(r.output(), k -> new ArrayList<>()).add(r);
@@ -89,13 +101,14 @@ public final class CraftingBook {
       inv.put(output, inv.get(output) - held);
     }
     if (held == amount || output.isEmpty() || !path.add(output)) return;
+    var costs = new RecipeCosts(recipes, inv);
     Recipe recipe =
         recipes.getOrDefault(output, List.of()).stream()
-            .min(Comparator.comparingInt(r -> score(r, inv)))
+            .min(Comparator.comparingInt(costs::score))
             .orElse(null);
     if (recipe == null) return;
     int batches = (amount - held + recipe.amount() - 1) / recipe.amount();
-    cost(recipe, inv).forEach((m, n) -> reserve(m, n * batches, inv, result, new HashSet<>(path)));
+    costs.cost(recipe).forEach((m, n) -> reserve(m, n * batches, inv, result, new HashSet<>(path)));
     if (recipe.furnace()) {
       String fuel = SmeltingFuel.choose(inv, Map.of());
       if (fuel != null) reserve(fuel, 1, inv, result, new HashSet<>(path));
@@ -115,7 +128,26 @@ public final class CraftingBook {
   }
 
   public Step next(String output, Map<String, Integer> inventory, boolean table, boolean furnace) {
-    return resolve(output, 1, inventory, table, furnace, new HashSet<>(), 0);
+    var key = new PlanKey(output, Map.copyOf(inventory), table, furnace);
+    synchronized (plans) {
+      Step known = plans.get(key);
+      if (known != null) return known;
+    }
+    // Region threads do not hold a shared lock while calculating a plan.
+    Step result =
+        resolve(
+            output,
+            1,
+            key.inventory(),
+            table,
+            furnace,
+            new HashSet<>(),
+            0,
+            new RecipeCosts(recipes, key.inventory()));
+    synchronized (plans) {
+      plans.put(key, result);
+    }
+    return result;
   }
 
   private Step resolve(
@@ -125,20 +157,21 @@ public final class CraftingBook {
       boolean table,
       boolean furnace,
       Set<String> path,
-      int depth) {
+      int depth,
+      RecipeCosts costs) {
     if (inv.getOrDefault(output, 0) >= amount)
       return new Step("ready", output, amount, Map.of(), "", false);
     if (depth >= 8 || !path.add(output)) return gather(output, amount);
     List<Recipe> choices = recipes.getOrDefault(output, List.of());
     // Prefer recipes whose actual ingredients we have, then basic raw-resource recipes.
-    Recipe best = choices.stream().min(Comparator.comparingInt(r -> score(r, inv))).orElse(null);
+    Recipe best = choices.stream().min(Comparator.comparingInt(costs::score)).orElse(null);
     if (best == null) return gather(output, amount);
     if (best.furnace() && !furnace) {
       if (inv.getOrDefault("FURNACE", 0) > 0)
         return new Step("place_station", "FURNACE", 1, Map.of("FURNACE", 1), "", false);
-      return resolve("FURNACE", 1, inv, table, false, new HashSet<>(path), depth + 1);
+      return resolve("FURNACE", 1, inv, table, false, new HashSet<>(path), depth + 1, costs);
     }
-    Map<String, Integer> cost = cost(best, inv);
+    Map<String, Integer> cost = new LinkedHashMap<>(costs.cost(best));
     if (Set.of("COAL", "COBBLESTONE").contains(output)
         && cost.entrySet().stream().anyMatch(e -> inv.getOrDefault(e.getKey(), 0) < e.getValue()))
       return gather(output, amount);
@@ -146,12 +179,13 @@ public final class CraftingBook {
       if (inv.getOrDefault("CRAFTING_TABLE", 0) > 0)
         return new Step(
             "place_station", "CRAFTING_TABLE", 1, Map.of("CRAFTING_TABLE", 1), "", false);
-      return resolve("CRAFTING_TABLE", 1, inv, false, furnace, new HashSet<>(path), depth + 1);
+      return resolve(
+          "CRAFTING_TABLE", 1, inv, false, furnace, new HashSet<>(path), depth + 1, costs);
     }
     for (var e : cost.entrySet())
       if (inv.getOrDefault(e.getKey(), 0) < e.getValue())
         return resolve(
-            e.getKey(), e.getValue(), inv, table, furnace, new HashSet<>(path), depth + 1);
+            e.getKey(), e.getValue(), inv, table, furnace, new HashSet<>(path), depth + 1, costs);
     if (best.furnace()) {
       String fuel = SmeltingFuel.choose(inv, cost);
       if (fuel == null) return gather("OAK_LOG", cost.getOrDefault("OAK_LOG", 0) + 1);
@@ -163,59 +197,5 @@ public final class CraftingBook {
 
   private static Step gather(String item, int n) {
     return new Step("gather", item, n, Map.of(), "", false);
-  }
-
-  private int score(Recipe r, Map<String, Integer> inv) {
-    int result = 0;
-    for (var e : cost(r, inv).entrySet()) {
-      int missing = Math.max(0, e.getValue() - inv.getOrDefault(e.getKey(), 0));
-      if (missing > 0)
-        result += 100 + rawDistance(e.getKey(), inv, new HashSet<>(), 0) * 10 + missing;
-    }
-    return result;
-  }
-
-  private int rawDistance(String item, Map<String, Integer> inv, Set<String> path, int depth) {
-    if (inv.getOrDefault(item, 0) > 0) return 0;
-    if (depth >= 4 || !path.add(item)) return 20;
-    // Avoid recycling blocks (e.g. coal block -> coal) when the raw material is missing.
-    if (item.endsWith("_LOG")
-        || item.equals("COAL")
-        || item.equals("COBBLESTONE")
-        || item.equals("WHEAT")
-        || item.endsWith("_WOOL")) return 2;
-    return recipes.getOrDefault(item, List.of()).stream()
-        .mapToInt(
-            r ->
-                1
-                    + r.slots().stream()
-                        .mapToInt(
-                            slot ->
-                                slot.stream()
-                                    .mapToInt(
-                                        s -> rawDistance(s, inv, new HashSet<>(path), depth + 1))
-                                    .min()
-                                    .orElse(20))
-                        .sum())
-        .min()
-        .orElse(10);
-  }
-
-  private Map<String, Integer> cost(Recipe r, Map<String, Integer> inv) {
-    Map<String, Integer> cost = new LinkedHashMap<>();
-    for (List<String> slot : r.slots()) {
-      String item =
-          slot.stream()
-              .min(
-                  Comparator.<String>comparingInt(
-                          s ->
-                              inv.getOrDefault(s, 0) > cost.getOrDefault(s, 0)
-                                  ? -100
-                                  : rawDistance(s, inv, new HashSet<>(), 0))
-                      .thenComparing(s -> !s.startsWith("OAK_")))
-              .orElseThrow();
-      cost.merge(item, 1, Integer::sum);
-    }
-    return cost;
   }
 }

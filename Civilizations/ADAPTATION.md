@@ -1,5 +1,13 @@
 # Controller adaptation and activity recovery
 
+## Alpha.41: responsive recipe planning and recoverable diagnostics
+
+Recipe scoring now shares ingredient-cost calculations within an immutable inventory snapshot. Cycle ancestry remains part of the distance key, preserving recipe choices when dependency branches differ. Completed next-step plans are cached by output, exact inventory quantities and both station states. A new inventory or station state receives a fresh answer. The bounded cache drops computed answers only; it does not remove available recipes or restrict proposed work. Region threads never hold its shared lock while calculating a plan. Reservation accounting uses fresh cost snapshots as ingredients are committed.
+
+The debug writer retains an event when a file operation fails and retries on its own IO thread. Warnings are rate limited and successful recovery is reported. Rotation remembers completed moves so a locked archive cannot cause earlier moves to repeat and overwrite retained history. A partial append retries at its original byte offset. During a persistent shutdown failure, the writer reports unsaved events after its drain deadline rather than claiming they were saved. The existing queue remains bounded and reports overflow counts.
+
+Focused crafting/diagnostics checks cover inventory and station invalidation, concurrent callers, material accounting, a branching recipe graph, append recovery and interrupted rotation. A replay using the server's saved recipe catalog verifies planning performance without starting Minecraft or a model. A separate exclusive Windows file-lock probe verifies that the same journal writer recovers and preserves event order. These changes address the recorded planner stalls and stopped debug writer; they do not claim to resolve every navigation failure or unsuccessful model recovery.
+
 ## Alpha.40: durable physical lessons
 
 Ordinary workers observe nearby non-solid blocks on their owning region and record verified block facts before harvesting, clearing or farming changes the block. These observations require no teacher call. Measured passability is shared between workers immediately and saved in `CoreAI/rules/terrain.json` independently of whether a later task succeeds. Exact block states identify facts; changed crop growth or other state is observed afresh. Solid earth keeps its normal natural-clearance and structural-protection checks even when a remembered fact calls it an obstacle.
