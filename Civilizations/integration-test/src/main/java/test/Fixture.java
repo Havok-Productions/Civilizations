@@ -43,6 +43,9 @@ public class Fixture extends JavaPlugin {
       }
       case NAVIGATION, REPAIR, AUTONOMY, INFERENCE_BUSY -> {
         if (scenario == Scenario.NAVIGATION
+            && Boolean.getBoolean("civilizations.test.movement-recovery"))
+          new NavigationRecoveryChecks(this).start();
+        else if (scenario == Scenario.NAVIGATION
             && Boolean.getBoolean("civilizations.test.dynamic-route"))
           new DynamicNavigationChecks(this).start();
         else new StallChecks(this, scenario).start();

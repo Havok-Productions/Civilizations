@@ -39,6 +39,7 @@ public final class WorkMovementControl {
       // EntityScheduler callbacks still run when EAR suppresses native movement ticks.
       // Renew a short owning-region lease only during work, without changing server-wide settings.
       if (work) {
+        if (actor.isSleeping()) actor.wakeup();
         long tick = ((Number) regionTick.invoke(null)).longValue();
         activatedTick.setLong(handle, Math.max(activatedTick.getLong(handle), tick + 10));
         if (controlling) return;

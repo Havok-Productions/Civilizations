@@ -118,6 +118,7 @@ public final class GatheringActions {
                 .orElse(null);
         if (target != null) return;
         expanded.forEach(survey::exhausted);
+        if (survey.awaitingObservation()) return;
         plugin.debug(
             village.id(),
             id,

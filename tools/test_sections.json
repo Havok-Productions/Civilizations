@@ -25,7 +25,7 @@
     {"patterns": ["*/WorkerTuning.java", "*/WorkPose.java", "*/WorkPositions.java"], "sections": ["coreai", "navigation", "design", "tasks"]},
     {"patterns": ["*/RecoveryRevision.java", "*/WorkerSkillTrial.java", "*/SkillRuleActions.java", "*/BlockObservation.java", "*/SkillContext.java", "*/RecoveryExperiments.java"], "sections": ["coreai", "navigation", "inference"]},
     {"patterns": ["CoreAI/**"], "sections": ["coreai"]},
-    {"patterns": ["*/navigation/*", "*/WorkerNavigation.java", "*/Navigation*.java", "*/RouteClearance.java", "*/WorkMovementControl.java"], "sections": ["navigation"]},
+    {"patterns": ["*/navigation/*", "*/WorkerNavigation.java", "*/Navigation*.java", "*/RouteClearance.java", "*/WorkMovementControl.java", "*/WorkerEmergency.java"], "sections": ["navigation"]},
     {"patterns": ["*/CraftingBook.java", "*/ServerRecipes.java", "*/ToolActions.java", "*/ToolRecipes.java", "*/WorkerStations.java", "*/MiningTools.java"], "sections": ["crafting"]},
     {"patterns": ["*/InventoryOps.java", "*/ChestSupplies.java", "*/Storage*.java", "*/TransferReceipts.java", "*/DonationPolicy.java", "*/SupplyRequests.java", "*/RecipeCatalog.java"], "sections": ["storage", "crafting"]},
     {"patterns": ["*/design/*", "*/Planner.java", "*/VillageRepairs.java", "*/BuildingActions.java", "*/ClearingActions.java", "*/SiteMaterials.java"], "sections": ["design"]},

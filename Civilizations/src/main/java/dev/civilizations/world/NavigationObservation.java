@@ -19,6 +19,29 @@ final class NavigationObservation {
     return new Location(actor.getWorld(), p.x(), p.y(), p.z());
   }
 
+  boolean readyForPath() {
+    return !actor.isSleeping()
+        && (actor.isOnGround() || actor.isInWater() || actor.isInsideVehicle());
+  }
+
+  boolean surfaceWater(Pos p) {
+    if (!Bukkit.isOwnedByCurrentRegion(location(p), 1)) return false;
+    Block feet = location(p).getBlock(), head = feet.getRelative(0, 1, 0);
+    return (feet.getType() == Material.WATER
+            || feet.isPassable()
+                && !feet.isLiquid()
+                && feet.getRelative(0, -1, 0).getType() == Material.WATER)
+        && head.isPassable()
+        && !head.isLiquid();
+  }
+
+  boolean waterExit(Pos candidate, NavigationMap map) {
+    Location at = actor.getLocation();
+    return surfaceWater(new Pos(at.getBlockX(), at.getBlockY(), at.getBlockZ()))
+        && map.surfaceWater(candidate)
+        && surfaceWater(candidate);
+  }
+
   NavigationMap.Cell cell(Pos p) {
     if (!Bukkit.isOwnedByCurrentRegion(location(p))) return null;
     Block b = location(p).getBlock();

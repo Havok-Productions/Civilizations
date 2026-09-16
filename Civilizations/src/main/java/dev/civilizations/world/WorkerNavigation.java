@@ -26,6 +26,8 @@ public final class WorkerNavigation {
   private String reportState = "no route requested";
   private CoreAiCoordinator.Ticket policyTicket;
   private final WorkerSkillTrial skillTrial;
+  private final String requestPurpose;
+  private long physicalWaitSince;
 
   private long nextSiteTrial;
 
@@ -38,7 +40,14 @@ public final class WorkerNavigation {
     int token = ++generation;
     plugin
         .navigation()
-        .request(actor.getWorld(), village, actor.getUniqueId().toString(), here(), target, 2)
+        .request(
+            actor.getWorld(),
+            village,
+            actor.getUniqueId().toString(),
+            here(),
+            target,
+            2,
+            "site_observation")
         .whenComplete(
             (answer, error) ->
                 actor
@@ -104,6 +113,7 @@ public final class WorkerNavigation {
     this.actor = actor;
     this.village = village;
     this.failed = failed;
+    requestPurpose = trials ? "movement" : "recovery_movement";
     this.clearance = new RouteClearance(plugin, actor, village);
     this.observation = new NavigationObservation(actor);
     skillTrial =
@@ -139,6 +149,7 @@ public final class WorkerNavigation {
   public void stop() {
     if (skillTrial != null) skillTrial.cancel("navigation_cancelled_or_target_changed");
     generation++;
+    plugin.navigation().cancel(actor.getUniqueId().toString(), requestPurpose);
     pending = false;
     plan = null;
     selected = null;
@@ -149,6 +160,7 @@ public final class WorkerNavigation {
     requestStarted = 0;
     clearanceStarted = 0;
     recoveryAttempts = 0;
+    physicalWaitSince = 0;
   }
 
   public void walk(Pos destination, long now) {
@@ -249,7 +261,7 @@ public final class WorkerNavigation {
     String worker = actor.getUniqueId().toString();
     plugin
         .navigation()
-        .request(actor.getWorld(), village, worker, here(), target, 2)
+        .request(actor.getWorld(), village, worker, here(), target, 2, "failure_observation")
         .whenComplete(
             (answer, error) -> {
               if (error != null)
@@ -320,6 +332,26 @@ public final class WorkerNavigation {
       plannedTarget = target;
       nextPlan = 0;
     }
+    // Ground navigation cannot create a path during an ordinary jump/fall. Keep the route,
+    // task and failure memory unchanged until physics supplies a valid starting state.
+    if (!observation.readyForPath()) {
+      if (physicalWaitSince == 0) {
+        physicalWaitSince = now;
+        event(
+            actor.isSleeping() ? "waiting_for_wakeup" : "waiting_for_landing",
+            java.util.Map.of("task_retained", true),
+            false);
+      }
+      progressAt = now;
+      return;
+    }
+    if (physicalWaitSince != 0) {
+      long paused = now - physicalWaitSince;
+      if (requestStarted != 0) requestStarted += paused;
+      if (selectedAt != 0) selectedAt += paused;
+      if (clearanceStarted != 0) clearanceStarted += paused;
+      physicalWaitSince = 0;
+    }
     if (experimentActive()) requestStarted = now;
     if (requestStarted == 0) requestStarted = now;
     if (now - requestStarted > 90_000) {
@@ -384,7 +416,8 @@ public final class WorkerNavigation {
               actor.getUniqueId().toString(),
               at,
               destination,
-              destination.equals(target) ? range : 0)
+              destination.equals(target) ? range : 0,
+              requestPurpose)
           .whenComplete(
               (answer, error) ->
                   actor
@@ -567,7 +600,8 @@ public final class WorkerNavigation {
         continue;
       }
       Block feet = location(candidate).getBlock();
-      if (feet.isLiquid() || feet.getRelative(BlockFace.UP).isLiquid()) {
+      if ((feet.isLiquid() || feet.getRelative(BlockFace.UP).isLiquid())
+          && !observation.waterExit(candidate, plan.map())) {
         refresh(
             now, "native_candidate_became_liquid", nativeDetails(candidate, java.util.Map.of()));
         return;

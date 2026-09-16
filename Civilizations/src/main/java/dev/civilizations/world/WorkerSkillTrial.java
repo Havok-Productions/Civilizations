@@ -334,7 +334,10 @@ public final class WorkerSkillTrial {
         && instructionMap.cell(p).kind() != NavigationMap.Kind.UNKNOWN) return true;
     if (observation == null) {
       if (now < nextObservation) return false;
-      observation = plugin.navigation().request(actor.getWorld(), village, trial.worker, p, p, 0);
+      observation =
+          plugin
+              .navigation()
+              .request(actor.getWorld(), village, trial.worker, p, p, 0, "recovery_observation");
       plugin.debug(
           village.id(),
           trial.worker,

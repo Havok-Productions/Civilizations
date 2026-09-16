@@ -24,6 +24,8 @@ public final class VillagerWorker {
   private Job job, supplyFor;
   private final WorkerNavigation navigation;
   private final WorkMovementControl movementControl;
+  private final WorkerEmergency emergency;
+  private boolean escaping;
   private final BuildingActions building;
   private final WorkPose workPose;
   private final VillagerMind mind;
@@ -89,6 +91,7 @@ public final class VillagerWorker {
     workPose = new WorkPose(plugin, entity);
     building = new BuildingActions(plugin, entity, this::fail, this::complete);
     navigation = new WorkerNavigation(plugin, entity, village, this::navigationFailed);
+    emergency = new WorkerEmergency(plugin, entity, village);
     deliveries = new DeliveryActions(plugin, entity, village, navigation);
     recovery = new RecoveryPolicy(System.currentTimeMillis(), plugin.reasoningCooldown());
     gathering = new GatheringActions(plugin, entity, village, navigation, recovery, this::fail);
@@ -187,7 +190,7 @@ public final class VillagerWorker {
   }
 
   public void damaged(String cause) {
-    navigation.damage(cause);
+    if (!emergency.signal(cause)) navigation.damage(cause);
   }
 
   public String id() {
@@ -245,6 +248,23 @@ public final class VillagerWorker {
         recovery.pause(now);
         display = "paused";
         return;
+      }
+      if (emergency.needed()) {
+        if (!escaping) {
+          navigation.stop();
+          deliveries.cancel();
+          escaping = true;
+        }
+        movementControl.working(true);
+        if (job != null) village.renew(job.id, id, now);
+        if (supplyFor != null) village.renew(supplyFor.id, id, now);
+        recovery.pause(now);
+        if (emergency.tick(now, job == null ? null : job.stand)) {
+          display = "escaping immediate physical danger; task retained";
+          return;
+        }
+        escaping = false;
+        nextWork = now;
       }
       if (threatened()) {
         movementControl.working(false);
@@ -1056,14 +1076,9 @@ public final class VillagerWorker {
 
   private void missingSupply(String material, long now) {
     village.knowledge().need(material, village.taskProject(id), now);
-    village
-        .knowledge()
-        .block(
-            "resource:" + material,
-            "No safe available source; resolve the supply prerequisite",
-            now,
-            60_000);
-    fail(now, "No safe local source of " + material + "; requested a supply plan");
+    // A completed local scan is not evidence that every worker/neighborhood lacks this resource.
+    fail(
+        now, "Local search found no available source of " + material + "; requested a supply plan");
   }
 
   private void deposit(long now, Pos at) {

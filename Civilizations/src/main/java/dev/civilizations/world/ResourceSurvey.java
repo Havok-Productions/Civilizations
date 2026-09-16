@@ -11,20 +11,31 @@ import org.bukkit.entity.Villager;
  * Searches successive observation tiles instead of repeating an empty scan at the same position.
  */
 final class ResourceSurvey {
-  private final CivilizationsPlugin plugin;
-  private final Villager actor;
-  private final Settlement village;
+  private final java.util.function.Function<Pos, CompletableFuture<NavigationService.Plan>> capture;
+  private final java.util.function.BiConsumer<String, Map<String, ?>> debug;
   private CompletableFuture<NavigationService.Plan> pending;
   private String resource = "";
   private Pos origin, center;
   private int tile;
   private long next;
+  private boolean observed;
   private final Set<Pos> found = new HashSet<>();
 
   ResourceSurvey(CivilizationsPlugin plugin, Villager actor, Settlement village) {
-    this.plugin = plugin;
-    this.actor = actor;
-    this.village = village;
+    this(
+        p ->
+            plugin
+                .navigation()
+                .request(
+                    actor.getWorld(), village, actor.getUniqueId().toString(), p, p, 0, "resource"),
+        (type, data) -> plugin.debug(village.id(), actor.getUniqueId().toString(), type, data));
+  }
+
+  ResourceSurvey(
+      java.util.function.Function<Pos, CompletableFuture<NavigationService.Plan>> capture,
+      java.util.function.BiConsumer<String, Map<String, ?>> debug) {
+    this.capture = capture;
+    this.debug = debug;
   }
 
   List<Pos> search(String wanted, Pos at, long now) {
@@ -35,16 +46,16 @@ final class ResourceSurvey {
       found.clear();
       pending = null;
       next = 0;
+      observed = false;
     }
     if (pending != null && pending.isDone()) {
       try {
         var map = pending.join().map();
+        observed = !map.cell(center).material().equals("UNKNOWN");
         for (Material material : Material.values())
           if (MaterialSources.matches(wanted, material.name()))
             found.addAll(map.positions(material.name()));
-        plugin.debug(
-            village.id(),
-            actor.getUniqueId().toString(),
+        debug.accept(
             "resource_survey",
             Map.of(
                 "resource",
@@ -62,9 +73,8 @@ final class ResourceSurvey {
                 "next_action",
                 found.isEmpty() ? "observe next tile" : "approach and verify source"));
       } catch (RuntimeException error) {
-        plugin.debug(
-            village.id(),
-            actor.getUniqueId().toString(),
+        observed = false;
+        debug.accept(
             "resource_survey_failure",
             Map.of("resource", wanted, "center", center, "reason", error.toString()));
       }
@@ -73,17 +83,17 @@ final class ResourceSurvey {
     }
     if (pending == null && found.isEmpty() && now >= next) {
       center = tileCenter(origin, tile++, 20);
-      pending =
-          plugin
-              .navigation()
-              .request(
-                  actor.getWorld(), village, actor.getUniqueId().toString(), center, center, 0);
+      pending = capture.apply(center);
     }
     return List.copyOf(found);
   }
 
   void exhausted(Pos p) {
     found.remove(p);
+  }
+
+  boolean awaitingObservation() {
+    return pending != null || !observed;
   }
 
   static Pos tileCenter(Pos origin, int index, int spacing) {

@@ -21,7 +21,12 @@ public final class NavigationService implements AutoCloseable {
   private final RegionSnapshots snapshots;
   private final Executor executor;
   private final NavigationArchive archive;
-  private final Semaphore admission = new Semaphore(4);
+
+  private record Lane(String worker, String purpose) {}
+
+  private record Request(World world, Settlement village, Pos from, Pos target, int reach) {}
+
+  private final NavigationQueue<Lane, Plan> admission = new NavigationQueue<>(4);
   private final ConcurrentHashMap<String, RouteMemory> memories = new ConcurrentHashMap<>();
   private final int radius;
   private final boolean salvage;
@@ -68,9 +73,29 @@ public final class NavigationService implements AutoCloseable {
 
   public CompletableFuture<Plan> request(
       World world, Settlement village, String worker, Pos from, Pos target, int reach2) {
-    if (!admission.tryAcquire())
-      return CompletableFuture.failedFuture(
-          new RejectedExecutionException("navigation_search_queue_full"));
+    return request(world, village, worker, from, target, reach2, "movement");
+  }
+
+  public CompletableFuture<Plan> request(
+      World world,
+      Settlement village,
+      String worker,
+      Pos from,
+      Pos target,
+      int reach2,
+      String purpose) {
+    return admission.submit(
+        new Lane(worker, purpose),
+        new Request(world, village, from, target, reach2),
+        () -> capture(world, village, worker, from, target, reach2));
+  }
+
+  public void cancel(String worker, String purpose) {
+    admission.cancel(new Lane(worker, purpose));
+  }
+
+  private CompletableFuture<Plan> capture(
+      World world, Settlement village, String worker, Pos from, Pos target, int reach2) {
     try {
       int searchRadius = radiusFor(worker);
       if (searchRadius < 0)
@@ -129,10 +154,8 @@ public final class NavigationService implements AutoCloseable {
                     file = archive.save(id, village.id(), worker, map, route);
                 return new Plan(id, file, map, route, target, reach2, capturedAt, remembered);
               },
-              executor)
-          .whenComplete((p, error) -> admission.release());
+              executor);
     } catch (RuntimeException error) {
-      admission.release();
       // Keep the asynchronous contract: callers clear pending state and roll back trials here.
       return CompletableFuture.failedFuture(error);
     }
@@ -175,6 +198,7 @@ public final class NavigationService implements AutoCloseable {
   }
 
   public void close() {
+    admission.close();
     persist();
     archive.close();
     memories.clear();
