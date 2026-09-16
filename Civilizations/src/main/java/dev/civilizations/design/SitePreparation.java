@@ -115,7 +115,11 @@ final class SitePreparation {
       Set<String> accessible = DesignAccess.reachable(s, s.prepared, approaches.values(), true);
       for (var approach : approaches.entrySet()) {
         Pos p = approach.getKey(), stand = approach.getValue();
-        if (!accessible.contains(DesignAccess.key(stand))) continue;
+        if (!accessible.contains(DesignAccess.key(stand))) {
+          if (s.trialWarnings == null) continue;
+          s.trialWarnings.add(
+              "Unproven preparation approach to " + p.key() + " from " + stand.key());
+        }
         boolean tree = s.type(p).endsWith("_LOG") || s.type(p).endsWith("_LEAVES");
         s.add(
             dev.civilizations.core.HarvestCatalog.mineral(s.type(p))

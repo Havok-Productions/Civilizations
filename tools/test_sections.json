@@ -14,7 +14,8 @@
   "source_rules": [
     {"patterns": ["*/SurfaceSwimming.java", "*/SurfaceEscape.java"], "sections": ["navigation"]},
     {"patterns": ["*/SourceRejections.java", "*/SourceConditions.java"], "sections": ["navigation", "crafting", "diagnostics"]},
-    {"patterns": ["*/TaskProbe.java", "*/WorkerProbe.java", "*/ProbeCommand.java"], "sections": ["tasks", "diagnostics"]},
+    {"patterns": ["*/WorkerDesignTrial.java"], "sections": ["design", "tasks", "diagnostics"]},
+    {"patterns": ["*/TaskProbe.java", "*/WorkerProbe.java", "*/ProbeCommand.java", "*/WorkerPosition.java"], "sections": ["tasks", "diagnostics"]},
     {"patterns": ["*/WorkFailure.java"], "sections": ["tasks", "storage", "crafting", "navigation"]},
     {"patterns": ["*/ProjectSupplies.java"], "sections": ["storage", "tasks"]},
     {"patterns": ["*/YieldBoard.java", "*/YieldActions.java"], "sections": ["navigation", "tasks"]},

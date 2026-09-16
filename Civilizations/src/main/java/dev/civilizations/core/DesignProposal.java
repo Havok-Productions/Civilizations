@@ -54,6 +54,7 @@ public record DesignProposal(
   public boolean needsSalvage() {
     return status.equals("needs_revision")
         || reason.startsWith("Physical validation:")
+        || reason.startsWith("Trial could not produce executable jobs:")
         || reason.startsWith("Fresh survey unavailable:")
         || reason.startsWith("Proposal survey rejected or unavailable:")
         || reason.startsWith("Survey could not start:");

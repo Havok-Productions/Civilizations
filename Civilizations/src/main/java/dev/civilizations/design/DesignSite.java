@@ -16,6 +16,7 @@ final class DesignSite {
   final Set<Pos> construction = new HashSet<>();
   final Map<Pos, String> placed = new HashMap<>();
   final Map<Pos, String> prepared = new HashMap<>();
+  List<String> trialWarnings;
 
   DesignSite(Terrain terrain, Pos center, String project, Predicate<Pos> occupied) {
     this.terrain = terrain;
@@ -33,7 +34,15 @@ final class DesignSite {
     int wx = Math.addExact(center.x(), x), wz = Math.addExact(center.z(), z);
     require(
         terrain.available(wx, wz),
-        "Terrain not observed at " + x + "," + z + "; consult snapshot coverage and retry");
+        "Terrain not observed at world "
+            + wx
+            + ","
+            + wz
+            + " (offset "
+            + x
+            + ","
+            + z
+            + "); consult snapshot coverage and retry");
     Pos ground = new Pos(wx, terrain.groundHeight(wx, wz), wz);
     while (clear(ground) || type(ground).endsWith("_LOG") || type(ground).endsWith("_LEAVES")) {
       ground = ground.add(0, -1, 0);

@@ -62,6 +62,55 @@ public final class DesignCoordinator implements AutoCloseable {
         : status + "; retained proposals=" + v.proposals().size();
   }
 
+  public CompletableFuture<DesignProposals.Trial> trial(
+      Settlement v,
+      World world,
+      DesignProposal proposal,
+      String worker,
+      Pos position,
+      BooleanSupplier requested) {
+    try {
+      Blueprint blueprint = Blueprint.parse(proposal.blueprint());
+      blueprint.validateGeometry();
+      // Do not pre-reject a purpose/access prediction: the admin explicitly requested a trial.
+      var area = DesignSurvey.trial(blueprint, proposal.origin());
+      return snapshots
+          .capture(world, area.center(), area.radius())
+          .thenApplyAsync(
+              terrain -> {
+                return connections.change(
+                    () -> {
+                      if (!requested.getAsBoolean())
+                        throw new CancellationException("Trial survey cancelled");
+                      if (closed || v.retired())
+                        throw new IllegalStateException(
+                            "Village changed during trial survey; retry nearest villager");
+                      var current =
+                          v.proposals().stream()
+                              .filter(p -> p.id().equals(proposal.id()))
+                              .findFirst()
+                              .orElse(null);
+                      if (current == null || !current.blueprint().equals(proposal.blueprint()))
+                        throw new IllegalStateException(
+                            "Proposal changed during trial survey; inspect the current proposal and"
+                                + " retry");
+                      long now = System.currentTimeMillis();
+                      var result = DesignProposals.trial(v, current, terrain, occupied(v), now);
+                      if (result.admission().accepted())
+                        v.jobs().stream()
+                            .filter(j -> j.project.equals(result.admission().design().project()))
+                            .filter(j -> v.available(j.id, worker, now))
+                            .min(Comparator.comparingLong(j -> position.distance2(j.target)))
+                            .ifPresent(j -> v.claim(j.id, worker, now));
+                      return result;
+                    });
+              },
+              executor);
+    } catch (RuntimeException error) {
+      return CompletableFuture.failedFuture(error);
+    }
+  }
+
   private Predicate<Pos> occupied(Settlement v) {
     Set<Pos> positions = new HashSet<>();
     Set<String> playerBlocks = new HashSet<>();

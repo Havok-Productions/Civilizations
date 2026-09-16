@@ -20,6 +20,54 @@ public final class DesignProposals {
     }
   }
 
+  public record Trial(Admission admission, List<String> warnings) {}
+
+  /**
+   * Explicit trial bypasses need/capacity policy, retaining block and resource execution checks.
+   */
+  public static Trial trial(
+      Settlement v, DesignProposal p, Terrain terrain, Predicate<Pos> occupied, long now) {
+    var warnings = new ArrayList<String>();
+    warnings.add("Original rejection: " + p.reason());
+    warnings.add("Admin trial overrides village-need and active-project-slot policy");
+    String project = project(p);
+    for (DesignRecord record : v.designs())
+      if (record.project().equals(project) || record.project().startsWith(project + "@"))
+        return new Trial(new Admission(p, record, null), List.copyOf(warnings));
+    try {
+      Blueprint blueprint = Blueprint.parse(p.blueprint());
+      List<Pos> landmarks = new ArrayList<>(v.beds());
+      landmarks.addAll(v.chests());
+      var compiled =
+          new DesignCompiler()
+              .trial(blueprint, terrain, p.origin(), project, occupied, landmarks, warnings);
+      var record =
+          new DesignRecord(
+              project,
+              blueprint.kind(),
+              blueprint.purpose(),
+              p.blueprint(),
+              compiled.materials(),
+              compiled.jobs().size(),
+              now,
+              p.origin());
+      if (!v.addDesign(
+          record,
+          compiled.jobs(),
+          compiled.reservations(),
+          compiled.construction(),
+          Integer.MAX_VALUE))
+        throw new IllegalArgumentException(
+            "Village paused, retired, or construction space already reserved");
+      v.acceptedProposal(p.id());
+      return new Trial(new Admission(p, record, compiled), List.copyOf(warnings));
+    } catch (IllegalArgumentException | ArithmeticException error) {
+      var waiting =
+          defer(v, p, "Trial could not produce executable jobs: " + error.getMessage(), now + 5000);
+      return new Trial(new Admission(waiting, null, null), List.copyOf(warnings));
+    }
+  }
+
   public static DesignProposal retain(Settlement v, Blueprint original, Pos origin, long now) {
     Blueprint candidate = original;
     String status = "awaiting_validation", reason = "Awaiting fresh physical observations";

@@ -20,8 +20,40 @@ public final class DesignCompiler {
       String project,
       Predicate<Pos> occupied,
       List<Pos> landmarks) {
-    validatePurpose(b, center, landmarks);
+    return compile(b, terrain, center, project, occupied, landmarks, null);
+  }
+
+  /**
+   * Explicit admin experiment: purpose and predicted whole-site access become recorded warnings.
+   */
+  public Result trial(
+      Blueprint b,
+      Terrain terrain,
+      Pos center,
+      String project,
+      Predicate<Pos> occupied,
+      List<Pos> landmarks,
+      List<String> warnings) {
+    b.validateGeometry();
+    return compile(b, terrain, center, project, occupied, landmarks, warnings);
+  }
+
+  private Result compile(
+      Blueprint b,
+      Terrain terrain,
+      Pos center,
+      String project,
+      Predicate<Pos> occupied,
+      List<Pos> landmarks,
+      List<String> warnings) {
+    try {
+      validatePurpose(b, center, landmarks);
+    } catch (IllegalArgumentException rejection) {
+      if (warnings == null) throw rejection;
+      warnings.add(rejection.getMessage());
+    }
     DesignSite s = new DesignSite(terrain, center, project, occupied);
+    s.trialWarnings = warnings;
     switch (b.kind()) {
       case "house" -> HousingDesign.build(s, b);
       case "wall" -> RouteDesign.wall(s, b, landmarks);
@@ -32,7 +64,12 @@ public final class DesignCompiler {
       default -> throw new IllegalArgumentException("No construction requested");
     }
     s.require(!s.jobs.isEmpty(), "Design has no new work");
-    DesignAccess.verify(s);
+    try {
+      DesignAccess.verify(s);
+    } catch (IllegalArgumentException rejection) {
+      if (warnings == null) throw rejection;
+      warnings.add("Predicted site access: " + rejection.getMessage());
+    }
     // Simulate crafting across the whole project, reusing recipe leftovers between jobs.
     Map<String, Integer> supply = new TreeMap<>(), carry = new HashMap<>();
     for (Job j : s.jobs) {

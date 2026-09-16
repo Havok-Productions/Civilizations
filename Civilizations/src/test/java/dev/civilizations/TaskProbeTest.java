@@ -11,6 +11,24 @@ class TaskProbeTest {
   @Tag("tasks")
   @Tag("diagnostics")
   @Tag("interaction")
+  void nearestWorkerHasNoSixteenBlockCutoffAndUsesThreeDimensionsWithinOneWorld() {
+    UUID world = UUID.randomUUID();
+    var origin = new WorkerPosition("player", world, -4163.02, 71.37, -1345);
+    var nearest = new WorkerPosition("near", world, -4140, 71, -1345);
+    var high = new WorkerPosition("above", world, -4163, 120, -1345);
+    var otherWorld =
+        new WorkerPosition("wrong-world", UUID.randomUUID(), origin.x(), origin.y(), origin.z());
+    assertEquals(
+        nearest, WorkerPosition.nearest(origin, List.of(high, otherWorld, nearest)).orElseThrow());
+    assertTrue(WorkerPosition.nearest(origin, List.of(otherWorld)).isEmpty());
+    assertTrue(WorkerPosition.nearest(origin, List.of()).isEmpty());
+    assertEquals(high, WorkerPosition.nearest(origin, List.of(high)).orElseThrow());
+  }
+
+  @Test
+  @Tag("tasks")
+  @Tag("diagnostics")
+  @Tag("interaction")
   void observedMovementAndItemsCannotPassWithoutTheAssignedExecutorReceipt() {
     Job job = CoreTest.job(new Pos(8, 65, 0));
     var probe = new TaskProbe(job, 100, 1000, new Pos(0, 65, 0), Map.of("OAK_LOG", 1));

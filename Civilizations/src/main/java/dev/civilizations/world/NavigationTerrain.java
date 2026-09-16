@@ -43,21 +43,7 @@ public final class NavigationTerrain {
           else if (BlockObservation.dangerous(type, state)) kind = NavigationMap.Kind.HAZARD;
           else if (terrain.fluid(p) || state != null && state.contains("waterlogged=true"))
             kind = NavigationMap.Kind.FLUID;
-          else if (rule != null)
-            kind =
-                switch (rule.category()) {
-                  case "PASSABLE" -> NavigationMap.Kind.AIR;
-                  case "CLEARABLE" ->
-                      protectedBlocks.contains(p)
-                          ? NavigationMap.Kind.OBSTACLE
-                          : NavigationMap.Kind.CLEARABLE;
-                  default ->
-                      material.isSolid()
-                          ? NavigationMap.Kind.SOLID
-                          : rule.facts().removable() && !protectedBlocks.contains(p)
-                              ? NavigationMap.Kind.CLEARABLE
-                              : NavigationMap.Kind.OBSTACLE;
-                };
+          else if (rule != null) kind = learnedKind(rule, protectedBlocks.contains(p));
           else if (type.equals("COBWEB")) kind = NavigationMap.Kind.OBSTACLE;
           else if (material.isAir()
               || terrain.clear(p)
@@ -81,6 +67,25 @@ public final class NavigationTerrain {
           cells.put(p, new NavigationMap.Cell(type, kind, state));
         }
     return new NavigationMap(center, radius, vertical, cells);
+  }
+
+  public static NavigationMap.Kind learnedKind(
+      dev.coreai.TerrainRuleBook.Rule rule, boolean protectedBlock) {
+    // Removability and collision are independent: learning to clear grass must not
+    // turn the worker's current, walkable cell into a blocked route start.
+    if (rule.facts().passable() && !rule.facts().material().equals("COBWEB"))
+      return NavigationMap.Kind.AIR;
+    return switch (rule.category()) {
+      case "PASSABLE" -> NavigationMap.Kind.AIR;
+      case "CLEARABLE" ->
+          protectedBlock ? NavigationMap.Kind.OBSTACLE : NavigationMap.Kind.CLEARABLE;
+      default ->
+          rule.facts().solid()
+              ? NavigationMap.Kind.SOLID
+              : rule.facts().removable() && !protectedBlock
+                  ? NavigationMap.Kind.CLEARABLE
+                  : NavigationMap.Kind.OBSTACLE;
+    };
   }
 
   public static boolean salvageable(Terrain t, Pos p) {

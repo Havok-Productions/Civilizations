@@ -6,8 +6,16 @@ import java.util.*;
 /** Survey bounds include construction and its access origin, without a mirrored empty area. */
 public record DesignSurvey(Pos center, int radius) {
   public static DesignSurvey proposal(Blueprint b, Pos origin) {
+    return proposal(b, origin, true);
+  }
+
+  public static DesignSurvey trial(Blueprint b, Pos origin) {
+    return proposal(b, origin, false);
+  }
+
+  private static DesignSurvey proposal(Blueprint b, Pos origin, boolean includeAccessOrigin) {
     List<Blueprint.Point> points = new ArrayList<>();
-    points.add(new Blueprint.Point(0, 0)); // Access validation starts at the saved origin.
+    if (includeAccessOrigin) points.add(new Blueprint.Point(0, 0));
     if (Set.of("wall", "path", "lights").contains(b.kind())) {
       points.addAll(b.points());
       if (b.kind().equals("wall")) points.add(new Blueprint.Point(b.x(), b.z()));

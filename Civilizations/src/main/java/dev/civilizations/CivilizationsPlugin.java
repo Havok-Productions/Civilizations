@@ -70,6 +70,20 @@ public final class CivilizationsPlugin extends JavaPlugin
     return workers.get(id);
   }
 
+  public List<VillagerWorker> workers() {
+    return List.copyOf(workers.values());
+  }
+
+  public CompletableFuture<DesignProposals.Trial> trialDesign(
+      Settlement village,
+      World world,
+      DesignProposal proposal,
+      String worker,
+      Pos position,
+      java.util.function.BooleanSupplier requested) {
+    return designs.trial(village, world, proposal, worker, position, requested);
+  }
+
   public void debug(String village, String worker, String type, Map<String, ?> data) {
     if (journal != null) journal.event(village, worker, type, data);
     if (failures != null && dev.civilizations.core.FailureEvents.isFailure(type, data))
@@ -1164,7 +1178,7 @@ public final class CivilizationsPlugin extends JavaPlugin
                 : args.length == 3
                         && args[0].equalsIgnoreCase("debug")
                         && args[1].equalsIgnoreCase("probe")
-                    ? List.of("start", "status", "cancel", "jobs")
+                    ? List.of("start", "trial", "proposals", "status", "cancel", "jobs")
                     : List.of();
     return choices.stream()
         .filter(s -> s.startsWith(args[args.length - 1].toLowerCase(Locale.ROOT)))

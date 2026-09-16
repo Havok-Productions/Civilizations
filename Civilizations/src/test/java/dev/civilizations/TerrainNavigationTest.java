@@ -9,6 +9,53 @@ import org.junit.jupiter.api.Test;
 
 class TerrainNavigationTest {
   @org.junit.jupiter.api.Tag("navigation")
+  @org.junit.jupiter.api.Tag("coreai")
+  @org.junit.jupiter.api.Tag("interaction")
+  @Test
+  void learnedRemovableGrassStillAllowsWalkingFromAProtectedStart(
+      @org.junit.jupiter.api.io.TempDir java.nio.file.Path root) throws Exception {
+    var rules = new dev.coreai.TerrainRuleBook(root);
+    rules.stage(
+        "trial",
+        "worker",
+        new dev.coreai.TerrainRuleBook.Facts(
+            "SHORT_GRASS", "minecraft:short_grass", true, true, false, true, false, false, false),
+        "CLEARABLE",
+        "Measured removable grass",
+        "fixture");
+    var cells = flat();
+    var learned = rules.rule("worker", "SHORT_GRASS", "minecraft:short_grass");
+    cells.replaceAll(
+        (p, old) ->
+            p.y() == 1
+                ? new NavigationMap.Cell(
+                    "SHORT_GRASS",
+                    dev.civilizations.world.NavigationTerrain.learnedKind(learned, true))
+                : old);
+    var route = TerrainRouteSearch.search(map(cells), start, new Pos(4, 1, 0), 0, Set.of(), 0);
+    assertTrue(route.reached(), route.reason());
+    assertTrue(route.steps().stream().allMatch(s -> s.clear().isEmpty()));
+    assertEquals(
+        "CLEARABLE", rules.rule("worker", "SHORT_GRASS", "minecraft:short_grass").category());
+    var cobweb =
+        rules.stage(
+            "trial",
+            "worker",
+            new dev.coreai.TerrainRuleBook.Facts(
+                "COBWEB", "minecraft:cobweb", true, false, false, true, false, false, false),
+            "CLEARABLE",
+            "Requires removal",
+            "fixture");
+    cells.put(
+        start,
+        new NavigationMap.Cell(
+            "COBWEB", dev.civilizations.world.NavigationTerrain.learnedKind(cobweb, false)));
+    assertFalse(map(cells).passage(start, false).allowed());
+    assertFalse(
+        map(cells).passage(start.add(0, 1, 0), false).allowed(), "Clutter cannot support weight");
+  }
+
+  @org.junit.jupiter.api.Tag("navigation")
   @Test
   void naturalProofRejectsSoilUnderStructuresAndPersistentLeaves() {
     Map<Pos, String> blocks = new HashMap<>();

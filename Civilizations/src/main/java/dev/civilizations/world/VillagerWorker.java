@@ -120,6 +120,33 @@ public final class VillagerWorker {
     probe.request(action, jobId, duration, reply);
   }
 
+  public java.util.concurrent.CompletableFuture<WorkerPosition> probePosition() {
+    var result = new java.util.concurrent.CompletableFuture<WorkerPosition>();
+    if (stopped) return java.util.concurrent.CompletableFuture.completedFuture(null);
+    try {
+      var task =
+          entity
+              .getScheduler()
+              .run(
+                  plugin,
+                  ignored -> {
+                    if (stopped || village.retired() || !entity.isValid()) {
+                      result.complete(null);
+                      return;
+                    }
+                    var at = entity.getLocation();
+                    result.complete(
+                        new WorkerPosition(
+                            id, at.getWorld().getUID(), at.getX(), at.getY(), at.getZ()));
+                  },
+                  () -> result.complete(null));
+      if (task == null) result.complete(null);
+    } catch (RuntimeException error) {
+      result.complete(null);
+    }
+    return result.completeOnTimeout(null, 4, java.util.concurrent.TimeUnit.SECONDS);
+  }
+
   private boolean assignProbe(Job candidate, long now) {
     if (stopped) return false;
     if (job != null

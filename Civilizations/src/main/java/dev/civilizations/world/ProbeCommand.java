@@ -1,11 +1,11 @@
 package dev.civilizations.world;
 
 import dev.civilizations.CivilizationsPlugin;
+import dev.civilizations.core.WorkerPosition;
 import java.util.*;
-import org.bukkit.Bukkit;
+import java.util.concurrent.CompletableFuture;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.bukkit.entity.Villager;
 
 /** Small admin adapter; all worker reads and assignments run on the entity scheduler. */
 public final class ProbeCommand {
@@ -13,7 +13,8 @@ public final class ProbeCommand {
 
   public static void execute(CivilizationsPlugin plugin, CommandSender sender, String[] args) {
     String action = args.length > 1 ? args[1].toLowerCase(Locale.ROOT) : "start";
-    if (!Set.of("start", "status", "cancel", "jobs").contains(action) || args.length > 5) {
+    if (!Set.of("start", "trial", "proposals", "status", "cancel", "jobs").contains(action)
+        || args.length > 5) {
       usage(sender);
       return;
     }
@@ -33,28 +34,91 @@ public final class ProbeCommand {
         usage(sender);
         return;
       }
-      if (!Bukkit.isOwnedByCurrentRegion(player.getLocation(), 1)) {
-        refuse(plugin, sender, "Nearby region is unavailable; retry or specify a worker UUID.");
-        return;
-      }
-      var actor =
-          player.getNearbyEntities(16, 8, 16).stream()
-              .filter(e -> e instanceof Villager && Bukkit.isOwnedByCurrentRegion(e))
-              .filter(e -> plugin.worker(e.getUniqueId().toString()) != null)
-              .min(
-                  Comparator.comparingDouble(
-                      e -> e.getLocation().distanceSquared(player.getLocation())))
-              .orElse(null);
-      if (actor == null) {
-        refuse(
-            plugin,
-            sender,
-            "No controlled villager within 16 horizontal and 8 vertical blocks."
-                + " No trial started. Specify a worker UUID from /civ debug details.");
-        return;
-      }
-      workerId = actor.getUniqueId().toString();
+      long window = duration;
+      player.sendMessage("Locating the nearest loaded controlled villager...");
+      positions(plugin)
+          .thenAccept(
+              samples ->
+                  player
+                      .getScheduler()
+                      .run(
+                          plugin,
+                          ignored -> {
+                            var at = player.getLocation();
+                            var origin =
+                                new WorkerPosition(
+                                    "", at.getWorld().getUID(), at.getX(), at.getY(), at.getZ());
+                            var selected =
+                                WorkerPosition.nearest(origin, samples.positions()).orElse(null);
+                            if (samples.unavailable() > 0)
+                              player.sendMessage(
+                                  samples.unavailable()
+                                      + " workers unloaded or did not respond; choosing among"
+                                      + " responding workers.");
+                            if (selected == null) {
+                              refuse(
+                                  plugin,
+                                  player,
+                                  "No loaded controlled villager responded in your current world."
+                                      + " No trial started.");
+                              return;
+                            }
+                            double distance = Math.sqrt(origin.distanceSquared(selected));
+                            player.sendMessage(
+                                "Selected villager "
+                                    + selected.worker()
+                                    + " ("
+                                    + String.format(Locale.ROOT, "%.1f", distance)
+                                    + " blocks away).");
+                            plugin.probeEvent(
+                                "",
+                                selected.worker(),
+                                "probe_selected",
+                                Map.of(
+                                    "selection",
+                                    "nearest",
+                                    "action",
+                                    action,
+                                    "position",
+                                    selected,
+                                    "distance_blocks",
+                                    distance,
+                                    "unavailable_workers",
+                                    samples.unavailable()));
+                            run(
+                                plugin,
+                                player,
+                                selected.worker(),
+                                action,
+                                args.length > 3 ? args[3] : "auto",
+                                window);
+                          },
+                          () -> {}));
+      return;
     }
+    run(plugin, sender, workerId, action, args.length > 3 ? args[3] : "auto", duration);
+  }
+
+  public record Positions(List<WorkerPosition> positions, int unavailable) {}
+
+  /** Query each actor through its own scheduler; no range cutoff or neighbouring-region reads. */
+  public static CompletableFuture<Positions> positions(CivilizationsPlugin plugin) {
+    var calls = plugin.workers().stream().map(VillagerWorker::probePosition).toList();
+    return CompletableFuture.allOf(calls.toArray(CompletableFuture[]::new))
+        .thenApply(
+            ignored -> {
+              var found = calls.stream().map(f -> f.getNow(null)).filter(Objects::nonNull).toList();
+              return new Positions(found, calls.size() - found.size());
+            });
+  }
+
+  private static void run(
+      CivilizationsPlugin plugin,
+      CommandSender sender,
+      String workerId,
+      String action,
+      String jobId,
+      long duration) {
     var worker = plugin.worker(workerId);
     if (worker == null) {
       refuse(plugin, sender, "No loaded controlled worker with UUID " + workerId);
@@ -62,7 +126,7 @@ public final class ProbeCommand {
     }
     worker.probe(
         action,
-        args.length > 3 ? args[3] : "auto",
+        jobId,
         duration,
         lines -> {
           if (sender instanceof Player player)
@@ -78,10 +142,13 @@ public final class ProbeCommand {
 
   private static void usage(CommandSender sender) {
     sender.sendMessage(
-        "/civ debug probe [start|status|cancel|jobs] [nearest|worker-uuid] [job-id|auto]"
-            + " [seconds]");
+        "/civ debug probe [start|trial|proposals|status|cancel|jobs] [nearest|worker-uuid]"
+            + " [job-or-proposal-id|auto] [seconds]");
     sender.sendMessage(
-        "Runs an existing task with actual resources. Default: nearest worker, current/nearest"
-            + " available task, 120 seconds.");
+        "Runs an existing task with actual resources. Default: nearest loaded controlled worker in"
+            + " your world, current/nearest available task, 120 seconds.");
+    sender.sendMessage(
+        "trial: attempt a retained construction proposal despite need/purpose/access predictions;"
+            + " proposals: list their rejection reasons.");
   }
 }

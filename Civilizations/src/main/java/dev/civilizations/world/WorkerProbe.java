@@ -19,6 +19,7 @@ final class WorkerProbe {
   private TaskProbe attempt;
   private long nextReport;
   private boolean reported;
+  private final WorkerDesignTrial designs;
 
   WorkerProbe(
       CivilizationsPlugin plugin,
@@ -35,6 +36,9 @@ final class WorkerProbe {
     this.assign = assign;
     this.navigation = navigation;
     this.status = status;
+    designs =
+        new WorkerDesignTrial(
+            plugin, entity, village, (job, duration) -> command("start", job, duration));
   }
 
   synchronized boolean active() {
@@ -52,7 +56,10 @@ final class WorkerProbe {
                         .connections()
                         .read(
                             () -> {
-                              var lines = command(action, jobId, duration);
+                              var lines =
+                                  action.equals("trial")
+                                      ? designs.request(jobId, duration, active(), reply)
+                                      : command(action, jobId, duration);
                               plugin.probeEvent(
                                   village.id(),
                                   entity.getUniqueId().toString(),
@@ -75,6 +82,7 @@ final class WorkerProbe {
   private synchronized List<String> command(String action, String requested, long duration) {
     long now = System.currentTimeMillis();
     String worker = entity.getUniqueId().toString();
+    if (action.equals("proposals")) return designs.proposals();
     if (action.equals("jobs")) {
       var lines = new ArrayList<String>();
       lines.add(
@@ -104,16 +112,25 @@ final class WorkerProbe {
       return lines;
     }
     if (action.equals("cancel")) {
+      boolean pending = designs.pending();
+      designs.cancel();
       interrupt(
           TaskProbe.Result.CANCELLED, "Admin ended probe; task remains available for normal work");
+      if (pending)
+        return List.of(
+            "Cancelled pending survey. Any already admitted jobs remain ordinary village work.");
       return List.of(attempt == null ? "No probe recorded." : attempt.summary(now));
     }
     if (action.equals("status")) {
+      if (designs.pending())
+        return List.of("Surveying retained proposal; no execution trial started yet.");
       sample();
       return List.of(
           attempt == null ? "No probe recorded for this worker." : attempt.summary(now),
           "Evidence: plugins/Civilizations/debug/probes/events.jsonl");
     }
+    if (designs.pending())
+      return List.of("A proposal trial survey is already pending for this worker.");
     if (active()) return List.of("A probe is already running. " + attempt.summary(now));
     if (village.retired() || !entity.isValid())
       return List.of("Worker/village is no longer active.");
@@ -154,6 +171,7 @@ final class WorkerProbe {
           "No execution trial started: " + village.unavailableReason(selected.id, worker, now));
     attempt =
         new TaskProbe(selected, now, duration, here(), InventoryOps.summary(entity.getInventory()));
+    designs.resetContext();
     reported = false;
     nextReport = now;
     sample();
@@ -242,6 +260,7 @@ final class WorkerProbe {
   }
 
   synchronized void interrupt(TaskProbe.Result result, String reason) {
+    if (result == TaskProbe.Result.INTERRUPTED) designs.cancel();
     if (!active()) return;
     attempt.finish(result, reason, System.currentTimeMillis());
     reportResult();
@@ -253,6 +272,7 @@ final class WorkerProbe {
     long now = System.currentTimeMillis();
     plugin.probeEvent(
         village.id(), entity.getUniqueId().toString(), "probe_result", attempt.evidence(now));
+    designs.result(attempt.evidence(now));
     plugin.getLogger().info(attempt.summary(now));
   }
 
