@@ -12,6 +12,8 @@
     "diagnostics": "Failure classification, journal persistence and outcome evidence"
   },
   "source_rules": [
+    {"patterns": ["*/ai/ModelContext.java", "*/ai/PromptBudget.java"], "sections": ["inference", "design", "runtime"]},
+    {"patterns": ["*/ai/DecisionHandoff.java"], "sections": ["inference", "tasks"]},
     {"patterns": ["*/SurfaceSwimming.java", "*/SurfaceEscape.java"], "sections": ["navigation"]},
     {"patterns": ["*/SourceRejections.java", "*/SourceConditions.java"], "sections": ["navigation", "crafting", "diagnostics"]},
     {"patterns": ["*/WorkerDesignTrial.java"], "sections": ["design", "tasks", "diagnostics"]},
@@ -25,7 +27,7 @@
     {"patterns": ["*/DesignProposal.java"], "sections": ["design", "settlements"]},
     {"patterns": ["*/TerrainSurvey.java"], "sections": ["design", "navigation"]},
     {"patterns": ["*/Job.java", "*/TaskCheckpoint.java", "*/TaskContinuity.java"], "sections": ["tasks", "settlements"]},
-    {"patterns": ["*/VillagerWorker.java"], "sections": ["tasks", "storage", "crafting", "coreai"]},
+    {"patterns": ["*/VillagerWorker.java"], "sections": ["tasks", "storage", "crafting", "coreai", "inference"]},
     {"patterns": ["*/DeliveryBoard.java", "*/DeliveryActions.java", "*/NearbyWork.java"], "sections": ["storage", "tasks", "crafting"]},
     {"patterns": ["*/FarmingActions.java"], "sections": ["crafting", "tasks", "design"]},
     {"patterns": ["*/SmeltingActions.java", "*/SmeltingFuel.java"], "sections": ["crafting", "storage", "tasks"]},

@@ -36,6 +36,7 @@ public final class RecoveryExperiments implements AutoCloseable {
   private final InferenceQueue inference;
   private final Supplier<String> teacher;
   private final SkillLibrary library;
+  private final SkillLibrary verifiedContexts;
   private final TerrainRuleBook rules;
 
   public TerrainRuleBook rules() {
@@ -56,6 +57,7 @@ public final class RecoveryExperiments implements AutoCloseable {
     this.teacher = teacher;
     this.warning = warning;
     library = new SkillLibrary(root.resolve("skills"));
+    verifiedContexts = new SkillLibrary(root.resolve("skills/verified-contexts"));
     rules = new TerrainRuleBook(root.resolve("rules"));
     journal = new DataJournal(root.resolve("data"));
     io =
@@ -99,16 +101,33 @@ public final class RecoveryExperiments implements AutoCloseable {
         () -> {
           try {
             if (active.get() != trial || closed) return;
-            SkillProgram remembered = library.reusable(context.key());
-            if (remembered != null) {
-              trial.teacher = library.get(context.key()).teacher();
+            var experience = verifiedContexts.reusableExperience(context.reuseKey());
+            if (experience == null) experience = library.reusableExperience(context.key());
+            SkillProgram remembered =
+                experience == null ? null : SkillProgram.parse(experience.source());
+            if (remembered != null
+                && !verifiedContexts.repeatedFailure(context.reuseKey(), remembered)
+                && !library.repeatedFailure(context.key(), remembered)) {
+              trial.teacher = experience.teacher();
               trial.source = remembered;
-              record(trial, "reuse", Map.of("program", remembered));
+              record(
+                  trial,
+                  "reuse",
+                  Map.of(
+                      "program",
+                      remembered,
+                      "basis",
+                      "verified physical context",
+                      "successes",
+                      experience.successes(),
+                      "teacher",
+                      trial.teacher));
               trial.program.complete(remembered);
               return;
             }
             Map<String, Object> report = new LinkedHashMap<>(context.observation());
             SkillLibrary.Experience previous = library.get(context.key());
+            if (previous == null) previous = verifiedContexts.get(context.reuseKey());
             if (previous != null) report.put("previous_live_attempt", previous);
             record(trial, "requested", Map.of("observation", report));
             var inferenceFailure =
@@ -146,7 +165,9 @@ public final class RecoveryExperiments implements AutoCloseable {
                                 return;
                               }
                               SkillProgram program = proposal.program();
-                              if (library.repeatedFailure(context.key(), program)) {
+                              if (library.repeatedFailure(context.key(), program)
+                                  || verifiedContexts.repeatedFailure(
+                                      context.reuseKey(), program)) {
                                 var repair = new LinkedHashMap<String, Object>(report);
                                 repair.put("unexecuted_duplicate", program);
                                 repair.put(
@@ -233,6 +254,13 @@ public final class RecoveryExperiments implements AutoCloseable {
             try {
               library.outcome(
                   trial.sourceContext.key(), trial.source, trial.teacher, false, evidence, now);
+              verifiedContexts.outcome(
+                  trial.sourceContext.reuseKey(),
+                  trial.source,
+                  trial.teacher,
+                  false,
+                  evidence,
+                  now);
             } catch (IOException error) {
               warning.accept("Recovery revision evidence: " + error);
             }
@@ -273,7 +301,9 @@ public final class RecoveryExperiments implements AutoCloseable {
                     boolean duplicate =
                         proposal != null
                             && (trial.attempted.contains(attemptKey(fresh, proposal.program()))
-                                || library.repeatedFailure(fresh.key(), proposal.program()));
+                                || library.repeatedFailure(fresh.key(), proposal.program())
+                                || verifiedContexts.repeatedFailure(
+                                    fresh.reuseKey(), proposal.program()));
                     if (duplicate && !corrected) {
                       var repair = new LinkedHashMap<String, Object>(report);
                       repair.put("unexecuted_duplicate", proposal.program());
@@ -385,6 +415,14 @@ public final class RecoveryExperiments implements AutoCloseable {
                       success,
                       json,
                       System.currentTimeMillis()));
+            if (trial.source != null)
+              verifiedContexts.outcome(
+                  trial.sourceContext.reuseKey(),
+                  trial.source,
+                  trial.teacher,
+                  success,
+                  json,
+                  System.currentTimeMillis());
           } catch (IOException error) {
             result.put("persistence_error", error.toString());
             warning.accept("Skill learning not persisted: " + error);

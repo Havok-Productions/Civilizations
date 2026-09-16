@@ -422,13 +422,32 @@ public final class LocalRuntime implements ModelBackend {
       throws Exception {
     if (!ready()) throw new IOException("Local model unavailable");
     boolean thinking = mode != ReasoningMode.FINAL && (s.thinking || mode != ReasoningMode.NORMAL);
-    long remaining =
+    long requestDeadline =
         Math.min(
-            1000L * (thinking ? s.thinkingTimeout : s.timeout),
-            deadline - System.currentTimeMillis());
-    if (remaining <= 0)
-      throw new java.util.concurrent.TimeoutException("Decision observation expired");
+            deadline,
+            System.currentTimeMillis() + 1000L * (thinking ? s.thinkingTimeout : s.timeout));
     JsonObject body = requestBody(s, system, user, mode, schema);
+    var prepared =
+        s.backend.equals("managed")
+            ? PromptBudget.prepare(
+                body, s.context, candidate -> promptTokens(candidate, requestDeadline))
+            : new PromptBudget.Prepared(body, -1, body.get("max_tokens").getAsInt(), 0);
+    body = prepared.body();
+    log.accept(
+        "Local AI request: prompt_tokens="
+            + prepared.promptTokens()
+            + ", output_reserve="
+            + prepared.outputTokens()
+            + ", context="
+            + s.context
+            + ", history_reductions="
+            + prepared.reductions()
+            + ", counting="
+            + (s.backend.equals("managed") ? "model_tokenizer" : "provider_unmeasured"));
+    long remaining = requestDeadline - System.currentTimeMillis();
+    if (remaining <= 0)
+      throw new java.util.concurrent.TimeoutException(
+          "Decision observation expired during prompt preparation");
     HttpRequest request =
         HttpRequest.newBuilder(URI.create(endpoint + "/chat/completions"))
             .timeout(Duration.ofMillis(remaining))
@@ -439,6 +458,33 @@ public final class LocalRuntime implements ModelBackend {
     var response = http.send(request, HttpResponse.BodyHandlers.ofString());
     if (response.statusCode() != 200) throw new IOException("Model HTTP " + response.statusCode());
     return finalText(response.body());
+  }
+
+  private int promptTokens(JsonObject body, long deadline) throws Exception {
+    String base = endpoint.substring(0, endpoint.length() - 3); // managed endpoint always ends /v1
+    JsonObject template = postContext(base + "/apply-template", body, deadline);
+    JsonObject input = new JsonObject();
+    input.add("content", template.get("prompt"));
+    input.addProperty("add_special", true);
+    input.addProperty("parse_special", true);
+    return postContext(base + "/tokenize", input, deadline).getAsJsonArray("tokens").size();
+  }
+
+  private JsonObject postContext(String url, JsonObject body, long deadline) throws Exception {
+    long remaining = Math.min(10_000, deadline - System.currentTimeMillis());
+    if (remaining <= 0)
+      throw new java.util.concurrent.TimeoutException("Prompt preparation expired");
+    var request =
+        HttpRequest.newBuilder(URI.create(url))
+            .timeout(Duration.ofMillis(remaining))
+            .header("Content-Type", "application/json")
+            .header("Authorization", "Bearer " + key)
+            .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+            .build();
+    var response = http.send(request, HttpResponse.BodyHandlers.ofString());
+    if (response.statusCode() != 200)
+      throw new IOException("Local prompt preparation HTTP " + response.statusCode());
+    return JsonParser.parseString(response.body()).getAsJsonObject();
   }
 
   public static JsonObject requestBody(Settings s, String system, String user, ReasoningMode mode) {

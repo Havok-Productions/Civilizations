@@ -7,12 +7,14 @@ import java.util.function.*;
 /** Minecraft prompts and response validation around the shared CoreAI inference scheduler. */
 public final class InferenceQueue implements AutoCloseable {
   private final InferenceScheduler scheduler;
+  private BiConsumer<String, Map<String, ?>> observer = (agent, data) -> {};
 
   public InferenceQueue(ModelBackend backend, int capacity) {
     scheduler = new InferenceScheduler(backend, capacity);
   }
 
   public void observe(BiConsumer<String, Map<String, ?>> observer) {
+    this.observer = observer;
     scheduler.observe(observer);
   }
 
@@ -72,7 +74,7 @@ public final class InferenceQueue implements AutoCloseable {
     return scheduler.submit(
         agent,
         system,
-        report,
+        context(agent, report),
         ReasoningBackend.Purpose.valueOf(mode.name()),
         schema,
         deadline,
@@ -93,13 +95,29 @@ public final class InferenceQueue implements AutoCloseable {
     return scheduler.submit(
         agent,
         system,
-        report,
+        context(agent, report),
         ReasoningBackend.Purpose.valueOf(mode.name()),
         schema,
         deadline,
         parser,
         callback,
         failed);
+  }
+
+  private String context(String agent, String report) {
+    String compact = ModelContext.compact(report);
+    observer.accept(
+        agent,
+        Map.of(
+            "stage",
+            "working_context",
+            "full_characters",
+            report.length(),
+            "sent_characters",
+            compact.length(),
+            "context",
+            compact));
+    return compact;
   }
 
   static final String SYSTEM =

@@ -52,14 +52,16 @@ public final class SkillLibrary {
   }
 
   public SkillProgram reusable(String context) {
-    Experience e =
-        records.values().stream()
-            .filter(v -> v.context().equals(context) && v.successes() > 0 && v.failures() == 0)
-            .max(Comparator.comparingInt(Experience::successes).thenComparingLong(Experience::time))
-            .orElse(null);
-    return e != null && e.successes() > 0 && e.failures() == 0
-        ? SkillProgram.parse(e.source())
-        : null;
+    Experience e = reusableExperience(context);
+    return e == null ? null : SkillProgram.parse(e.source());
+  }
+
+  /** Return the evidence with its program so attribution cannot use a different latest attempt. */
+  public Experience reusableExperience(String context) {
+    return records.values().stream()
+        .filter(v -> v.context().equals(context) && v.successes() > 0 && v.failures() == 0)
+        .max(Comparator.comparingInt(Experience::successes).thenComparingLong(Experience::time))
+        .orElse(null);
   }
 
   public boolean repeatedFailure(String context, SkillProgram candidate) {

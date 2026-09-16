@@ -18,6 +18,35 @@ public record SkillContext(
     Map<String, Integer> inventory,
     String failure,
     Map<String, Object> observation) {
+  /**
+   * Verified behavior may survive different error wording, but not changed physical conditions.
+   * Full map fingerprint includes block state; goal type, plugin version and tuned rules stay
+   * scoped.
+   */
+  public String reuseKey() {
+    var state = new TreeMap<String, Object>();
+    state.put("map", map.fingerprint);
+    state.put("origin", origin);
+    state.put("goal", goal);
+    state.put("reach", reach2);
+    state.put("radius", map.radius);
+    state.put("vertical", map.vertical);
+    state.put("inventory", new TreeMap<>(inventory));
+    int suffix = key.indexOf(':');
+    state.put("scope", suffix < 0 ? "" : key.substring(suffix));
+    for (String field : List.of("physical_block_probes", "tunable_parameters", "known_rule_count"))
+      if (observation.containsKey(field)) state.put(field, observation.get(field));
+    try {
+      return HexFormat.of()
+          .formatHex(
+              MessageDigest.getInstance("SHA-256")
+                  .digest(
+                      new com.google.gson.Gson().toJson(state).getBytes(StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException error) {
+      throw new IllegalStateException(error);
+    }
+  }
+
   public static SkillContext create(
       NavigationMap map,
       Pos origin,
@@ -47,7 +76,13 @@ public record SkillContext(
                 case FLUID -> '~';
               };
           row.append(symbol);
-          signature.append(c.material()).append(':').append(symbol).append(';');
+          signature
+              .append(c.material())
+              .append(':')
+              .append(symbol)
+              .append(':')
+              .append(c.state())
+              .append(';');
         }
         rows.add(row.toString());
       }
@@ -74,6 +109,7 @@ public record SkillContext(
     Pos delta = new Pos(goal.x() - origin.x(), goal.y() - origin.y(), goal.z() - origin.z());
     signature.append(delta).append(':').append(reach2).append(':').append(failure);
     signature.append(new TreeMap<>(inventory)).append(map.radius);
+    signature.append(map.fingerprint).append(origin).append(map.vertical);
     String key;
     try {
       key =

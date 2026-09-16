@@ -191,9 +191,39 @@ class RecoveryExperimentsTest {
           "Model output alone must not become learned success");
       experiments.finish(first, true, "fixture receipt", Map.of("position", new Pos(4, 1, 0)));
       await(() -> Files.exists(root.resolve("skills/skills.json")));
-      var second = experiments.request("v", "two", context, now + 31000);
+      var renamedFailure =
+          SkillContext.create(
+              map,
+              origin,
+              new Pos(4, 1, 0),
+              1,
+              Map.of("DIRT", 2),
+              "native path failed with different wording");
+      assertNotEquals(context.key(), renamedFailure.key());
+      assertEquals(context.reuseKey(), renamedFailure.reuseKey());
+      var changedState =
+          new NavigationMap(
+              origin,
+              8,
+              3,
+              Map.of(
+                  origin.add(1, 0, 0),
+                  new NavigationMap.Cell("OAK_DOOR", NavigationMap.Kind.OPENABLE, "open=false")));
+      assertNotEquals(
+          context.reuseKey(),
+          SkillContext.create(
+                  changedState, origin, new Pos(4, 1, 0), 1, Map.of("DIRT", 2), "blocked")
+              .reuseKey());
+      assertNotEquals(
+          context.reuseKey(),
+          SkillContext.create(map, origin, new Pos(4, 1, 0), 1, Map.of("DIRT", 3), "blocked")
+              .reuseKey());
+      var second = experiments.request("v", "two", renamedFailure, now + 31000);
       assertEquals(first.program.get(), second.program.get(2, TimeUnit.SECONDS));
-      assertEquals(1, calls.get(), "Verified same-context reuse requires no inference");
+      assertEquals(
+          1,
+          calls.get(),
+          "Verified physical-context reuse survives changed failure wording without inference");
       experiments.finish(second, false, "fixture later failure", Map.of("position", origin));
       await(
           () -> {

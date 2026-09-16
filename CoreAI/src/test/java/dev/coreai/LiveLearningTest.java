@@ -63,9 +63,10 @@ class LiveLearningTest {
   @Test
   void alternateFailuresCannotHideSuccessfulSkillsOrResetOlderCounters() throws Exception {
     var library = new SkillLibrary(root);
-    library.outcome("same", program(2), "fixture", true, "arrived", 1);
+    library.outcome("same", program(2), "successful-teacher", true, "arrived", 1);
     library.outcome("same", program(3), "fixture", false, "blocked", 2);
     assertEquals(program(2), new SkillLibrary(root).reusable("same"));
+    assertEquals("successful-teacher", new SkillLibrary(root).reusableExperience("same").teacher());
     assertEquals(
         2, library.outcome("same", program(2), "fixture", true, "arrived again", 3).successes());
     assertEquals(

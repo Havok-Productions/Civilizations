@@ -3,6 +3,7 @@ package dev.civilizations.world;
 import com.google.gson.Gson;
 import dev.civilizations.CivilizationsPlugin;
 import dev.civilizations.ai.Decision;
+import dev.civilizations.ai.DecisionHandoff;
 import dev.civilizations.ai.ReasoningMode;
 import dev.civilizations.core.*;
 import dev.civilizations.learning.*;
@@ -62,7 +63,7 @@ public final class VillagerWorker {
   }
 
   private boolean awaiting;
-  private Decision nextAdvice;
+  private DecisionHandoff nextAdvice;
   private long responseDeadline;
   private String mode = "idle", resource = "COBBLESTONE";
   private long nextThink, nextWork, nextStock;
@@ -589,10 +590,12 @@ public final class VillagerWorker {
     if (now < nextWork) return;
     if (probe.resume(now)) return;
     if (nextAdvice != null) {
-      Decision advice = nextAdvice;
+      Decision advice = nextAdvice.current(village.taskProject(id), now);
       nextAdvice = null;
-      if (advice.action().equals("replan")) plugin.requestPlan(village, entity.getWorld());
-      if (!advice.jobId().isEmpty()
+      if (advice != null && advice.action().equals("replan"))
+        plugin.requestPlan(village, entity.getWorld());
+      if (advice != null
+          && !advice.jobId().isEmpty()
           && offered(now, at).stream().anyMatch(j -> j.id.equals(advice.jobId()))) {
         apply(advice, now);
         return;
@@ -686,6 +689,8 @@ public final class VillagerWorker {
       debug("decision_request", Map.of("reasoning", escalate, "observations", report));
       long token = ++generation;
       responseDeadline = now + plugin.decisionWaitMillis(escalate);
+      String requestedProject = village.taskProject(id);
+      long adviceDeadline = responseDeadline;
       boolean accepted =
           plugin
               .inference()
@@ -711,8 +716,24 @@ public final class VillagerWorker {
                                               || night
                                               || village.paused()) return;
                                           awaiting = false;
+                                          var handoff =
+                                              new DecisionHandoff(
+                                                  decision, requestedProject, adviceDeadline);
+                                          if (decision != null
+                                              && handoff.current(
+                                                      village.taskProject(id),
+                                                      System.currentTimeMillis())
+                                                  == null) {
+                                            debug(
+                                                "decision_obsolete",
+                                                Map.of(
+                                                    "reason",
+                                                    "Goal changed or observation expired while"
+                                                        + " CoreAI continued working"));
+                                            return;
+                                          }
                                           if (job != null || mode.equals("deposit")) {
-                                            nextAdvice = decision;
+                                            nextAdvice = decision == null ? null : handoff;
                                             if (decision != null)
                                               village.suggestion(
                                                   id, decision.action() + ": " + decision.reason());
@@ -1392,6 +1413,7 @@ public final class VillagerWorker {
     supplyFor = null;
     requests = Map.of();
     awaiting = false;
+    nextAdvice = null;
     gathering.reset();
     mode = "idle";
     generation++;
