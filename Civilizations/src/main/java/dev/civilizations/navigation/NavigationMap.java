@@ -18,13 +18,18 @@ public final class NavigationMap {
     UNKNOWN
   }
 
-  public record Cell(String material, Kind kind, String state) {
+  public record Cell(String material, Kind kind, String state, String removal) {
+    public Cell(String material, Kind kind, String state) {
+      this(material, kind, state, "unspecified");
+    }
+
     public Cell(String material, Kind kind) {
       this(material, kind, "");
     }
 
     public Cell {
       state = state == null ? "" : state;
+      removal = removal == null ? "unspecified" : removal;
     }
   }
 
@@ -51,7 +56,9 @@ public final class NavigationMap {
                       + ":"
                       + e.getValue().kind().name()
                       + ":"
-                      + e.getValue().state())
+                      + e.getValue().state()
+                      + ":"
+                      + e.getValue().removal())
                   .hashCode();
     fingerprint = Long.toUnsignedString(hash, 16);
   }
@@ -130,7 +137,7 @@ public final class NavigationMap {
                           ? "fluid_requires_special_movement"
                           : c.kind == Kind.HAZARD
                               ? "damaging_or_explosive_block"
-                              : "solid_or_protected_obstacle",
+                              : "obstacle: " + c.material + "; " + c.removal,
               List.of(),
               List.of());
         }
@@ -151,6 +158,7 @@ public final class NavigationMap {
   public Map<String, Object> describe() {
     List<String> palette = new ArrayList<>();
     List<String> states = new ArrayList<>();
+    List<String> removals = new ArrayList<>();
     Map<String, Integer> index = new HashMap<>();
     List<Integer> runs = new ArrayList<>();
     int last = -1, count = 0;
@@ -159,13 +167,14 @@ public final class NavigationMap {
         for (int y = center.y() - vertical - 1; y <= center.y() + vertical + 2; y++) {
           Cell c = cell(new Pos(x, y, z));
           String label = c.material + ":" + c.kind;
-          String key = label + ":" + c.state;
+          String key = label + ":" + c.state + ":" + c.removal;
           Integer id = index.get(key);
           if (id == null) {
             id = palette.size();
             index.put(key, id);
             palette.add(label);
             states.add(c.state);
+            removals.add(c.removal);
           }
           if (id == last) count++;
           else {
@@ -194,6 +203,8 @@ public final class NavigationMap {
         palette,
         "block_states",
         states,
+        "removal_reasons",
+        removals,
         "runs",
         runs,
         "fingerprint",

@@ -14,7 +14,10 @@ import org.bukkit.entity.Villager;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 
-/** A deterministic proposal exercises real blocks, inventory, movement and outcome persistence. */
+/**
+ * Combined observation and bridge case: one executor, real blocks, inventory and persisted
+ * outcomes.
+ */
 final class LiveSkillChecks {
   private final JavaPlugin fixture;
 
@@ -30,8 +33,8 @@ final class LiveSkillChecks {
               World world = Bukkit.getWorlds().getFirst();
               world.setTime(1000);
               List<CompletableFuture<Void>> chunks = new ArrayList<>();
-              for (int x = -3; x <= 3; x++)
-                for (int z = -3; z <= 3; z++) {
+              for (int x = -1; x <= 1; x++)
+                for (int z = -1; z <= 1; z++) {
                   int cx = x, cz = z;
                   CompletableFuture<Void> ready = new CompletableFuture<>();
                   chunks.add(ready);
@@ -85,13 +88,22 @@ final class LiveSkillChecks {
       Settlement.Data data = new Settlement.Data();
       data.world = world.getUID().toString();
       data.center = new Pos(2, y, 0);
+      data.playerBlocks.add("8," + (y + 26) + ",0");
+      world.getBlockAt(8, y + 26, 0).setType(Material.STONE, false);
+      world.getBlockAt(8, y + 27, 0).setType(Material.LEAF_LITTER, false);
       Settlement village = new Settlement(data);
       var villages = CivilizationsPlugin.class.getDeclaredField("settlements");
       villages.setAccessible(true);
       ((Map<String, Settlement>) villages.get(plugin)).put(village.id(), village);
       Villager actor = world.spawn(new Location(world, 2.5, y, .5), Villager.class);
       actor.setAdult();
+      // Register ownership for permission checks but let only this fixture tick the executor.
       village.enroll(actor.getUniqueId().toString(), 20);
+      var ownership = new VillagerWorker(plugin, actor, village);
+      var workerField = CivilizationsPlugin.class.getDeclaredField("workers");
+      workerField.setAccessible(true);
+      ((Map<String, VillagerWorker>) workerField.get(plugin))
+          .put(actor.getUniqueId().toString(), ownership);
       actor.getInventory().addItem(new ItemStack(Material.DIRT, 2));
       Terrain terrain =
           new Terrain() {
@@ -114,10 +126,25 @@ final class LiveSkillChecks {
       NavigationMap map = NavigationTerrain.capture(terrain, data.center, 8, Set.of());
       if (map.cell(new Pos(0, y, 2)).kind() != NavigationMap.Kind.AIR)
         throw new AssertionError("Leaf litter remains hazardous");
+      var heightSurvey =
+          plugin
+              .navigation()
+              .request(
+                  world,
+                  village,
+                  "height-fixture",
+                  data.center,
+                  new Pos(8, y + 27, 0),
+                  1,
+                  "fixture-height");
+      var calls = new java.util.concurrent.atomic.AtomicInteger();
+      var secondReport = new java.util.concurrent.atomic.AtomicReference<String>();
       String proposal =
           """
           {"explanation":"Fixture: bridge the two-block dry gap with actual dirt, then walk across.","steps":[
+          {"op":"CLASSIFY","x":6,"y":27,"z":0,"material":"PASSABLE"},
           {"op":"PLACE_SUPPORT","x":1,"y":-1,"z":0,"material":"DIRT"},
+          {"op":"WALK","x":1,"y":0,"z":0,"material":""},
           {"op":"PLACE_SUPPORT","x":2,"y":-1,"z":0,"material":"DIRT"},
           {"op":"WALK","x":4,"y":0,"z":0,"material":""},
           {"op":"VERIFY","x":0,"y":0,"z":0,"material":""}]}
@@ -137,11 +164,23 @@ final class LiveSkillChecks {
             public String complete(String system, String report) {
               if (!report.contains("goal_relative") || !report.contains("DIRT"))
                 throw new AssertionError("Missing observation");
+              if (calls.incrementAndGet() == 1)
+                return "{\"explanation\":\"Observe elevated obstruction without"
+                           + " walking\",\"steps\":[{\"op\":\"OBSERVE\",\"x\":6,\"y\":27,\"z\":0,\"material\":\"\"}]}";
+              secondReport.set(report);
+              if (!report.contains("requested_observation")
+                  || !report.contains("LEAF_LITTER")
+                  || !report.contains("protected_or_reserved"))
+                throw new IllegalStateException("Requested remote geometry missing");
               return proposal;
             }
           };
       InferenceQueue queue = new InferenceQueue(fake, 4);
-      Path evidence = plugin.getDataFolder().toPath().resolve("CoreAI-live-fixture");
+      Path evidence =
+          plugin
+              .getDataFolder()
+              .toPath()
+              .resolve("CoreAI-observation-fixture-" + world.getUID() + "");
       RecoveryExperiments service =
           new RecoveryExperiments(
               evidence,
@@ -151,6 +190,7 @@ final class LiveSkillChecks {
       var field = CivilizationsPlugin.class.getDeclaredField("experiments");
       field.setAccessible(true);
       field.set(plugin, service);
+      plugin.navigation().rules(service.rules());
       WorkMovementControl control =
           new WorkMovementControl(
               actor,
@@ -178,9 +218,29 @@ final class LiveSkillChecks {
               fixture,
               t -> {
                 try {
+                  if (plugin.worker(actor.getUniqueId().toString()) != ownership)
+                    throw new AssertionError("Fixture actor has competing controllers");
                   control.working(true);
                   skill.tick(System.currentTimeMillis());
                   if (result.get() != null) {
+                    var highMap = heightSurvey.join().map();
+                    if (highMap.vertical < 30
+                        || highMap.cell(new Pos(8, y + 27, 0)).kind() != NavigationMap.Kind.AIR
+                        || !highMap
+                            .cell(new Pos(8, y + 26, 0))
+                            .removal()
+                            .equals("protected_or_reserved")
+                        || !highMap.cell(new Pos(-6, y - 1, -4)).removal().contains("mining"))
+                      throw new AssertionError("Height capture or obstacle distinction failed");
+                    if (calls.get() != 2 || secondReport.get().contains("failed_execution"))
+                      throw new AssertionError("Observation incorrectly required route failure");
+                    if (service
+                            .rules()
+                            .rule(
+                                actor.getUniqueId().toString(),
+                                "LEAF_LITTER",
+                                world.getBlockAt(8, y + 27, 0).getBlockData().getAsString())
+                        == null) throw new AssertionError("Remote classification missing");
                     if (!result.get()
                         || actor.getLocation().getX() < 5.5
                         || world.getBlockAt(3, y - 1, 0).getType() != Material.DIRT
@@ -202,11 +262,14 @@ final class LiveSkillChecks {
                                 fixture
                                     .getLogger()
                                     .info(
-                                        "LIVE SKILL PASS: actual two-block support placement, two"
-                                            + " dirt consumed, villager crossed gap, original-goal"
-                                            + " arrival and learned outcome persisted; leaf litter"
-                                            + " walkable. Proposal was deterministic fixture, not"
-                                            + " model intelligence.");
+                                        "OBSERVATION PASS: remote OBSERVE and CLASSIFY at +27y"
+                                            + " without walking there; goal-height capture;"
+                                            + " protected versus ordinary solid distinction; actual"
+                                            + " two-block support placement, two dirt consumed,"
+                                            + " villager crossed gap, original-goal arrival and"
+                                            + " learned outcome persisted; leaf litter walkable."
+                                            + " Proposal was deterministic fixture, not model"
+                                            + " intelligence.");
                                 service.close();
                                 queue.close();
                                 Bukkit.getGlobalRegionScheduler()
@@ -217,7 +280,7 @@ final class LiveSkillChecks {
                             },
                             1,
                             TimeUnit.SECONDS);
-                  } else if (System.currentTimeMillis() - started > 30000)
+                  } else if (System.currentTimeMillis() - started > 60000)
                     throw new AssertionError("Physical skill timeout at " + actor.getLocation());
                 } catch (Throwable e) {
                   t.cancel();
@@ -237,7 +300,7 @@ final class LiveSkillChecks {
   }
 
   private void fail(Throwable error) {
-    fixture.getLogger().severe("LIVE SKILL FAIL: " + error);
+    fixture.getLogger().severe("OBSERVATION FAIL: " + error);
     Bukkit.getGlobalRegionScheduler().runDelayed(fixture, t -> Bukkit.shutdown(), 20);
   }
 }

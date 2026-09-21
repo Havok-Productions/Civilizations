@@ -1,0 +1,14 @@
+# Model replacement fields for ai or ai.deep-thinking in config.yml.
+# Merge deliberately into one existing runtime. This file is not auto-applied.
+# 8,192 context tokens and 4,096 output tokens were used for the local comparison.
+# Quantization publisher: Unsloth; original model: Qwen/Qwen3.5-9B.
+model:
+  url: 'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf'
+  file: 'Qwen3.5-9B-Q4_K_M.gguf'
+  sha256: '03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8'
+  bytes: 5680522464
+  supports-thinking-option: true
+thinking: true
+thinking-output-tokens: 4096
+reasoning-budget-tokens: 768
+temperature: 0.2

@@ -24,8 +24,18 @@ public final class NavigationTerrain {
       Set<Pos> protectedBlocks,
       dev.coreai.TerrainRuleBook rules,
       String worker) {
+    return capture(terrain, center, radius, 10, protectedBlocks, rules, worker);
+  }
+
+  public static NavigationMap capture(
+      Terrain terrain,
+      Pos center,
+      int radius,
+      int vertical,
+      Set<Pos> protectedBlocks,
+      dev.coreai.TerrainRuleBook rules,
+      String worker) {
     Map<Pos, NavigationMap.Cell> cells = new HashMap<>();
-    int vertical = 10;
     var learned =
         rules == null
             ? java.util.Map.<String, dev.coreai.TerrainRuleBook.Rule>of()
@@ -65,7 +75,20 @@ public final class NavigationTerrain {
               && !architectureNear(terrain, p, protectedBlocks)) kind = NavigationMap.Kind.SOFT;
           else if (material.isSolid()) kind = NavigationMap.Kind.SOLID;
           else kind = NavigationMap.Kind.UNCLASSIFIED;
-          cells.put(p, new NavigationMap.Cell(type, kind, state));
+          String removal;
+          if (kind == NavigationMap.Kind.UNKNOWN) removal = "needs_observation";
+          else if (protectedBlocks.contains(p)) removal = "protected_or_reserved";
+          else if (kind == NavigationMap.Kind.HAZARD) removal = "hazard";
+          else if (kind == NavigationMap.Kind.FLUID) removal = "fluid";
+          else if (kind == NavigationMap.Kind.SOFT || kind == NavigationMap.Kind.CLEARABLE)
+            removal = "CLEAR_within_reach_live_checks_and_retained_drops";
+          else if (kind == NavigationMap.Kind.AIR) removal = "no_clearance_needed";
+          else if (kind == NavigationMap.Kind.OPENABLE) removal = "open_door_or_gate";
+          else if (architectureNear(terrain, p, protectedBlocks)) removal = "structure_or_support";
+          else if (material.getHardness() < 0) removal = "unbreakable";
+          else if (material.isSolid()) removal = "requires_mining_task_and_suitable_tool_not_CLEAR";
+          else removal = "CLASSIFY_live_physics_before_clearance";
+          cells.put(p, new NavigationMap.Cell(type, kind, state, removal));
         }
     return new NavigationMap(center, radius, vertical, cells);
   }

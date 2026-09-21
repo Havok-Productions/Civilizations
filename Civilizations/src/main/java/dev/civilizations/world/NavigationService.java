@@ -100,12 +100,20 @@ public final class NavigationService implements AutoCloseable {
       int searchRadius = radiusFor(worker);
       if (searchRadius < 0)
         throw new IllegalArgumentException("Negative radius has no geometric meaning");
+      int vertical = Math.toIntExact(Math.max(10L, Math.abs((long) target.y() - from.y()) + 3));
       long side = 2L * searchRadius + 1;
-      if (side > 2_000_000L / 24 / side)
+      if (side > 2_000_000L / (2L * vertical + 4) / side)
         throw new RejectedExecutionException(
             "snapshot_resource_budget_exceeded: proposed radius="
                 + searchRadius
+                + "; vertical="
+                + vertical
                 + "; use successive loaded maps or propose a cheaper search");
+      if (target.y() < world.getMinHeight() || target.y() >= world.getMaxHeight())
+        throw new IllegalArgumentException("target_outside_world_height: " + target.y());
+      if (Math.abs((long) from.x()) + searchRadius >= 30_000_000L
+          || Math.abs((long) from.z()) + searchRadius >= 30_000_000L)
+        throw new IllegalArgumentException("observation_outside_minecraft_horizontal_bounds");
       Set<Pos> protectedBlocks = new HashSet<>(village.layoutOccupancy());
       village
           .snapshot()
@@ -130,7 +138,7 @@ public final class NavigationService implements AutoCloseable {
               terrain -> {
                 NavigationMap map =
                     NavigationTerrain.capture(
-                        terrain, from, searchRadius, protectedBlocks, rules, worker);
+                        terrain, from, searchRadius, vertical, protectedBlocks, rules, worker);
                 long capturedAt = System.currentTimeMillis();
                 var remembered = memory.active(worker, map, capturedAt);
                 Set<TerrainRouteSearch.Edge> rejected = new HashSet<>();

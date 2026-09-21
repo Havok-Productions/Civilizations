@@ -17,6 +17,8 @@ final class RecoveryRevision {
   private final RecoveryExperiments.Trial trial;
   private final CompletableFuture<NavigationService.Plan> survey;
   private final Map<String, Object> failure;
+  private final Pos focus;
+  private final CompletableFuture<NavigationService.Plan> focusSurvey;
   private final boolean site;
   private final String reason;
   private SkillContext context;
@@ -31,6 +33,20 @@ final class RecoveryRevision {
       int index,
       String reason,
       boolean site) {
+    this(plugin, actor, village, trial, previous, index, reason, site, null);
+  }
+
+  RecoveryRevision(
+      CivilizationsPlugin plugin,
+      Villager actor,
+      Settlement village,
+      RecoveryExperiments.Trial trial,
+      SkillProgram previous,
+      int index,
+      String reason,
+      boolean site,
+      Pos focus) {
+    this.focus = focus;
     this.plugin = plugin;
     this.actor = actor;
     this.trial = trial;
@@ -40,7 +56,8 @@ final class RecoveryRevision {
     Pos feet = new Pos(at.getBlockX(), at.getBlockY(), at.getBlockZ());
     failure = new LinkedHashMap<>();
     failure.put("reason", reason);
-    failure.put("failed_index", index);
+    failure.put(focus == null ? "failed_index" : "requested_index", index);
+    if (focus != null) failure.put("focus", focus);
     failure.put(
         "remaining_instructions",
         previous
@@ -63,12 +80,29 @@ final class RecoveryRevision {
                 feet,
                 trial.context.goal(),
                 trial.context.reach2());
-    plugin.debug(trial.village, trial.worker, "recovery_revision_started", failure);
+    focusSurvey =
+        focus == null
+            ? null
+            : plugin
+                .navigation()
+                .request(
+                    actor.getWorld(),
+                    village,
+                    trial.worker,
+                    focus,
+                    focus,
+                    0,
+                    "recovery_observation");
+    plugin.debug(
+        trial.village,
+        trial.worker,
+        focus == null ? "recovery_revision_started" : "recovery_observation_started",
+        failure);
   }
 
   Result tick(long now, SkillRuleActions actions) {
     if (program == null) {
-      if (!survey.isDone()) return null;
+      if (!survey.isDone() || focusSurvey != null && !focusSurvey.isDone()) return null;
       var at = actor.getLocation();
       context =
           actions.observe(
@@ -80,6 +114,10 @@ final class RecoveryRevision {
                   InventoryOps.summary(actor.getInventory()),
                   reason));
       var report = new LinkedHashMap<String, Object>(context.observation());
+      if (focus != null)
+        report.put(
+            "requested_observation",
+            RecoveryTerrainView.describe(focusSurvey.join().map(), context.origin(), focus));
       report.put(
           "verification_goal",
           site
@@ -87,7 +125,11 @@ final class RecoveryRevision {
               : "ARRIVAL: reach the original goal with normal movement");
       context =
           new SkillContext(
-              context.key() + (site ? ":site" : ""),
+              context.key()
+                  + (site ? ":site" : "")
+                  + (focus == null
+                      ? ""
+                      : ":observe:" + focus + ":" + focusSurvey.join().map().fingerprint),
               context.map(),
               context.origin(),
               context.goal(),
@@ -95,7 +137,7 @@ final class RecoveryRevision {
               context.inventory(),
               context.failure(),
               Map.copyOf(report));
-      program = plugin.experiments().revise(trial, context, failure, now);
+      program = plugin.experiments().revise(trial, context, failure, now, focus != null);
     }
     return program.isDone() ? new Result(program.join(), context) : null;
   }

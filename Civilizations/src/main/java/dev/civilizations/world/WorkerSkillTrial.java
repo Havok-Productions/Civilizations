@@ -30,6 +30,7 @@ public final class WorkerSkillTrial {
   private NavigationMap instructionMap;
   private java.util.concurrent.CompletableFuture<NavigationService.Plan> observation;
   private long nextObservation;
+  private java.util.concurrent.CompletableFuture<dev.coreai.TerrainRuleBook.Facts> probe;
   private Pos lastProgress;
   private int index, placed, cleared;
   private long deadline, stepStarted, nextAction;
@@ -126,6 +127,7 @@ public final class WorkerSkillTrial {
     revision = null;
     revisions = instructionsCompleted = 0;
     observation = null;
+    probe = null;
     nextObservation = 0;
     lastProgress = here();
     previousPosition = actor.getLocation().clone();
@@ -159,6 +161,7 @@ public final class WorkerSkillTrial {
       revision = null;
       instructionNavigation.stop();
       observation = null;
+      probe = null;
       actor.getPathfinder().stopPathfinding();
     }
   }
@@ -260,6 +263,10 @@ public final class WorkerSkillTrial {
       finish(false, "proposed_coordinate_cannot_be_represented_in_world");
       return true;
     }
+    if (step.op() == SkillProgram.Op.OBSERVE) {
+      revise("requested_fresh_observation", p);
+      return true;
+    }
     if (stepStarted == 0) stepStarted = now;
     if (now - stepStarted > WorkerTuning.value(plugin, actor, "recovery.instruction_ms")) {
       revise("instruction_timeout: " + step.op());
@@ -273,6 +280,18 @@ public final class WorkerSkillTrial {
       } else instructionNavigation.walkExact(p, 0, now);
       return true;
     }
+    if (step.op() == SkillProgram.Op.CLASSIFY) {
+      if (!ensureObserved(p, now)) return true;
+      if (probe == null) probe = ruleActions.probe(p);
+      if (!probe.isDone()) return true;
+      try {
+        ruleActions.classify(trial, step, p, program.explanation(), instructionMap, probe.join());
+        advance(now, step, p);
+      } catch (RuntimeException error) {
+        revise("classification_probe_failed: " + error);
+      }
+      return true;
+    }
     if (here().distance2(p) > 12 || !Bukkit.isOwnedByCurrentRegion(location(p), 3)) {
       instructionNavigation.walkExact(p, 12, now);
       return true;
@@ -280,15 +299,6 @@ public final class WorkerSkillTrial {
     if (!ensureObserved(p, now)) return true;
     if (step.op() == SkillProgram.Op.CLEAR && location(p).getBlock().getType().isAir()) {
       advance(now, step, p);
-      return true;
-    }
-    if (step.op() == SkillProgram.Op.CLASSIFY) {
-      try {
-        ruleActions.execute(trial, step, p, program.explanation(), instructionMap);
-        advance(now, step, p);
-      } catch (IllegalArgumentException error) {
-        revise("classification_probe_failed: " + error.getMessage());
-      }
       return true;
     }
     if ((step.op() == SkillProgram.Op.CLEAR || step.op() == SkillProgram.Op.PLACE_SUPPORT)
@@ -361,6 +371,7 @@ public final class WorkerSkillTrial {
           Map.of("target", p, "reason", error.toString()));
     }
     observation = null;
+    probe = null;
     nextObservation = now + 3000;
     return instructionMap != null
         && instructionMap.contains(p)
@@ -426,6 +437,7 @@ public final class WorkerSkillTrial {
     instructionNavigation.stop();
     instructionMap = null;
     observation = null;
+    probe = null;
     index++;
     instructionsCompleted++;
     stepStarted = 0;
@@ -433,6 +445,10 @@ public final class WorkerSkillTrial {
   }
 
   private void revise(String reason) {
+    revise(reason, null);
+  }
+
+  private void revise(String reason, Pos focus) {
     if (revision != null || trial == null) return;
     if (program == null) {
       finish(false, reason);
@@ -442,15 +458,18 @@ public final class WorkerSkillTrial {
     actor.getPathfinder().stopPathfinding();
     workPose.reset();
     observation = null;
+    probe = null;
     observing = false;
     deadline = System.currentTimeMillis() + 185_000;
     revision =
-        new RecoveryRevision(plugin, actor, village, trial, program, index, reason, siteGoal);
+        new RecoveryRevision(
+            plugin, actor, village, trial, program, index, reason, siteGoal, focus);
   }
 
   private void finish(boolean success, String reason) {
     instructionNavigation.stop();
     observation = null;
+    probe = null;
     var done = trial;
     long finishedAt = System.currentTimeMillis();
     var finalInstruction =

@@ -36,7 +36,7 @@
     {"patterns": ["CoreAI/src/main/java/dev/coreai/reasoning/*"], "sections": ["coreai", "inference"]},
     {"patterns": ["*/VillagerMind.java"], "sections": ["coreai", "tasks", "diagnostics"]},
     {"patterns": ["*/WorkerTuning.java", "*/WorkPose.java", "*/WorkPositions.java"], "sections": ["coreai", "navigation", "design", "tasks"]},
-    {"patterns": ["*/RecoveryRevision.java", "*/WorkerSkillTrial.java", "*/SkillRuleActions.java", "*/BlockObservation.java", "*/SkillContext.java", "*/RecoveryExperiments.java"], "sections": ["coreai", "navigation", "inference"]},
+    {"patterns": ["*/RecoveryRevision.java", "*/WorkerSkillTrial.java", "*/SkillRuleActions.java", "*/BlockObservation.java", "*/SkillContext.java", "*/RecoveryTerrainView.java", "*/RecoveryExperiments.java"], "sections": ["coreai", "navigation", "inference"]},
     {"patterns": ["CoreAI/**"], "sections": ["coreai"]},
     {"patterns": ["*/navigation/*", "*/WorkerNavigation.java", "*/Navigation*.java", "*/RouteClearance.java", "*/WorkMovementControl.java", "*/WorkerEmergency.java"], "sections": ["navigation"]},
     {"patterns": ["*/CraftingBook.java", "*/RecipeCosts.java", "*/ServerRecipes.java", "*/ToolActions.java", "*/ToolRecipes.java", "*/WorkerStations.java", "*/MiningTools.java"], "sections": ["crafting"]},

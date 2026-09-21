@@ -58,23 +58,11 @@ public record SkillContext(
     StringBuilder signature = new StringBuilder();
     for (int dy = -2; dy <= 3; dy++) {
       List<String> rows = new ArrayList<>();
-      for (int z = -6; z <= 6; z++) {
+      for (int z = -4; z <= 4; z++) {
         StringBuilder row = new StringBuilder();
-        for (int x = -6; x <= 6; x++) {
+        for (int x = -4; x <= 4; x++) {
           var c = map.cell(origin.add(x, dy, z));
-          char symbol =
-              switch (c.kind()) {
-                case AIR -> '.';
-                case SOLID -> '#';
-                case SOFT -> 's';
-                case OPENABLE -> 'D';
-                case HAZARD -> '!';
-                case UNKNOWN -> '?';
-                case UNCLASSIFIED -> 'u';
-                case OBSTACLE -> 'X';
-                case CLEARABLE -> 'c';
-                case FLUID -> '~';
-              };
+          char symbol = RecoveryTerrainView.symbol(c);
           row.append(symbol);
           signature
               .append(c.material())
@@ -86,7 +74,7 @@ public record SkillContext(
         }
         rows.add(row.toString());
       }
-      levels.add(Map.of("relative_y", dy, "rows_z_minus6_to_plus6", rows));
+      levels.add(Map.of("relative_y", dy, "rows_z_minus4_to_plus4", rows));
     }
     List<Pos> walk = new ArrayList<>(), clear = new ArrayList<>(), place = new ArrayList<>();
     for (int x = -8; x <= 8; x++)
@@ -128,13 +116,23 @@ public record SkillContext(
     report.put("reach_squared", reach2);
     report.put(
         "legend",
-        "Rows: x -6..+6; z -6..+6. .=air, #=solid/protected, s=natural clear candidate, D=openable,"
+        "Rows: x -4..+4; z -4..+4. .=passable, #=ordinary solid requiring mining task/tool,"
+            + " P=protected/reserved, B=structure/support, s=natural CLEAR candidate, D=openable,"
             + " !=damaging/explosive, ~=fluid (not a walk route), X=obstacle, c=clearable,"
             + " u=unclassified; ?=unobserved. Coordinates relative to current feet origin.");
     report.put("levels", levels);
-    report.put("nearby_stands", walk.stream().limit(32).toList());
+    report.put("level_x_coordinates", List.of(-4, -3, -2, -1, 0, 1, 2, 3, 4));
+    report.put("nearby_obstacle_examples", RecoveryTerrainView.nearbyObstacles(map, origin));
+    report.put("route_height", RecoveryTerrainView.describe(map, origin, goal));
+    report.put("nearby_stands", walk.stream().limit(16).toList());
     report.put("natural_clear_candidates", clear.stream().limit(24).toList());
-    report.put("air_support_candidates_requiring_live_checks", place.stream().limit(24).toList());
+    report.put(
+        "air_support_candidates_requiring_live_checks",
+        inventory.entrySet().stream()
+                .anyMatch(
+                    e -> e.getValue() > 0 && dev.coreai.SkillProgram.SUPPORTS.contains(e.getKey()))
+            ? place.stream().limit(24).toList()
+            : List.of());
     return new SkillContext(
         key, map, origin, goal, reach2, Map.copyOf(inventory), failure, Map.copyOf(report));
   }

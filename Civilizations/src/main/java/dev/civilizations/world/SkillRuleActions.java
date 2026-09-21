@@ -3,8 +3,11 @@ package dev.civilizations.world;
 import dev.civilizations.CivilizationsPlugin;
 import dev.civilizations.core.Pos;
 import dev.civilizations.learning.*;
+import dev.civilizations.navigation.NavigationMap;
 import dev.coreai.SkillProgram;
+import dev.coreai.TerrainRuleBook;
 import java.util.*;
+import java.util.concurrent.*;
 import org.bukkit.*;
 import org.bukkit.entity.Villager;
 
@@ -25,6 +28,11 @@ public final class SkillRuleActions {
       Location at = location(p);
       if (!Bukkit.isOwnedByCurrentRegion(at, 1)) continue;
       var facts = BlockObservation.capture(at.getBlock());
+      if (plugin
+              .experiments()
+              .rules()
+              .rule(actor.getUniqueId().toString(), facts.material(), facts.state())
+          != null) continue;
       if (!seen.add(facts.state())) continue;
       probes.add(
           Map.of(
@@ -110,23 +118,77 @@ public final class SkillRuleActions {
               "status",
               "trial_scoped_rule_edit");
     } else {
-      var facts = BlockObservation.capture(location(p).getBlock());
-      if (!facts.material().equals(observed.cell(p).material()))
-        throw new IllegalArgumentException("Classification target changed since observation");
-      var proposed =
-          rules.stage(trial.id, trial.worker, facts, step.material(), explanation, trial.teacher);
-      plugin.experiments().remember(facts, step.material(), explanation, trial.teacher);
-      receipt =
-          Map.of(
-              "instruction",
-              step,
-              "physical_probe",
-              facts,
-              "proposed_rule",
-              proposed,
-              "status",
-              "classification_verified_by_live_facts; retained_independently_of_route_outcome");
+      classify(
+          trial, step, p, explanation, observed, BlockObservation.capture(location(p).getBlock()));
+      return;
     }
+    plugin.experiments().step(trial, receipt);
+    plugin.debug(trial.village, trial.worker, "learning_rule_trial", receipt);
+  }
+
+  /** Read on the block's region; completion carries immutable facts back to the worker. */
+  public CompletableFuture<TerrainRuleBook.Facts> probe(Pos p) {
+    var future = new CompletableFuture<TerrainRuleBook.Facts>();
+    World world = actor.getWorld();
+    if (p.y() < world.getMinHeight() || p.y() >= world.getMaxHeight())
+      return CompletableFuture.failedFuture(
+          new IllegalArgumentException("probe_outside_world_height"));
+    Runnable acquire =
+        () -> {
+          if (future.isDone()) return;
+          try {
+            if (!world.isChunkLoaded(p.x() >> 4, p.z() >> 4))
+              throw new IllegalArgumentException("probe_chunk_not_loaded");
+            future.complete(BlockObservation.capture(world.getBlockAt(p.x(), p.y(), p.z())));
+          } catch (RuntimeException error) {
+            future.completeExceptionally(error);
+          }
+        };
+    try {
+      if (Bukkit.isOwnedByCurrentRegion(world, p.x() >> 4, p.z() >> 4)) acquire.run();
+      else Bukkit.getRegionScheduler().execute(plugin, world, p.x() >> 4, p.z() >> 4, acquire);
+    } catch (RuntimeException error) {
+      future.completeExceptionally(error);
+    }
+    return future.orTimeout(4, TimeUnit.SECONDS);
+  }
+
+  /** A remote read can teach physics; it never removes a block or bypasses action reach. */
+  public void classify(
+      RecoveryExperiments.Trial trial,
+      SkillProgram.Step step,
+      Pos p,
+      String explanation,
+      NavigationMap observed,
+      TerrainRuleBook.Facts facts) {
+    var cell = observed.cell(p);
+    if (!facts.material().equals(cell.material())
+        || !cell.state().isEmpty() && !facts.state().equals(cell.state()))
+      throw new IllegalArgumentException(
+          "Classification target changed since observation: "
+              + cell.material()
+              + "/"
+              + cell.state()
+              + " -> "
+              + facts.material()
+              + "/"
+              + facts.state());
+    var proposed =
+        plugin
+            .experiments()
+            .rules()
+            .stage(trial.id, trial.worker, facts, step.material(), explanation, trial.teacher);
+    plugin.experiments().remember(facts, step.material(), explanation, trial.teacher);
+    var receipt =
+        Map.of(
+            "instruction",
+            step,
+            "physical_probe",
+            facts,
+            "proposed_rule",
+            proposed,
+            "status",
+            "classification_verified_by_live_facts; retained_independently_of_route_outcome");
     plugin.experiments().step(trial, receipt);
     plugin.debug(trial.village, trial.worker, "learning_rule_trial", receipt);
   }

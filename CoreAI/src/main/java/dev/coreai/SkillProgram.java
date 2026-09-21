@@ -10,6 +10,7 @@ public record SkillProgram(String explanation, List<Step> steps) {
     CLEAR,
     PLACE_SUPPORT,
     CLASSIFY,
+    OBSERVE,
     SEARCH,
     TUNE,
     VERIFY

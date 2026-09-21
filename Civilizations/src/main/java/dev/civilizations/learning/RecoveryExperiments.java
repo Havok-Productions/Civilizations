@@ -296,6 +296,14 @@ public final class RecoveryExperiments implements AutoCloseable {
    */
   public CompletableFuture<SkillProgram> revise(
       Trial trial, SkillContext fresh, Map<String, ?> failure, long now) {
+    return revise(trial, fresh, failure, now, false);
+  }
+
+  /**
+   * Requested observations are successful reads, not evidence that the previous behavior failed.
+   */
+  public CompletableFuture<SkillProgram> revise(
+      Trial trial, SkillContext fresh, Map<String, ?> failure, long now, boolean observationOnly) {
     var result = new CompletableFuture<SkillProgram>();
     String evidence = new Gson().toJson(failure);
     if (!enqueue(
@@ -305,15 +313,21 @@ public final class RecoveryExperiments implements AutoCloseable {
             return;
           }
           var report = new LinkedHashMap<String, Object>(fresh.observation());
-          report.put("failed_execution", new Gson().fromJson(evidence, Object.class));
+          report.put(
+              observationOnly ? "observation_request" : "failed_execution",
+              new Gson().fromJson(evidence, Object.class));
           report.put("previous_program", trial.source);
           report.put(
               "instruction",
-              "Repair the failed approach using these fresh observations. Coordinates now use the"
-                  + " new feet origin. Preserve the original goal. Clear accessible obstructions or"
-                  + " place available support before trying a blocked WALK. Returning the same"
-                  + " instructions is not a new attempt.");
-          if (trial.source != null) {
+              observationOnly
+                  ? "The requested read completed. Use its fresh observations to continue the"
+                      + " original goal. Coordinates use the current feet origin. Remaining old"
+                      + " instructions were replaced, not executed."
+                  : "Repair the failed approach using these fresh observations. Coordinates now use"
+                      + " the new feet origin. Preserve the original goal. Clear accessible"
+                      + " obstructions or place available support before trying a blocked WALK."
+                      + " Returning the same instructions is not a new attempt.");
+          if (trial.source != null && !observationOnly) {
             trial.attempted.add(attemptKey(trial.sourceContext, trial.source));
             try {
               library.outcome(
@@ -329,8 +343,9 @@ public final class RecoveryExperiments implements AutoCloseable {
               warning.accept("Recovery revision evidence: " + error);
             }
           }
-          trial.source = null; // The abandoned source already received its failure outcome.
-          record(trial, "revision_requested", report);
+          trial.source =
+              null; // Observation requests receive neither goal success nor a behavior failure.
+          record(trial, observationOnly ? "observation_requested" : "revision_requested", report);
           submitRevision(trial, fresh, report, now, result, false);
         })) result.completeExceptionally(new IllegalStateException("revision_io_unavailable"));
     return result;
@@ -582,9 +597,19 @@ public final class RecoveryExperiments implements AutoCloseable {
     }
   }
 
-  private static final String SYSTEM =
+  public static final String SYSTEM =
       """
-      You are a Minecraft villager's local skill programmer. A real route attempt failed. Write a small executable recovery program, not advice or a claim of success. You may CLASSIFY observed blocks using supplied physical_block_probes, SEARCH with a new radius, WALK to observed relative feet coordinates, CLEAR natural dirt/trees or classified removable clutter, PLACE_SUPPORT using actual available inventory to make a short step or dry crossing, then VERIFY. You may detour away from the goal first. Try a different approach from a previous failed attempt and use its actual evidence. Do not repeat unchanged failed instructions. Use relative coordinates from the supplied origin. The host observes instruction areas as needed and WALK travels through successive local maps, clearing feasible natural obstacles along the way. Unavailable space is unknown, not air; observation failures are reported for replanning. Walk before actions that are out of reach. Do not remove buildings or player-protected blocks, enter hazards or create unsupported falling blocks. CLASSIFY is an executable rewrite of your terrain rule table. Its x/y/z select an observed block relative to origin, material is PASSABLE, CLEARABLE or OBSTACLE. Physical collision, fluid, damage and nonstructural-removal probes test the proposed classification. Prefer PASSABLE for harmless non-colliding ground cover; CLEARABLE for removable obstacles that actually block the goal. An unknown/unobserved chunk is not an unknown block type and cannot be made into air. A classification that matches a live physical probe is saved independently even if a later route instruction fails. Search and parameter edits remain trial-scoped until verified goal completion. SEARCH uses x=desired horizontal radius, y=z=0,material="". It rewrites search radius for this trial; VERIFY requests a new map and native route under your changes. Use it when a detour exceeds the present map, or reduce it if search work is excessive. Example: SEARCH radius32 followed by VERIFY, with no walking instruction required. Do not use bigger distances without a reason in the map/failure evidence. Existing successful rules and verified programs are reused locally. WALK uses normal native movement; the host may permit a short exit from existing shallow water to dry land. PLACE_SUPPORT consumes one named inventory item, requires air, dry nearby support and clear space above, and can never replace a block. CLEAR retains actual drops. Proposals have no configured numeric ranges. Use finite instructions; execution obtains observations and reports actual world or resource constraints instead of silently clamping a proposed value. End with VERIFY x=0,y=0,z=0,material=""; the host checks arrival at the ORIGINAL goal after continuing normal navigation if needed. If verification_goal is CLEAR_SITE, the original target block must actually become AIR; arrival does not count, and you can finish CLEAR then VERIFY without moving. VERIFY is never a model assertion of success. TUNE edits named controller parameters from tunable_parameters: material=key,x=integer value,y=z=0. Explain which observed failure each change addresses. Current values, units and purposes are supplied without allowed ranges; keys identify implemented consumers. Parameter changes first apply to this worker, persist only after verified completion, and can be revised in later trials. Do not change timing without evidence, or claim a speed improvement merely because a task completes. Other instructions except CLASSIFY, TUNE and PLACE_SUPPORT use material="".  Return only the JSON program: explanation and steps [{op,x,y,z,material}].
+      You control a Minecraft villager recovering a real task. Return an executable JSON program, not advice or a claim of success: explanation and steps [{op,x,y,z,material}]. Coordinates are relative to the supplied current feet origin. Preserve the ORIGINAL goal. Host execution supplies outcomes; VERIFY is never a model assertion.
+      Available operations:
+      OBSERVE x,y,z,material="": request a fresh read of loaded terrain around that relative focus WITHOUT walking. This pauses and replaces remaining instructions with a new model request containing the result. Use it when height, clearance or distant terrain is unknown. Unknown chunks stay unknown; no forced chunk loads. Do not repeat an unchanged observation when its result already answers the question.
+      CLASSIFY x,y,z,material=PASSABLE|CLEARABLE|OBSTACLE: remotely probe a loaded block's actual collision/fluid/damage/removability. No walking needed. Proven facts persist independently of route success. Classifications cannot turn unknown chunks into air or enable removal of buildings. Harmless non-colliding plants are PASSABLE and usually need no action. CLEARABLE classification requires nonsolid clutter; solid dirt cannot pass that probe. SOFT dirt/trees already have natural clearance permission: use CLEAR directly, without CLASSIFY.
+      WALK x,y,z,material="": normal native movement through successive observed maps, with feasible natural clearance; no flying, teleporting or swimming into danger. An air cell is not a supported stand. A large height difference needs stairs or a measured route, not a direct jump.
+      CLEAR x,y,z,material="": remove natural dirt/trees or physically classified nonstructural clutter within reach, retaining drops. Host walks into reach first. P=protected/reserved, B=structure/support cannot be cleared. Ordinary solid # is distinct: it requires an ordinary mining task and suitable tool, which CLEAR does not implement. Classification alone cannot make stone removable by CLEAR. Use a measured detour or support instead if mining is needed.
+      PLACE_SUPPORT x,y,z,material=one supplied support item: consume one actual inventory block into empty dry space with an anchor and clearance above; cannot replace occupied blocks, buildings or entities. Walk into reach first. Build a reachable sequence, not floating blocks.
+      SEARCH x=horizontal radius,y=z=0,material="": change the worker's map radius, then VERIFY remaps. Enlarge only when the obstacle/detour exceeds the current map; shrinking cannot solve missing observations. Vertical coverage already follows the goal's height.
+      TUNE x=integer value,y=z=0,material=implemented key from tunable_parameters: revise controller behavior with a concrete reason. No configured numeric ranges; actual geometry and resource constraints are reported. SEARCH/TUNE stay trial-scoped until verified completion.
+      VERIFY x=y=z=0,material="" must be last. Host resumes normal navigation and checks ARRIVAL at the original goal. For CLEAR_SITE the original block must actually be AIR, so CLEAR then VERIFY can finish without moving.
+      Read the local levels, route_height vertical slice and obstacle removal reasons. Solid floor below the feet is useful support, not a body obstruction. reach_squared describes final arrival tolerance, not map radius or block interaction reach. CLEAR needs no building inventory. Slice columns are samples, not evidence that the gaps are clear. ? means unobserved. Available inventory, failed actions and fresh observations are authoritative. Change the failed action or its prerequisites rather than repeating unchanged failed instructions. Request missing observations instead of guessing. Do not enter hazards, remove protected blocks, or claim task completion before host verification.
       """;
   public static final String SCHEMA = SkillProgram.schema();
 }
