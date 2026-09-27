@@ -324,7 +324,7 @@ public final class VillagerWorker {
       if (village.paused()) {
         excludeLearning("village paused");
         deliveries.cancel();
-        navigation.stop();
+        navigation.stop("village_paused");
         movementControl.working(false);
         entity.getPathfinder().stopPathfinding();
         recovery.pause(now);
@@ -334,7 +334,7 @@ public final class VillagerWorker {
       if (emergency.needed()) {
         excludeLearning("physical emergency");
         if (!escaping) {
-          navigation.stop();
+          navigation.stop("physical_emergency");
           deliveries.cancel();
           escaping = true;
         }
@@ -352,7 +352,7 @@ public final class VillagerWorker {
       if (threatened()) {
         movementControl.working(false);
         // Cancel our work once; repeatedly stopping the pathfinder would cancel vanilla fleeing.
-        if (!fleeing) reset();
+        if (!fleeing) reset("threat_cancelled_work");
         fleeing = true;
         village.needs().threat(now);
         recovery.pause(now);
@@ -364,7 +364,7 @@ public final class VillagerWorker {
       if (time >= 12500 && time < 23500) {
         movementControl.working(false);
         if (!night) {
-          reset();
+          reset("night_sleep_interruption");
           night = true;
         }
         recovery.pause(now);
@@ -385,9 +385,20 @@ public final class VillagerWorker {
             village.stock(chest, InventoryOps.summary(c.getInventory()), now);
       }
       if (job != null && !village.renew(job.id, id, now)
-          || supplyFor != null && !village.renew(supplyFor.id, id, now)) reset();
+          || supplyFor != null && !village.renew(supplyFor.id, id, now)) reset("job_claim_lost");
       // Observe completed work before publishing supplies, gathering, or accepting a courier.
       if (completeIfSatisfied(now)) return;
+      // An active recovery owns movement through verification. Routine supply/yield selection
+      // resumes afterward; sleep, danger, ownership loss and observed completion still run above.
+      if (navigation.experimentActive()) {
+        recovery.pause(now);
+        movementControl.working(true);
+        navigation.gates();
+        if (navigation.experimentTick(now)) {
+          display = navigation.status();
+          return;
+        }
+      }
       if (yielding.tick(now)) {
         movementControl.working(true);
         recovery.pause(now);
@@ -688,6 +699,8 @@ public final class VillagerWorker {
       report.put("deposit_allowed", village.mayShareSurplus(id) && village.chest() != null);
       report.put("recent_results", village.memories(id));
       report.put("agent_experiences", mind.report());
+      if (plugin.experiments() != null)
+        report.put("diagnostic_memory", plugin.experiments().diagnosticReport(village.id()));
       if (escalate) report.put("recovery_problem", recovery.problem(now));
       debug("decision_request", Map.of("reasoning", escalate, "observations", report));
       long token = ++generation;
@@ -766,6 +779,16 @@ public final class VillagerWorker {
                                           apply(decision, System.currentTimeMillis());
                                         }),
                             () -> {});
+                  },
+                  failure -> {
+                    if (plugin.experiments() != null)
+                      plugin
+                          .experiments()
+                          .diagnose(
+                              village.id(),
+                              "decision:" + id,
+                              failure.toString(),
+                              Map.of("position", at, "reason", failure.toString()));
                   });
       if (accepted) {
         awaiting = true;
@@ -1383,6 +1406,16 @@ public final class VillagerWorker {
     evidence.put("failure_id", failureId);
     lastFailure = Map.copyOf(evidence);
     debug("failure", lastFailure);
+    if (plugin.experiments() != null)
+      plugin
+          .experiments()
+          .diagnose(
+              village.id(),
+              reason.startsWith("No implemented harvesting capability")
+                  ? reason
+                  : job == null ? "worker:" + id : "goal:" + job.target.key(),
+              reason,
+              lastFailure);
     probe.failure(reason, lastFailure);
     mind.failed(reason, lastFailure);
     navigation.mapFailure(failureId, job == null ? here() : job.target, now);
@@ -1397,17 +1430,21 @@ public final class VillagerWorker {
         .progress(id, village.taskProject(id), "Reconsider blocked step", reason, "", now);
     if (job != null) village.failed(job.id, id, now, reason);
     else village.remember(id, reason, false);
-    reset();
+    reset("failure_cancelled_work: " + reason);
     mode = "rest";
     nextWork = now + 5000;
     nextThink = 0;
   }
 
   private void reset() {
-    village.checkpoint(id, job, supplyFor, "Interrupted; retained for resumption");
+    reset("worker_reset");
+  }
+
+  private void reset(String reason) {
+    village.checkpoint(id, job, supplyFor, reason + "; retained for resumption");
     deliveries.cancel();
     yielding.cancel();
-    mind.cancel("worker_reset");
+    mind.cancel(reason);
     workPose.reset();
     waitingReason = "";
     policyTicket = null;
@@ -1421,7 +1458,7 @@ public final class VillagerWorker {
     mode = "idle";
     generation++;
     village.release(id);
-    navigation.stop();
+    navigation.stop(reason);
   }
 
   private void excludeLearning(String reason) {

@@ -146,7 +146,6 @@ final class LiveSkillChecks {
           {"op":"PLACE_SUPPORT","x":1,"y":-1,"z":0,"material":"DIRT"},
           {"op":"WALK","x":1,"y":0,"z":0,"material":""},
           {"op":"PLACE_SUPPORT","x":2,"y":-1,"z":0,"material":"DIRT"},
-          {"op":"WALK","x":4,"y":0,"z":0,"material":""},
           {"op":"VERIFY","x":0,"y":0,"z":0,"material":""}]}
           """;
       ModelBackend fake =
@@ -164,10 +163,13 @@ final class LiveSkillChecks {
             public String complete(String system, String report) {
               if (!report.contains("goal_relative") || !report.contains("DIRT"))
                 throw new AssertionError("Missing observation");
-              if (calls.incrementAndGet() == 1)
+              if (calls.incrementAndGet() <= 2)
                 return "{\"explanation\":\"Observe elevated obstruction without"
                            + " walking\",\"steps\":[{\"op\":\"OBSERVE\",\"x\":6,\"y\":27,\"z\":0,\"material\":\"\"}]}";
               secondReport.set(report);
+              if (!report.contains("observation_no_new_information"))
+                throw new AssertionError(
+                    "Repeated observation did not receive diagnostic feedback");
               if (!report.contains("requested_observation")
                   || !report.contains("LEAF_LITTER")
                   || !report.contains("protected_or_reserved"))
@@ -200,17 +202,20 @@ final class LiveSkillChecks {
       control.working(true);
       java.util.concurrent.atomic.AtomicReference<Boolean> result =
           new java.util.concurrent.atomic.AtomicReference<>();
-      WorkerSkillTrial skill =
-          new WorkerSkillTrial(
+      WorkerNavigation navigation =
+          new WorkerNavigation(
               plugin,
               actor,
               village,
-              (success, reason) -> {
-                fixture.getLogger().info("SKILL RESULT: " + reason);
-                result.set(success);
+              (now, reason) -> {
+                fixture.getLogger().severe("Recovery navigation failed: " + reason);
+                result.set(false);
               });
+      var trialField = WorkerNavigation.class.getDeclaredField("skillTrial");
+      trialField.setAccessible(true);
+      WorkerSkillTrial skill = (WorkerSkillTrial) trialField.get(navigation);
       long started = System.currentTimeMillis();
-      if (!skill.start(map, new Pos(6, y, 0), 1, "fixture_disconnected_floor", started))
+      if (!skill.start(map, new Pos(6, y, 0), 0, "fixture_disconnected_floor", started))
         throw new AssertionError("No pilot admitted");
       actor
           .getScheduler()
@@ -221,7 +226,8 @@ final class LiveSkillChecks {
                   if (plugin.worker(actor.getUniqueId().toString()) != ownership)
                     throw new AssertionError("Fixture actor has competing controllers");
                   control.working(true);
-                  skill.tick(System.currentTimeMillis());
+                  navigation.experimentTick(System.currentTimeMillis());
+                  if (!skill.active() && result.get() == null) result.set(true);
                   if (result.get() != null) {
                     var highMap = heightSurvey.join().map();
                     if (highMap.vertical < 30
@@ -232,7 +238,7 @@ final class LiveSkillChecks {
                             .equals("protected_or_reserved")
                         || !highMap.cell(new Pos(-6, y - 1, -4)).removal().contains("mining"))
                       throw new AssertionError("Height capture or obstacle distinction failed");
-                    if (calls.get() != 2 || secondReport.get().contains("failed_execution"))
+                    if (calls.get() != 3 || secondReport.get().contains("failed_execution"))
                       throw new AssertionError("Observation incorrectly required route failure");
                     if (service
                             .rules()
@@ -259,16 +265,25 @@ final class LiveSkillChecks {
                                     Files.readString(evidence.resolve("skills/skills.json"));
                                 if (!saved.contains("verified_once"))
                                   throw new AssertionError("Observed success not persisted");
+                                String diagnosis =
+                                    new com.google.gson.Gson()
+                                        .toJson(
+                                            new RecoveryDiagnostics(evidence).report(village.id()));
+                                if (!diagnosis.contains("observation_loop"))
+                                  throw new AssertionError(
+                                      "Diagnostic history did not survive reload");
                                 fixture
                                     .getLogger()
                                     .info(
-                                        "OBSERVATION PASS: remote OBSERVE and CLASSIFY at +27y"
-                                            + " without walking there; goal-height capture;"
-                                            + " protected versus ordinary solid distinction; actual"
-                                            + " two-block support placement, two dirt consumed,"
-                                            + " villager crossed gap, original-goal arrival and"
-                                            + " learned outcome persisted; leaf litter walkable."
-                                            + " Proposal was deterministic fixture, not model"
+                                        "OBSERVATION PASS: remote OBSERVE and CLASSIFY at +27y;"
+                                            + " repeated read corrected; persistent diagnosis;"
+                                            + " VERIFY retained original route goal without walking"
+                                            + " there; goal-height capture; protected versus"
+                                            + " ordinary solid distinction; actual two-block"
+                                            + " support placement, two dirt consumed, villager"
+                                            + " crossed gap, original-goal arrival and learned"
+                                            + " outcome persisted; leaf litter walkable. Proposal"
+                                            + " was deterministic fixture, not model"
                                             + " intelligence.");
                                 service.close();
                                 queue.close();

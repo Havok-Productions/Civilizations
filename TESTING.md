@@ -38,6 +38,8 @@ The runner prints chosen classes and method counts. `test-results/last-run.json`
 
 ## Slow checks are separate
 
+Alpha.43 uses `navigation coreai inference diagnostics tasks` for persistent causal notes, repeated-read feedback, interrupted-task ownership and recovery prompt compaction. The 186 selected JVM cases passed. The combined disposable `live-skill` scenario now returns the same OBSERVE twice, requires corrective feedback, then classifies remote litter, places two real supports and lets the production navigation adapter perform final VERIFY travel. The exact-arrival fixture uses reach zero; the earlier reach-one attempt legitimately arrived one block away and failed the fixture's stricter position assertion. Check persistence after reloading the diagnostic service, actual block/item changes and the original goal. This deterministic proposal is executor evidence, not proof of autonomous model intelligence. No routine full-village or extra model startup is required.
+
 Alpha.42 uses `navigation coreai inference diagnostics` for recovery observations, terrain metadata and outcome attribution. After prompt-only refinements, rerun only the affected recovery/context classes. The existing disposable `live-skill` case now also checks OBSERVE and CLASSIFY at +27 vertical blocks without walking there, height-aware map capture, protected versus ordinary solid terrain, two actual support placements, exact dirt consumption, arrival and persisted success. Its registered worker is deliberately unscheduled so only the fixture executor controls that villager. Real-model comparisons are separate proposal checks; they cannot establish physical success. Models, credentials and complete local results stay outside Git.
 
 

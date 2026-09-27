@@ -22,6 +22,7 @@ public final class RecoveryExperiments implements AutoCloseable {
     private volatile SkillProgram source;
     private volatile SkillContext sourceContext;
     private final Set<String> attempted = new HashSet<>();
+    private final RecoveryReadLedger reads = new RecoveryReadLedger();
 
     private Trial(String village, String worker, SkillContext context) {
       this.village = village;
@@ -38,6 +39,7 @@ public final class RecoveryExperiments implements AutoCloseable {
   private final SkillLibrary library;
   private final SkillLibrary verifiedContexts;
   private final TerrainRuleBook rules;
+  private final RecoveryDiagnostics diagnostics;
 
   public TerrainRuleBook rules() {
     return rules;
@@ -58,6 +60,7 @@ public final class RecoveryExperiments implements AutoCloseable {
     this.inference = inference;
     this.teacher = teacher;
     this.warning = warning;
+    diagnostics = new RecoveryDiagnostics(root);
     library = new SkillLibrary(root.resolve("skills"));
     verifiedContexts = new SkillLibrary(root.resolve("skills/verified-contexts"));
     rules = new TerrainRuleBook(root.resolve("rules"));
@@ -156,6 +159,72 @@ public final class RecoveryExperiments implements AutoCloseable {
     if (!closed) flushFacts();
   }
 
+  public Map<String, Object> diagnosticReport(String village) {
+    return diagnostics.report(village);
+  }
+
+  /**
+   * World threads submit immutable receipts; persistence and proposal generation happen off tick.
+   */
+  public void diagnose(String village, String subject, String reason, Map<String, ?> evidence) {
+    String snapshot = new Gson().toJson(diagnosticEvidence(evidence));
+    enqueue(
+        () -> {
+          try {
+            diagnostics.record(
+                village,
+                subject,
+                reason,
+                new Gson().fromJson(snapshot, Map.class),
+                System.currentTimeMillis());
+          } catch (IOException error) {
+            warning.accept("Recovery diagnosis persistence: " + error);
+          }
+        });
+  }
+
+  private static Map<String, Object> diagnosticEvidence(Map<String, ?> evidence) {
+    var compact = new LinkedHashMap<String, Object>();
+    for (String key :
+        List.of(
+            "reason",
+            "position",
+            "origin",
+            "goal",
+            "original_goal",
+            "target",
+            "inventory",
+            "instruction",
+            "failed_index",
+            "verified_steps",
+            "resource",
+            "job",
+            "mode",
+            "final_instruction",
+            "placed",
+            "cleared",
+            "instructions_completed",
+            "interruption")) if (evidence.get(key) != null) compact.put(key, evidence.get(key));
+    return compact;
+  }
+
+  private void diagnose(Trial trial, String reason, Map<String, ?> evidence) {
+    var receipt = diagnosticEvidence(evidence);
+    receipt.put("goal", trial.context.goal());
+    receipt.put("origin", trial.context.origin());
+    receipt.put("verified_steps", trial.reads.verified());
+    try {
+      diagnostics.record(
+          trial.village,
+          "goal:" + trial.context.goal().key(),
+          reason,
+          receipt,
+          System.currentTimeMillis());
+    } catch (IOException error) {
+      warning.accept("Recovery diagnosis persistence: " + error);
+    }
+  }
+
   public Trial request(String village, String worker, SkillContext context, long now) {
     if (closed || now < nextRequest.get()) return null;
     Trial trial = new Trial(village, worker, context);
@@ -190,6 +259,7 @@ public final class RecoveryExperiments implements AutoCloseable {
               return;
             }
             Map<String, Object> report = new LinkedHashMap<>(context.observation());
+            report.put("diagnostic_memory", diagnostics.report(village));
             SkillLibrary.Experience previous = library.get(context.key());
             if (previous == null) previous = verifiedContexts.get(context.reuseKey());
             if (previous != null) report.put("previous_live_attempt", previous);
@@ -280,6 +350,7 @@ public final class RecoveryExperiments implements AutoCloseable {
   }
 
   private void reject(Trial trial, String reason) {
+    diagnose(trial, reason, Map.of());
     record(trial, "rejected", Map.of("reason", reason));
     trial.program.completeExceptionally(new IllegalStateException(reason));
     active.compareAndSet(trial, null);
@@ -288,7 +359,11 @@ public final class RecoveryExperiments implements AutoCloseable {
   public void step(Trial trial, Map<String, ?> evidence) {
     String json = new Gson().toJson(evidence);
     enqueue(
-        () -> record(trial, "step", Map.of("evidence", new Gson().fromJson(json, Object.class))));
+        () -> {
+          Map<String, ?> receipt = new Gson().fromJson(json, Map.class);
+          trial.reads.step(receipt);
+          record(trial, "step", Map.of("evidence", receipt));
+        });
   }
 
   /**
@@ -313,6 +388,10 @@ public final class RecoveryExperiments implements AutoCloseable {
             return;
           }
           var report = new LinkedHashMap<String, Object>(fresh.observation());
+          if (observationOnly) trial.reads.observed(fresh, failure);
+          else diagnose(trial, Objects.toString(failure.get("reason"), fresh.failure()), failure);
+          report.put("diagnostic_memory", diagnostics.report(trial.village));
+          report.put("verified_steps", trial.reads.verified());
           report.put(
               observationOnly ? "observation_request" : "failed_execution",
               new Gson().fromJson(evidence, Object.class));
@@ -377,22 +456,32 @@ public final class RecoveryExperiments implements AutoCloseable {
                           new CancellationException("trial_no_longer_active"));
                       return;
                     }
+                    String repeatedRead =
+                        proposal == null ? "" : trial.reads.repeatedRead(fresh, proposal.program());
                     boolean duplicate =
                         proposal != null
-                            && (trial.attempted.contains(attemptKey(fresh, proposal.program()))
+                            && (!repeatedRead.isEmpty()
+                                || trial.attempted.contains(attemptKey(fresh, proposal.program()))
                                 || library.repeatedFailure(fresh.key(), proposal.program())
                                 || verifiedContexts.repeatedFailure(
                                     fresh.reuseKey(), proposal.program()));
                     if (duplicate && !corrected) {
+                      if (!repeatedRead.isEmpty()) diagnose(trial, repeatedRead, report);
                       var repair = new LinkedHashMap<String, Object>(report);
                       repair.put("unexecuted_duplicate", proposal.program());
                       repair.put(
                           "revision_feedback",
-                          "These exact instructions already failed with this terrain, position,"
-                              + " goal and inventory. Change the failed action or its"
-                              + " prerequisites, not only the explanation. Use the supplied"
-                              + " obstruction evidence to choose a different reachable approach,"
-                              + " clearance or support.");
+                          !repeatedRead.isEmpty()
+                              ? repeatedRead
+                                  + ". The read already succeeded; use its result and the"
+                                  + " verified_steps. Choose a different action, prerequisite or"
+                                  + " genuinely unknown focus. No task completion has been"
+                                  + " inferred."
+                              : "These exact instructions already failed with this terrain,"
+                                    + " position, goal and inventory. Change the failed action or"
+                                    + " its prerequisites, not only the explanation. Use the"
+                                    + " supplied obstruction evidence to choose a different"
+                                    + " reachable approach, clearance or support.");
                       record(trial, "revision_correction_requested", repair);
                       submitRevision(
                           trial, fresh, repair, System.currentTimeMillis(), result, true);
@@ -402,7 +491,10 @@ public final class RecoveryExperiments implements AutoCloseable {
                       String reason =
                           proposal == null
                               ? "revision_unavailable: " + inferenceFailure.get()
-                              : "unchanged_failed_recovery_instructions";
+                              : !repeatedRead.isEmpty()
+                                  ? repeatedRead
+                                  : "unchanged_failed_recovery_instructions";
+                      diagnose(trial, reason, report);
                       record(
                           trial,
                           "revision_rejected",
@@ -434,9 +526,11 @@ public final class RecoveryExperiments implements AutoCloseable {
                 result.completeExceptionally(new IllegalStateException("revision_io_unavailable"));
             },
             inferenceFailure::set);
-    if (!accepted)
+    if (!accepted) {
+      diagnose(trial, "revision_not_admitted: " + inferenceFailure.get(), report);
       result.completeExceptionally(
           new IllegalStateException("revision_not_admitted: " + inferenceFailure.get()));
+    }
   }
 
   private static String attemptKey(SkillContext context, SkillProgram program) {
@@ -482,6 +576,7 @@ public final class RecoveryExperiments implements AutoCloseable {
           if (trial.source != null) result.put("program", trial.source);
           result.put("teacher", trial.teacher);
           result.put("reason", reason);
+          if (!success) diagnose(trial, reason, new Gson().fromJson(json, Map.class));
           result.put("evidence", new Gson().fromJson(json, Object.class));
           try {
             if (trial.source != null)
@@ -520,6 +615,7 @@ public final class RecoveryExperiments implements AutoCloseable {
     trial.program.completeExceptionally(new CancellationException(reason));
     enqueue(
         () -> {
+          diagnose(trial, reason, Map.of("interruption", true));
           try {
             rules.finish(trial.id, false);
           } catch (IOException error) {
@@ -584,6 +680,7 @@ public final class RecoveryExperiments implements AutoCloseable {
         () -> {
           try {
             rules.flush();
+            diagnostics.flush();
           } catch (IOException error) {
             warning.accept("Final block lesson save failed: " + error);
           }
@@ -610,6 +707,7 @@ public final class RecoveryExperiments implements AutoCloseable {
       TUNE x=integer value,y=z=0,material=implemented key from tunable_parameters: revise controller behavior with a concrete reason. No configured numeric ranges; actual geometry and resource constraints are reported. SEARCH/TUNE stay trial-scoped until verified completion.
       VERIFY x=y=z=0,material="" must be last. Host resumes normal navigation and checks ARRIVAL at the original goal. For CLEAR_SITE the original block must actually be AIR, so CLEAR then VERIFY can finish without moving.
       Read the local levels, route_height vertical slice and obstacle removal reasons. Solid floor below the feet is useful support, not a body obstruction. reach_squared describes final arrival tolerance, not map radius or block interaction reach. CLEAR needs no building inventory. Slice columns are samples, not evidence that the gaps are clear. ? means unobserved. Available inventory, failed actions and fresh observations are authoritative. Change the failed action or its prerequisites rather than repeating unchanged failed instructions. Request missing observations instead of guessing. Do not enter hazards, remove protected blocks, or claim task completion before host verification.
+      diagnostic_memory explains earlier host failures and interruptions. verified_steps are measured partial results, not completed goals. Use successful reads instead of asking for them again; distinguish absent executor capabilities from missing terrain. Coordinates in diagnostic receipts are absolute; instructions still use the CURRENT relative origin. A code repair proposal is recorded locally when a host defect or missing capability prevents progress.
       """;
   public static final String SCHEMA = SkillProgram.schema();
 }

@@ -70,6 +70,7 @@ public final class ModelContext {
         previous.remove("context");
         clip(previous, "evidence", 1200);
       }
+      compactRecoveryEvidence(root);
     }
     root.addProperty(
         "context_delivery",
@@ -108,7 +109,61 @@ public final class ModelContext {
     }
     JsonObject salvage = child(root, "salvage_existing_proposal");
     if (salvage != null && salvage.remove("previous_attempts") != null) return root.toString();
+    if (root.has("levels") && root.has("goal_relative")) {
+      for (String field :
+          List.of("previous_program", "previous_live_attempt", "unexecuted_duplicate"))
+        if (root.remove(field) != null) return root.toString();
+      // Definitions are supplementary; every implemented parameter and its current value remain.
+      JsonObject parameters = child(root, "tunable_parameters");
+      boolean changed = false;
+      if (parameters != null)
+        for (var value : parameters.asMap().values())
+          if (value.isJsonObject() && value.getAsJsonObject().remove("definition") != null)
+            changed = true;
+      if (changed) return root.toString();
+    }
+    JsonObject memory = child(root, "diagnostic_memory");
+    if (memory != null && memory.has("recent") && memory.getAsJsonArray("recent").size() > 1) {
+      // Keep the latest cause and remedy; older causal records remain available on disk.
+      head(memory, "recent", 1);
+      return root.toString();
+    }
     return report;
+  }
+
+  private static void compactRecoveryEvidence(JsonObject root) {
+    for (String name : List.of("failed_execution", "observation_request")) {
+      JsonObject evidence = child(root, name);
+      if (evidence == null) continue;
+      JsonElement remaining = evidence.remove("remaining_instructions");
+      if (remaining != null && remaining.isJsonArray() && !remaining.getAsJsonArray().isEmpty()) {
+        evidence.add("instruction_at_revision", remaining.getAsJsonArray().get(0));
+        evidence.addProperty("unexecuted_remaining_count", remaining.getAsJsonArray().size());
+      }
+      JsonObject navigation = child(evidence, "navigation_evidence");
+      if (navigation != null) {
+        JsonObject summary = new JsonObject();
+        for (String key :
+            List.of(
+                "reason",
+                "target",
+                "position",
+                "terrain_fingerprint",
+                "map_age_ms",
+                "route_index",
+                "route_size",
+                "next_action")) if (navigation.has(key)) summary.add(key, navigation.get(key));
+        summary.addProperty(
+            "detail_location",
+            "Full navigation evidence is in the local journal; current geometry follows in this"
+                + " request");
+        evidence.add("navigation_evidence", summary);
+      }
+    }
+    for (String name : List.of("previous_program", "unexecuted_duplicate")) {
+      JsonObject program = child(root, name);
+      if (program != null) program.remove("explanation");
+    }
   }
 
   private static void clip(JsonObject object, String name, int length) {

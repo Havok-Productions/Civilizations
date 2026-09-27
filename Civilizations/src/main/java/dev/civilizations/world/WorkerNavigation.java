@@ -78,7 +78,13 @@ public final class WorkerNavigation {
   }
 
   public boolean experimentTick(long now) {
-    return skillTrial != null && skillTrial.tick(now);
+    if (skillTrial == null || !skillTrial.active()) return false;
+    boolean executing = skillTrial.tick(now);
+    if (!executing && skillTrial.active()) {
+      // VERIFY belongs to the original recovery goal, not a newly selected supply/work target.
+      walkExact(skillTrial.goal(), skillTrial.goalReach(), now);
+    }
+    return true;
   }
 
   public void damage(String reason) {
@@ -147,14 +153,18 @@ public final class WorkerNavigation {
   }
 
   public void stop() {
-    stopRoute();
+    stop("navigation_stopped_by_controller");
+  }
+
+  public void stop(String reason) {
+    stopRoute(reason, false);
     rejectedWorkPositions.clear();
     workApproach = null;
     workTarget = null;
   }
 
-  private void stopRoute() {
-    if (skillTrial != null) skillTrial.cancel("navigation_cancelled_or_target_changed");
+  private void stopRoute(String reason, boolean retainRecovery) {
+    if (skillTrial != null && !retainRecovery) skillTrial.cancel(reason);
     generation++;
     plugin.navigation().cancel(actor.getUniqueId().toString(), requestPurpose);
     pending = false;
@@ -347,7 +357,9 @@ public final class WorkerNavigation {
     Pos at = here();
     if (!destination.equals(lastDestination) || !target.equals(plannedTarget)) {
       // Trying another stand in this attempt must retain the earlier rejected stands.
-      stopRoute();
+      stopRoute(
+          "navigation_target_changed: " + lastDestination + " -> " + destination,
+          experimentActive() && target.equals(skillTrial.goal()));
       lastDestination = destination;
       plannedTarget = target;
       nextPlan = 0;

@@ -185,6 +185,8 @@ public final class SkillRuleActions {
             step,
             "physical_probe",
             facts,
+            "position",
+            p,
             "proposed_rule",
             proposed,
             "status",

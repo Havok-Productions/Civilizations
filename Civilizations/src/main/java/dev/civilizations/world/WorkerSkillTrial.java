@@ -85,6 +85,14 @@ public final class WorkerSkillTrial {
     return trial != null;
   }
 
+  public Pos goal() {
+    return trial.context.goal();
+  }
+
+  public int goalReach() {
+    return trial.context.reach2();
+  }
+
   public boolean start(NavigationMap map, Pos goal, int reach2, String failure, long now) {
     return start(map, goal, reach2, failure, now, false);
   }

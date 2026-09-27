@@ -10,6 +10,80 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.junit.jupiter.api.*;
 
 class ModelContextTest {
+  @Test
+  @Tag("inference")
+  @Tag("coreai")
+  @Tag("diagnostics")
+  @Tag("interaction")
+  void recoveryBudgetRemovesDuplicatedEvidenceButRetainsCurrentActionGeometryAndDiagnosis()
+      throws Exception {
+    JsonObject original =
+        JsonParser.parseString(
+                """
+                {"levels":[{"relative_y":0,"rows":["P??s"]}],"goal_relative":{"x":2,"y":27,"z":0},
+                 "inventory":{"DIRT":2},"requested_observation":{"focus":{"material":"CHEST","removal":"protected"}},
+                 "failed_execution":{"reason":"cannot reach chest","failed_index":2,
+                   "remaining_instructions":[{"op":"WALK","x":2},{"op":"VERIFY"}],"navigation_evidence":{"reason":"blocked"}},
+                 "diagnostic_memory":{"recent":[{"kind":"request_capacity","next_action":"compact history"}]},
+                 "tunable_parameters":{"navigation.transition_ms":{"current":1000,"definition":{"help":"test"}}}}
+                """)
+            .getAsJsonObject();
+    original
+        .getAsJsonObject("failed_execution")
+        .getAsJsonObject("navigation_evidence")
+        .addProperty("cells", "old voxel dump ".repeat(5000));
+    original.add(
+        "previous_program",
+        JsonParser.parseString("{\"explanation\":\"old plan\",\"steps\":[{\"op\":\"WALK\"}]}"));
+    var body =
+        LocalRuntime.requestBody(
+            LocalRuntime.Settings.read(new YamlConfiguration()),
+            "system",
+            ModelContext.compact(original.toString()),
+            ReasoningMode.RECOVERY,
+            "{}");
+    var prepared =
+        PromptBudget.prepare(
+            body,
+            4096,
+            request -> {
+              var user =
+                  JsonParser.parseString(
+                          request
+                              .getAsJsonArray("messages")
+                              .get(1)
+                              .getAsJsonObject()
+                              .get("content")
+                              .getAsString())
+                      .getAsJsonObject();
+              return user.has("previous_program") ? 4000 : 1000;
+            });
+    var sent =
+        JsonParser.parseString(
+                prepared
+                    .body()
+                    .getAsJsonArray("messages")
+                    .get(1)
+                    .getAsJsonObject()
+                    .get("content")
+                    .getAsString())
+            .getAsJsonObject();
+    for (String key :
+        List.of(
+            "levels", "goal_relative", "inventory", "requested_observation", "diagnostic_memory"))
+      assertEquals(original.get(key), sent.get(key), key);
+    assertEquals(
+        "WALK",
+        sent.getAsJsonObject("failed_execution")
+            .getAsJsonObject("instruction_at_revision")
+            .get("op")
+            .getAsString());
+    assertTrue(sent.toString().contains("cannot reach chest"));
+    assertFalse(sent.toString().contains("old voxel dump"));
+    assertTrue(original.toString().contains("old voxel dump"));
+    assertTrue(prepared.promptTokens() + prepared.outputTokens() + 64 <= 4096);
+  }
+
   private static JsonObject report() {
     JsonObject report =
         JsonParser.parseString(
