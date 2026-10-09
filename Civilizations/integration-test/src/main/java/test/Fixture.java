@@ -40,12 +40,19 @@ public class Fixture extends JavaPlugin {
         return;
       }
       case LIVE_SKILL -> {
-        new LiveSkillChecks(this).start();
+        if (Boolean.getBoolean("civilizations.test.skill-transfer"))
+          new SkillTransferChecks(this).start();
+        else if (Boolean.getBoolean("civilizations.test.demonstration"))
+          new DemonstrationChecks(this).start();
+        else new LiveSkillChecks(this).start();
         return;
       }
       case NAVIGATION, REPAIR, AUTONOMY, INFERENCE_BUSY -> {
         if (scenario == Scenario.AUTONOMY && Boolean.getBoolean("civilizations.test.design-trial"))
           new DesignTrialChecks(this).start();
+        else if (scenario == Scenario.NAVIGATION
+            && Boolean.getBoolean("civilizations.test.emergency-stall"))
+          new EmergencyRecoveryChecks(this).start();
         else if (scenario == Scenario.NAVIGATION
             && Boolean.getBoolean("civilizations.test.adaptive-recovery"))
           new AdaptiveRecoveryChecks(this).start();

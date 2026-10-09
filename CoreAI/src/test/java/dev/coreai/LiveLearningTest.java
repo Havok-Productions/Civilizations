@@ -41,6 +41,59 @@ class LiveLearningTest {
 
   @org.junit.jupiter.api.Tag("coreai")
   @Test
+  void typedPrerequisitesCannotChangeGoalOrDisguiseMiningAsClearance() {
+    String source =
+        """
+        {"explanation":"prepare tool then mine observed face", "steps":[
+          {"op":"ACQUIRE","x":0,"y":0,"z":0,"material":"WOODEN_PICKAXE"},
+          {"op":"MINE","x":2,"y":1,"z":-3,"material":"STONE"}]}
+        """;
+    var program = SkillProgram.parse(source);
+    assertEquals(SkillProgram.Op.ACQUIRE, program.steps().getFirst().op());
+    assertEquals("STONE", program.steps().get(1).material());
+    assertEquals(
+        new SkillProgram.Step(SkillProgram.Op.VERIFY, 0, 0, 0, ""), program.steps().getLast());
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> SkillProgram.parse(source.replace("\"x\":0", "\"x\":1")));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> SkillProgram.parse(source.replace("\"y\":0", "\"y\":1")));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> SkillProgram.parse(source.replace("\"z\":0", "\"z\":1")));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> SkillProgram.parse(source.replace("WOODEN_PICKAXE", "")));
+    assertThrows(
+        IllegalArgumentException.class, () -> SkillProgram.parse(source.replace("STONE", "AIR")));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> SkillProgram.parse(source.replace("STONE", "minecraft:stone")));
+    assertThrows(
+        IllegalArgumentException.class, () -> SkillProgram.parse(source.replace("MINE", "CLEAR")));
+    var choices =
+        com.google.gson.JsonParser.parseString(SkillProgram.schema())
+            .getAsJsonObject()
+            .getAsJsonObject("properties")
+            .getAsJsonObject("steps")
+            .getAsJsonObject("items")
+            .getAsJsonArray("oneOf");
+    var acquire =
+        java.util.stream.StreamSupport.stream(choices.spliterator(), false)
+            .map(com.google.gson.JsonElement::getAsJsonObject)
+            .map(value -> value.getAsJsonObject("properties"))
+            .filter(
+                value -> value.getAsJsonObject("op").get("const").getAsString().equals("ACQUIRE"))
+            .findFirst()
+            .orElseThrow();
+    for (String coordinate : List.of("x", "y", "z"))
+      assertEquals(0, acquire.getAsJsonObject(coordinate).get("const").getAsInt());
+    assertTrue(acquire.getAsJsonObject("material").has("pattern"));
+  }
+
+  @org.junit.jupiter.api.Tag("coreai")
+  @Test
   void failedProgramsStayRememberedAcrossRevisionsAndRestart() throws Exception {
     var library = new SkillLibrary(root);
     library.outcome("terrain", program(2), "fixture", false, "endpoint unreachable", 1);

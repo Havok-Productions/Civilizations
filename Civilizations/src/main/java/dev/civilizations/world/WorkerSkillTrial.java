@@ -20,6 +20,7 @@ public final class WorkerSkillTrial {
   private final RouteClearance clearance;
   private final SkillRuleActions ruleActions;
   private final WorkPose workPose;
+  private final RecoveryTaskActions taskActions;
   private final BiConsumer<Boolean, String> completed;
   private RecoveryExperiments.Trial trial;
   private SkillProgram program;
@@ -32,7 +33,7 @@ public final class WorkerSkillTrial {
   private long nextObservation;
   private java.util.concurrent.CompletableFuture<dev.coreai.TerrainRuleBook.Facts> probe;
   private Pos lastProgress;
-  private int index, placed, cleared;
+  private int index, placed, cleared, mined, acquired;
   private long deadline, stepStarted, nextAction;
   private long startedAt, executionAt;
   private Location previousPosition;
@@ -60,6 +61,18 @@ public final class WorkerSkillTrial {
             false);
     ruleActions = new SkillRuleActions(plugin, actor);
     workPose = new WorkPose(plugin, actor);
+    taskActions = new RecoveryTaskActions(plugin, actor, village, instructionNavigation);
+  }
+
+  /** Bound during worker construction, before any ordinary work or recovery begins. */
+  void shareTools(ToolActions tools) {
+    if (active())
+      throw new IllegalStateException("Cannot replace active recovery prerequisite state");
+    taskActions.shareTools(tools);
+  }
+
+  void walkPrerequisite(Pos destination, long now) {
+    instructionNavigation.walk(destination, now);
   }
 
   public void failedVerification(String reason) {
@@ -145,9 +158,11 @@ public final class WorkerSkillTrial {
     siteGoal = site;
     deadline = now + 185_000;
     workPose.reset();
+    taskActions.reset();
     index = 0;
     placed = 0;
     cleared = 0;
+    mined = acquired = 0;
     observing = false;
     program = null;
     stepStarted = 0;
@@ -171,6 +186,7 @@ public final class WorkerSkillTrial {
       observation = null;
       probe = null;
       actor.getPathfinder().stopPathfinding();
+      taskActions.reset();
     }
   }
 
@@ -260,6 +276,15 @@ public final class WorkerSkillTrial {
       }
       return true;
     }
+    if (stepStarted == 0) stepStarted = now;
+    if (now - stepStarted > WorkerTuning.value(plugin, actor, "recovery.instruction_ms")) {
+      revise("instruction_timeout: " + step.op());
+      return true;
+    }
+    if (step.op() == SkillProgram.Op.ACQUIRE) {
+      taskResult(taskActions.acquire(step.material(), now), step, here(), now);
+      return true;
+    }
     Pos origin = executionContext.origin(), p;
     try {
       p =
@@ -273,11 +298,6 @@ public final class WorkerSkillTrial {
     }
     if (step.op() == SkillProgram.Op.OBSERVE) {
       revise("requested_fresh_observation", p);
-      return true;
-    }
-    if (stepStarted == 0) stepStarted = now;
-    if (now - stepStarted > WorkerTuning.value(plugin, actor, "recovery.instruction_ms")) {
-      revise("instruction_timeout: " + step.op());
       return true;
     }
     // Walk through successive locally observed maps; never reject a coordinate just because
@@ -298,6 +318,16 @@ public final class WorkerSkillTrial {
       } catch (RuntimeException error) {
         revise("classification_probe_failed: " + error);
       }
+      return true;
+    }
+    if (step.op() == SkillProgram.Op.MINE) {
+      if (!ensureObserved(p, now)) return true;
+      taskResult(
+          taskActions.mine(
+              p, step.material(), instructionMap, siteGoal ? trial.context.goal() : null, now),
+          step,
+          p,
+          now);
       return true;
     }
     if (here().distance2(p) > 12 || !Bukkit.isOwnedByCurrentRegion(location(p), 3)) {
@@ -424,24 +454,31 @@ public final class WorkerSkillTrial {
   }
 
   private void advance(long now, SkillProgram.Step step, Pos position) {
-    plugin
-        .experiments()
-        .step(
-            trial,
-            Map.of(
-                "index",
-                index,
-                "instruction",
-                step,
-                "position",
-                position,
-                "actual_position",
-                here(),
-                "inventory",
-                InventoryOps.summary(actor.getInventory()),
-                "verified",
-                true));
+    advance(now, step, position, Map.of());
+  }
+
+  private void advance(
+      long now, SkillProgram.Step step, Pos position, Map<String, Object> actionEvidence) {
+    Map<String, Object> evidence = new LinkedHashMap<>(actionEvidence);
+    evidence.putAll(
+        Map.of(
+            "index",
+            index,
+            "instruction",
+            step,
+            "position",
+            position,
+            "actual_position",
+            here(),
+            "inventory",
+            InventoryOps.summary(actor.getInventory()),
+            "verified",
+            true,
+            "instruction_completed",
+            true));
+    plugin.experiments().step(trial, evidence);
     workPose.reset();
+    taskActions.reset();
     instructionNavigation.stop();
     instructionMap = null;
     observation = null;
@@ -450,6 +487,64 @@ public final class WorkerSkillTrial {
     instructionsCompleted++;
     stepStarted = 0;
     nextAction = now + WorkerTuning.value(plugin, actor, "construction.interval_ms");
+  }
+
+  private void taskResult(
+      RecoveryTaskActions.Result result, SkillProgram.Step step, Pos position, long now) {
+    // The shared navigation callback may already have started revision while a prerequisite ran.
+    if (trial == null || revision != null) return;
+    if (result.changed()) {
+      deadline = now + 90_000;
+      stepStarted = now;
+    }
+    if (!result.failure().isEmpty()) {
+      Map<String, Object> evidence = new LinkedHashMap<>(result.evidence());
+      evidence.putAll(
+          Map.of(
+              "index",
+              index,
+              "instruction",
+              step,
+              "position",
+              position,
+              "actual_position",
+              here(),
+              "verified",
+              false,
+              "instruction_completed",
+              false,
+              "failure",
+              result.failure()));
+      plugin.experiments().step(trial, evidence);
+      revise("recovery_task_failed: " + result.failure());
+      return;
+    }
+    if (result.ready()) {
+      if (step.op() == SkillProgram.Op.MINE) mined++;
+      if (step.op() == SkillProgram.Op.ACQUIRE) acquired++;
+      advance(now, step, position, result.evidence());
+    } else if (result.changed()) {
+      Map<String, Object> evidence = new LinkedHashMap<>(result.evidence());
+      evidence.putAll(
+          Map.of(
+              "index",
+              index,
+              "instruction",
+              step,
+              "position",
+              position,
+              "actual_position",
+              here(),
+              "inventory",
+              InventoryOps.summary(actor.getInventory()),
+              "verified",
+              true,
+              "instruction_completed",
+              false,
+              "basis",
+              "measured prerequisite progress; requested instruction not yet complete"));
+      plugin.experiments().step(trial, evidence);
+    }
   }
 
   private void revise(String reason) {
@@ -462,20 +557,32 @@ public final class WorkerSkillTrial {
       finish(false, reason);
       return;
     }
+    var executingNavigation = instructionNavigation.evidence();
     instructionNavigation.stop();
     actor.getPathfinder().stopPathfinding();
     workPose.reset();
+    taskActions.reset();
     observation = null;
     probe = null;
     observing = false;
     deadline = System.currentTimeMillis() + 185_000;
     revision =
         new RecoveryRevision(
-            plugin, actor, village, trial, program, index, reason, siteGoal, focus);
+            plugin,
+            actor,
+            village,
+            trial,
+            program,
+            index,
+            reason,
+            siteGoal,
+            focus,
+            executingNavigation);
   }
 
   private void finish(boolean success, String reason) {
     instructionNavigation.stop();
+    taskActions.reset();
     observation = null;
     probe = null;
     var done = trial;
@@ -512,6 +619,8 @@ public final class WorkerSkillTrial {
     evidence.put("elapsed_ms", Math.max(0, finishedAt - startedAt));
     evidence.put("execution_ms", executionAt == 0 ? 0 : Math.max(0, finishedAt - executionAt));
     evidence.put("distance_travelled", travelled);
+    evidence.put("mined", mined);
+    evidence.put("acquire_instructions_satisfied", acquired);
     evidence.put("final_instruction", finalInstruction);
     evidence.put("revisions_executed", revisions);
     plugin.experiments().finish(done, success, reason, evidence);

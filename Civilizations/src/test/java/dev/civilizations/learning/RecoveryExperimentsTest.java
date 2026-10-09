@@ -80,6 +80,12 @@ class RecoveryExperimentsTest {
         "{\"explanation\":\"Clear accessible clutter"
             + " first\",\"steps\":[{\"op\":\"CLEAR\",\"x\":1,\"y\":0,\"z\":0,\"material\":\"\"}]}";
     var answer = new java.util.concurrent.atomic.AtomicReference<>(old);
+    var teacher =
+        new java.util.concurrent.atomic.AtomicReference<>(
+            new com.google.gson.Gson()
+                .toJson(
+                    new PolicyLibrary.Provenance(
+                        "first", "local-first", "a".repeat(64), "MIT", "candidate")));
     var request = new java.util.concurrent.atomic.AtomicReference<String>();
     ModelBackend backend =
         new ModelBackend() {
@@ -105,11 +111,16 @@ class RecoveryExperimentsTest {
         SkillContext.create(
             map, origin, goal, 1, Map.of(), "instruction_route: no_connected_route");
     try (var queue = new InferenceQueue(backend, 4);
-        var experiments = new RecoveryExperiments(root, queue, () -> "fixture", s -> fail(s))) {
+        var experiments = new RecoveryExperiments(root, queue, teacher::get, s -> fail(s))) {
       long now = System.currentTimeMillis();
       var trial = experiments.request("v", "worker", context, now);
       trial.program.get(2, TimeUnit.SECONDS);
       answer.set(revised);
+      teacher.set(
+          new com.google.gson.Gson()
+              .toJson(
+                  new PolicyLibrary.Provenance(
+                      "second", "local-second", "b".repeat(64), "MIT", "candidate")));
       assertEquals(
           SkillProgram.parse(revised),
           experiments
@@ -128,6 +139,35 @@ class RecoveryExperimentsTest {
             }
           });
       var library = new SkillLibrary(root.resolve("skills"));
+      var receipts =
+          Files.readAllLines(root.resolve("data/experiments.jsonl")).stream()
+              .map(com.google.gson.JsonParser::parseString)
+              .map(com.google.gson.JsonElement::getAsJsonObject)
+              .toList();
+      var failed =
+          receipts.stream()
+              .filter(r -> r.get("event").getAsString().equals("program_outcome"))
+              .findFirst()
+              .orElseThrow()
+              .getAsJsonObject("data");
+      var successful =
+          receipts.stream()
+              .filter(r -> r.get("event").getAsString().equals("outcome"))
+              .findFirst()
+              .orElseThrow()
+              .getAsJsonObject("data");
+      assertFalse(failed.get("success").getAsBoolean());
+      assertEquals(
+          "first", failed.getAsJsonObject("teacher_provenance").get("model").getAsString());
+      assertEquals(
+          "a".repeat(64), failed.getAsJsonObject("teacher_provenance").get("sha256").getAsString());
+      assertEquals(
+          context.key(), failed.getAsJsonObject("program_context").get("key").getAsString());
+      assertEquals(
+          "second", successful.getAsJsonObject("teacher_provenance").get("model").getAsString());
+      assertNotEquals(failed.get("proposal_id"), successful.get("proposal_id"));
+      assertEquals(
+          fresh.key(), successful.getAsJsonObject("program_context").get("key").getAsString());
       assertNull(
           library.reusable(context.key()),
           "Failed original instructions cannot be taught as successful");
@@ -140,7 +180,29 @@ class RecoveryExperimentsTest {
               experiments
                   .revise(second, context, Map.of("reason", "same failure"), now + 31000)
                   .get(2, TimeUnit.SECONDS));
-      experiments.cancel(second, "fixture_end");
+      experiments.finish(second, false, "no revised program available", Map.of("position", origin));
+      await(
+          () -> {
+            try {
+              return Files.readString(root.resolve("data/experiments.jsonl"))
+                  .contains("no revised program available");
+            } catch (Exception e) {
+              return false;
+            }
+          });
+      var last =
+          Files.readAllLines(root.resolve("data/experiments.jsonl")).stream()
+              .map(com.google.gson.JsonParser::parseString)
+              .map(com.google.gson.JsonElement::getAsJsonObject)
+              .filter(r -> r.get("event").getAsString().equals("outcome"))
+              .toList()
+              .getLast()
+              .getAsJsonObject("data");
+      assertFalse(last.has("program"));
+      assertEquals(
+          "",
+          last.get("proposal_id").getAsString(),
+          "An unavailable revision cannot label the replaced program again");
     }
   }
 

@@ -203,6 +203,7 @@ public final class CivilizationsPlugin extends JavaPlugin
                 getConfig().getBoolean("core-ai.adapt", true),
                 1000L * Math.clamp(getConfig().getInt("core-ai.interval-seconds", 600), 60, 3600));
         coreAi.liveTrials(getConfig().getBoolean("core-ai.live-trials.enabled", true));
+        coreAi.movement().startAutomatic();
         if (getConfig().getBoolean("core-ai.adapt", true)
             && getConfig().getBoolean("core-ai.live-skills.enabled", true))
           experiments =
@@ -212,7 +213,8 @@ public final class CivilizationsPlugin extends JavaPlugin
                   () ->
                       new com.google.gson.Gson()
                           .toJson(router.lastWasDeep() ? deepTeacher : primaryTeacher),
-                  getLogger()::warning);
+                  getLogger()::warning,
+                  getConfig().getBoolean("core-ai.live-skills.voxel-recovery", true));
         if (experiments != null) {
           navigation.rules(experiments.rules());
           snapshots.rules(experiments.rules());
@@ -1178,7 +1180,7 @@ public final class CivilizationsPlugin extends JavaPlugin
                 : args.length == 3
                         && args[0].equalsIgnoreCase("debug")
                         && args[1].equalsIgnoreCase("probe")
-                    ? List.of("start", "trial", "proposals", "status", "cancel", "jobs")
+                    ? List.of("start", "trial", "proposals", "status", "cancel", "jobs", "learn")
                     : List.of();
     return choices.stream()
         .filter(s -> s.startsWith(args[args.length - 1].toLowerCase(Locale.ROOT)))

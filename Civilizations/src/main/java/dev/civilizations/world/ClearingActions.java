@@ -13,6 +13,16 @@ public final class ClearingActions {
   private ClearingActions() {}
 
   public static String work(CivilizationsPlugin plugin, Villager actor, Job job, Block block) {
+    return work(plugin, actor, job, block, false);
+  }
+
+  /** Shore clearance may touch surface water, but never excavates below it or releases lava. */
+  static String escape(CivilizationsPlugin plugin, Villager actor, Job job, Block block) {
+    return work(plugin, actor, job, block, true);
+  }
+
+  private static String work(
+      CivilizationsPlugin plugin, Villager actor, Job job, Block block, boolean surfaceEscape) {
     if (block.getType().isAir()) return null;
     boolean tree =
         "natural-tree".equals(job.blockData)
@@ -35,7 +45,7 @@ public final class ClearingActions {
           + job.target.key()
           + ": "
           + block.getBlockData().getAsString();
-    if (!BlockRules.dry(block))
+    if (!(surfaceEscape ? safeSurfaceWater(block) : BlockRules.dry(block)))
       return "Site clearance would expose nearby fluid at " + job.target.key();
     if (!BlockRules.safeMining(block))
       return "Site clearance has a container or falling block above at "
@@ -55,5 +65,19 @@ public final class ClearingActions {
     drops.forEach(item -> actor.getInventory().addItem(item));
     actor.swingMainHand();
     return null;
+  }
+
+  private static boolean safeSurfaceWater(Block block) {
+    for (int x = -1; x <= 1; x++)
+      for (int z = -1; z <= 1; z++)
+        for (int y = -1; y <= 1; y++) {
+          Block neighbor = block.getRelative(x, y, z);
+          if (BlockObservation.dangerous(
+              neighbor.getType().name(), neighbor.getBlockData().getAsString())) return false;
+          if (neighbor.getBlockData() instanceof org.bukkit.block.data.Waterlogged w
+              && w.isWaterlogged()) return false;
+          if (neighbor.isLiquid() && (neighbor.getType() != Material.WATER || y > 0)) return false;
+        }
+    return !block.isLiquid();
   }
 }

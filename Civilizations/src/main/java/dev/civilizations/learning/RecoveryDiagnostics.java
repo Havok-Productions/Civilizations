@@ -27,6 +27,23 @@ public final class RecoveryDiagnostics {
 
   public static Diagnosis diagnose(String reason) {
     String text = reason.toLowerCase(Locale.ROOT);
+    if (text.contains("surface_escape_no_progress"))
+      return new Diagnosis(
+          "emergency_navigation_stall",
+          "The emergency controller has not reached dry ground. Avoid the recorded unchanged"
+              + " crossing; reobserve collision shapes, try another exit or clear a verified"
+              + " natural obstruction. Keep breathing support and the original task; steering alone"
+              + " is not progress.",
+          List.of(
+              "Civilizations/src/main/java/dev/civilizations/world/SurfaceSwimming.java",
+              "Civilizations/src/main/java/dev/civilizations/world/WorkerEmergency.java"),
+          "Replay the observed transition with the actual villager body and terrain. Verify that no"
+              + " movement triggers another approach and persistent evidence instead of endless"
+              + " steering.",
+          List.of(
+              "Measured dry-ground arrival precedes task resumption",
+              "Unchanged failed crossing is avoided; changed terrain permits reconsideration",
+              "Clearance respects protection, visibility, fluids, support and item conservation"));
     if (text.contains("capacity exhausted") || text.contains("context overflow"))
       return new Diagnosis(
           "request_capacity",
@@ -165,8 +182,28 @@ public final class RecoveryDiagnostics {
                         "last_observed",
                         n.updated(),
                         "evidence",
-                        JsonParser.parseString(n.evidence())))
+                        modelEvidence(n)))
             .toList());
+  }
+
+  private static JsonElement modelEvidence(DiagnosticMemory.Note note) {
+    JsonElement full = JsonParser.parseString(note.evidence());
+    if (!note.kind().equals("emergency_navigation_stall") || !full.isJsonObject()) return full;
+    JsonObject compact = full.getAsJsonObject().deepCopy();
+    // Full local terrain is durable in the receipt, not duplicated in every future model prompt.
+    JsonElement terrain = compact.remove("observed_terrain");
+    if (terrain != null && terrain.isJsonArray())
+      compact.addProperty("observed_cell_count", terrain.getAsJsonArray().size());
+    compact.remove("surface_escape");
+    compact.remove("route");
+    JsonElement refusals = compact.get("clearance_refusals");
+    if (refusals != null && refusals.isJsonArray() && refusals.getAsJsonArray().size() > 6) {
+      JsonArray first = new JsonArray();
+      for (int i = 0; i < 6; i++) first.add(refusals.getAsJsonArray().get(i));
+      compact.addProperty("clearance_refusal_count", refusals.getAsJsonArray().size());
+      compact.add("clearance_refusals", first);
+    }
+    return compact;
   }
 
   public void flush() throws IOException {

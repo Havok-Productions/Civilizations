@@ -27,6 +27,23 @@ public final class NavigationService implements AutoCloseable {
   private record Request(World world, Settlement village, Pos from, Pos target, int reach) {}
 
   private final NavigationQueue<Lane, Plan> admission = new NavigationQueue<>(4);
+  private final NavigationQueue<Lane, SurfaceResources.Observation> resourceAdmission =
+      new NavigationQueue<>(2);
+
+  public CompletableFuture<SurfaceResources.Observation> observeSurfaceResources(
+      World world, String worker, Pos center, String resource) {
+    int searchRadius = radiusFor(worker);
+    return resourceAdmission.submit(
+        new Lane(worker, "surface-resource"),
+        List.of(world.getUID(), center, resource, searchRadius),
+        () ->
+            snapshots
+                .capture(world, center, searchRadius)
+                .thenApplyAsync(
+                    terrain -> SurfaceResources.observe(terrain, center, searchRadius, resource),
+                    executor));
+  }
+
   private final ConcurrentHashMap<String, RouteMemory> memories = new ConcurrentHashMap<>();
   private final int radius;
   private final boolean salvage;
@@ -207,6 +224,7 @@ public final class NavigationService implements AutoCloseable {
 
   public void close() {
     admission.close();
+    resourceAdmission.close();
     persist();
     archive.close();
     memories.clear();

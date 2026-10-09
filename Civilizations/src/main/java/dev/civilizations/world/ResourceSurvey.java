@@ -12,8 +12,12 @@ import org.bukkit.entity.Villager;
  */
 final class ResourceSurvey {
   private final java.util.function.Function<Pos, CompletableFuture<NavigationService.Plan>> capture;
+  private java.util.function.BiFunction<
+          String, Pos, CompletableFuture<SurfaceResources.Observation>>
+      surface;
   private final java.util.function.BiConsumer<String, Map<String, ?>> debug;
   private CompletableFuture<NavigationService.Plan> pending;
+  private CompletableFuture<SurfaceResources.Observation> pendingSurface;
   private String resource = "";
   private Pos origin, center;
   private int tile;
@@ -29,6 +33,12 @@ final class ResourceSurvey {
                 .request(
                     actor.getWorld(), village, actor.getUniqueId().toString(), p, p, 0, "resource"),
         (type, data) -> plugin.debug(village.id(), actor.getUniqueId().toString(), type, data));
+    surface =
+        (wanted, p) ->
+            plugin
+                .navigation()
+                .observeSurfaceResources(
+                    actor.getWorld(), actor.getUniqueId().toString(), p, wanted);
   }
 
   ResourceSurvey(
@@ -45,8 +55,44 @@ final class ResourceSurvey {
       tile = 0;
       found.clear();
       pending = null;
+      pendingSurface = null;
       next = 0;
       observed = false;
+    }
+    if (pendingSurface != null && pendingSurface.isDone()) {
+      try {
+        var observation = pendingSurface.join();
+        observed = observation.observedColumns() > 0;
+        found.addAll(observation.sources());
+        debug.accept(
+            "resource_survey",
+            Map.of(
+                "resource",
+                wanted,
+                "origin",
+                origin,
+                "tile_center",
+                center,
+                "tile",
+                tile - 1,
+                "source_candidates",
+                found.size(),
+                "observed_columns",
+                observation.observedColumns(),
+                "missing_columns",
+                observation.missingColumns(),
+                "search_basis",
+                "observed_surface_height",
+                "next_action",
+                found.isEmpty() ? "observe next tile" : "approach and verify source"));
+      } catch (RuntimeException error) {
+        observed = false;
+        debug.accept(
+            "resource_survey_failure",
+            Map.of("resource", wanted, "center", center, "reason", error.toString()));
+      }
+      pendingSurface = null;
+      next = now + 3000;
     }
     if (pending != null && pending.isDone()) {
       try {
@@ -81,9 +127,11 @@ final class ResourceSurvey {
       pending = null;
       next = now + 3000;
     }
-    if (pending == null && found.isEmpty() && now >= next) {
+    if (pending == null && pendingSurface == null && found.isEmpty() && now >= next) {
       center = tileCenter(origin, tile++, 20);
-      pending = capture.apply(center);
+      if (surface != null && SurfaceResources.applicable(wanted))
+        pendingSurface = surface.apply(wanted, center);
+      else pending = capture.apply(center);
     }
     return List.copyOf(found);
   }
@@ -93,7 +141,7 @@ final class ResourceSurvey {
   }
 
   boolean awaitingObservation() {
-    return pending != null || !observed;
+    return pending != null || pendingSurface != null || !observed;
   }
 
   static Pos tileCenter(Pos origin, int index, int spacing) {

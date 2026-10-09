@@ -1,5 +1,9 @@
 # Commanded task probes
 
+Since alpha.46, normal movement diagnostics and training start automatically with CoreAI. The commands below are optional targeted tools. Background reviews update `CoreAI/movement/diagnostics.json` each minute and train only on new labeled geometry, with a ten-minute cooldown; restarts retain the evaluated-data signature. Existing worker tasks continue without requiring a probe assignment.
+
+Alpha.45 also provides `/civ debug probe learn`: a background local movement-training and evaluation run. It uses the virtual curriculum plus recorded physical attempts, saves learned weights and durable examples, and reports held-out virtual and physical results separately. It does not issue movement. Ordinary navigation and the task probes below collect measured attempts automatically when CoreAI is enabled. See `../CoreAI/MOVEMENT.md` for report interpretation and shadow-mode limits.
+
 Run `/civ debug probe`. It finds the nearest loaded controlled villager in your current world, reports its UUID and distance, and selects its current task or nearest available queued task for a 120-second observation window. Selection queries each worker on its own Folia scheduler, including workers across region boundaries, with no 16-block/8-block search box. Workers that unload or fail to respond within four seconds are reported as unavailable. No chunks are loaded for this command. Work uses actual inventory, community supplies, gathering, crafting, smelting, navigation and construction.
 
 - `/civ debug probe status` shows the nearest worker's latest result.

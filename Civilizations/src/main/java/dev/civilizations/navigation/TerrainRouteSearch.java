@@ -93,6 +93,8 @@ public final class TerrainRouteSearch {
             continue;
           }
           NavigationMap.Passage passage = map.passage(to, maxClear > 0);
+          if (dy < 0 && passage.allowed())
+            passage = descentHeadroom(map, to, passage, maxClear > 0);
           if (map.surfaceWater(n.state.at) && map.surfaceWater(to))
             passage = new NavigationMap.Passage(true, "surface_water_exit", List.of(), List.of());
           if (blocked.contains(new Edge(n.state.at, to))) reason = "remembered_failed_transition";
@@ -160,6 +162,28 @@ public final class TerrainRouteSearch {
 
   private static double heuristic(Pos p, Pos goal) {
     return Math.sqrt(p.distance2(goal));
+  }
+
+  /** A villager still occupies its old head height while crossing the edge of a downward step. */
+  private static NavigationMap.Passage descentHeadroom(
+      NavigationMap map, Pos to, NavigationMap.Passage passage, boolean salvage) {
+    Pos sweep = to.add(0, 2, 0);
+    var cell = map.cell(sweep);
+    if (cell.kind() == NavigationMap.Kind.AIR) return passage;
+    var clear = new ArrayList<>(passage.clear());
+    var open = new ArrayList<>(passage.open());
+    if (salvage
+        && (cell.kind() == NavigationMap.Kind.SOFT
+            || cell.kind() == NavigationMap.Kind.CLEARABLE)) {
+      clear.add(sweep);
+      return new NavigationMap.Passage(true, "", List.copyOf(clear), List.copyOf(open));
+    }
+    if (cell.kind() == NavigationMap.Kind.OPENABLE) {
+      open.add(sweep);
+      return new NavigationMap.Passage(true, "", List.copyOf(clear), List.copyOf(open));
+    }
+    return new NavigationMap.Passage(
+        false, "descent_headroom: " + cell.material(), List.of(), List.of());
   }
 
   private static Result result(

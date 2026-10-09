@@ -18,6 +18,19 @@ public final class FailureEvidence {
       String reason,
       Map<String, Integer> requested,
       long now) {
+    return inspect(
+        plugin, actor, village, job, reason, requested, now, job == null ? null : job.target);
+  }
+
+  public static Map<String, Object> inspect(
+      CivilizationsPlugin plugin,
+      Villager actor,
+      Settlement village,
+      Job job,
+      String reason,
+      Map<String, Integer> requested,
+      long now,
+      Pos actionTarget) {
     Map<String, Object> report = new LinkedHashMap<>();
     report.put("reason", reason);
     Location actorAt = actor.getLocation();
@@ -33,12 +46,16 @@ public final class FailureEvidence {
     if (job != null) {
       report.put("job", job.id);
       report.put("project", job.project);
-      report.put("target", job.target);
+      report.put("project_target", job.target);
+    }
+    if (actionTarget != null) {
+      report.put("target", actionTarget);
       report.put(
           "route_temporarily_blocked",
-          village.knowledge().blocked("route:" + job.stand.key(), now));
-      report.put("player_protected", plugin.playerProtected(village, job.target));
-      Location p = new Location(actor.getWorld(), job.target.x(), job.target.y(), job.target.z());
+          village.knowledge().blocked("route:" + actionTarget.key(), now));
+      report.put("player_protected", plugin.playerProtected(village, actionTarget));
+      Location p =
+          new Location(actor.getWorld(), actionTarget.x(), actionTarget.y(), actionTarget.z());
       boolean owned = Bukkit.isOwnedByCurrentRegion(p, 1);
       report.put("target_observed", owned);
       if (owned) {

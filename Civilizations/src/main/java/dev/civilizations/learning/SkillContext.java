@@ -124,8 +124,28 @@ public record SkillContext(
     report.put("level_x_coordinates", List.of(-4, -3, -2, -1, 0, 1, 2, 3, 4));
     report.put("nearby_obstacle_examples", RecoveryTerrainView.nearbyObstacles(map, origin));
     report.put("route_height", RecoveryTerrainView.describe(map, origin, goal));
+    report.put("goal_spatial_facts", RecoverySpatialFacts.at(map, origin, goal));
+    report.put("origin_spatial_facts", RecoverySpatialFacts.at(map, origin, origin));
     report.put("nearby_stands", walk.stream().limit(16).toList());
     report.put("natural_clear_candidates", clear.stream().limit(24).toList());
+    // The nearest obstacle list may be filled by ordinary walls, hiding the natural obstruction.
+    // Preserve its observed material and state alongside the same bounded candidate coordinates.
+    report.put(
+        "natural_clear_candidates_details",
+        clear.stream()
+            .limit(24)
+            .map(
+                relative -> {
+                  var cell = map.cell(origin.add(relative.x(), relative.y(), relative.z()));
+                  return Map.<String, Object>of(
+                      "relative", relative,
+                      "material", cell.material(),
+                      "block_state", cell.state(),
+                      "map_category", cell.kind(),
+                      "removal", cell.removal(),
+                      "live_checks_required", true);
+                })
+            .toList());
     report.put(
         "air_support_candidates_requiring_live_checks",
         inventory.entrySet().stream()

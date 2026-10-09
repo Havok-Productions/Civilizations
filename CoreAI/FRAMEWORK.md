@@ -52,3 +52,5 @@ Run `python tools/test_sections.py coreai inference tasks diagnostics` from the 
 The opt-in physical integration check uses the existing disposable `rule-learning` scenario with `-Dcivilizations.test.framework=true`. It verifies two real cluttered repairs, inventory consumption, retained drops, learned-rule reuse and an observed-block receipt in each worker's CoreAI experience. It uses a deterministic teacher, not a model-quality benchmark or a new full-village trial.
 
 The alpha.19 physical run passed. Both repair experiences were verified in working memory and the persisted `agents.jsonl`: two planks consumed, two string retained, observed OAK_PLANKS at both targets, and one deterministic inference request with learned-rule reuse.
+
+Alpha.45 adds a separate trained movement predictor; see [MOVEMENT.md](MOVEMENT.md) for collection, simulation, training and the limits of its shadow predictions.

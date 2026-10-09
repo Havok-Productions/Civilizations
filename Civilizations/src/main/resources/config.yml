@@ -111,6 +111,8 @@ debug:
 # on an otherwise idle inference queue, at most once per interval across the whole server.
 # Data and policy versions live in plugins/Civilizations/CoreAI/.
 core-ai:
+  # Movement diagnostics and local neural evaluation start automatically when enabled.
+  # Background review every minute; new labeled outcomes train after a 10-minute cooldown.
   enabled: true
   adapt: true
   interval-seconds: 600
@@ -120,6 +122,8 @@ core-ai:
   # On route failure, generate finite walking/clearing/support-placement programs.
   # One active pilot, actual materials, observed arrival, remembered outcomes.
   live-skills:
+    # Try voxel-simulated local recovery before requesting a language-model proposal.
+    voxel-recovery: true
     enabled: true
 
 # Bounded local terrain search, with no forced chunk loads.

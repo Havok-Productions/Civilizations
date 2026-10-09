@@ -2,6 +2,7 @@ package dev.civilizations.navigation;
 
 import dev.civilizations.core.Pos;
 import java.util.*;
+import java.util.function.BiPredicate;
 import java.util.function.Function;
 
 /** Breathable, cardinal swimming steps to a shore. Does not accept submerged shortcuts. */
@@ -17,6 +18,15 @@ public final class SurfaceEscape {
   private SurfaceEscape() {}
 
   public static Route find(Pos start, Pos goal, int radius, Function<Pos, Cell> observe) {
+    return find(start, goal, radius, observe, (from, to) -> true);
+  }
+
+  public static Route find(
+      Pos start,
+      Pos goal,
+      int radius,
+      Function<Pos, Cell> observe,
+      BiPredicate<Pos, Pos> traversable) {
     Map<Pos, Cell> cells = new HashMap<>();
     Function<Pos, Cell> cell = p -> cells.computeIfAbsent(p, observe);
     if (cell.apply(start) != Cell.WATER)
@@ -43,6 +53,7 @@ public final class SurfaceEscape {
         if (kind == Cell.BLOCKED) continue;
         // A rise needs space above our current head. A fall must not enter deep water.
         if (p.y() > at.y() && cell.apply(at.add(0, 1, 0)) == Cell.BLOCKED) continue;
+        if (!traversable.test(at, p)) continue;
         prior.put(p, at);
         if (kind == Cell.LAND) {
           List<Pos> route = new ArrayList<>();

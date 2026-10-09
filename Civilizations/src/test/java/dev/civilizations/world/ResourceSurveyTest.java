@@ -12,6 +12,54 @@ class ResourceSurveyTest {
   @Tag("navigation")
   @Tag("crafting")
   @Test
+  void surfaceResourcesUseObservedElevationAndStopAtRoofsAndUnknownColumns() {
+    Pos underground = new Pos(0, 12, 0), root = new Pos(2, 91, 0);
+    Terrain terrain =
+        new Terrain() {
+          public boolean available(int x, int z) {
+            return z == 0 && (x == 2 || x == 3);
+          }
+
+          public int height(int x, int z) {
+            return x == 2 ? 112 : 95;
+          }
+
+          public String type(Pos p) {
+            if (!available(p.x(), p.z())) throw new AssertionError("Read unobserved column");
+            if (p.x() == 3) return p.y() == 95 ? "OAK_PLANKS" : "OAK_LOG";
+            if (p.y() == 112) return "OAK_LEAVES";
+            if (p.y() >= 91 && p.y() < 112) return "OAK_LOG";
+            return "GRASS_BLOCK";
+          }
+        };
+    var result = SurfaceResources.observe(terrain, underground, 3, "OAK_LOG");
+    assertEquals(List.of(root), result.sources());
+    assertEquals(2, result.observedColumns());
+    assertEquals(47, result.missingColumns());
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> SurfaceResources.observe(terrain, underground, 3, "COAL"));
+    assertFalse(SurfaceResources.applicable("DIAMOND"));
+    Terrain missing =
+        new Terrain() {
+          public boolean available(int x, int z) {
+            return false;
+          }
+
+          public int height(int x, int z) {
+            throw new AssertionError("Unknown height read");
+          }
+
+          public String type(Pos p) {
+            throw new AssertionError("Unknown block read");
+          }
+        };
+    assertEquals(0, SurfaceResources.observe(missing, underground, 3, "LOG").observedColumns());
+  }
+
+  @Tag("navigation")
+  @Tag("crafting")
+  @Test
   void queuedCaptureIsNotResourceAbsenceAndSourcesSurviveCompletion() {
     Pos at = new Pos(0, 65, 0), log = at.add(3, 0, 0);
     var capture = new CompletableFuture<NavigationService.Plan>();

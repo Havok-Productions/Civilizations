@@ -34,6 +34,12 @@ public final class CoreAiCoordinator implements AutoCloseable {
 
   private final Map<Scope, PolicyLibrary> libraries = new EnumMap<>(Scope.class);
   private final DataJournal journal;
+  private final dev.coreai.movement.MovementLearning movement;
+
+  public dev.coreai.movement.MovementLearning movement() {
+    return movement;
+  }
+
   private final Path knowledgeFile;
   private final InferenceQueue inference;
   private final Supplier<PolicyLibrary.Provenance> provenance;
@@ -96,6 +102,7 @@ public final class CoreAiCoordinator implements AutoCloseable {
               t.setDaemon(true);
               return t;
             });
+    movement = new dev.coreai.movement.MovementLearning(root.resolve("movement"), warning);
     if (adapt) timer.scheduleWithFixedDelay(() -> enqueue(this::review), 60, 60, TimeUnit.SECONDS);
   }
 
@@ -429,7 +436,9 @@ public final class CoreAiCoordinator implements AutoCloseable {
         + "; route trial="
         + libraries.get(Scope.ROUTES).trialStatus()
         + "; "
-        + last;
+        + last
+        + "; "
+        + movement.status();
   }
 
   private String shortId(String id) {
@@ -467,5 +476,6 @@ public final class CoreAiCoordinator implements AutoCloseable {
     closed = true;
     timer.shutdownNow();
     io.shutdown();
+    movement.close();
   }
 }

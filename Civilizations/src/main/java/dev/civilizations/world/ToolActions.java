@@ -19,6 +19,12 @@ public final class ToolActions {
   private final WorkerNavigation navigation;
   private final BiConsumer<Long, String> failure;
   private long nextCraft;
+  private String requestedItem = "";
+
+  public String requestedItem() {
+    return requestedItem;
+  }
+
   private final WorkerStations stations;
   private final SmeltingActions smelting;
   private long stationCheck;
@@ -88,6 +94,7 @@ public final class ToolActions {
   }
 
   public Preparation prepareItem(String outputItem, long now, Pos at) {
+    requestedItem = outputItem;
     // A batch may produce an intermediate ingredient (charcoal for torches). Finish the
     // deposited work before replanning from the now-empty inventory or changing recipes.
     if (smelting.processing() && smelting.needsFuel(at, now)) return fetchFuel(at, now);

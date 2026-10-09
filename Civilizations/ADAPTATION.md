@@ -1,5 +1,21 @@
 # Controller adaptation and activity recovery
 
+## Alpha.47: local project execution first
+
+Workers try admitted local work before asking a teacher for task-selection advice. They resume existing checkpoints first, then prefer available steps belonging to their current project, including gathering/crafting prerequisites, over unrelated jobs with materials already in inventory. Stable ranking remains within each priority group. Dependency phases, competing claims and retry checks still decide which steps are offered; a blocked project can yield to other available work. Existing movement, recipe, gathering, placement and verified-completion executors perform the actions.
+
+`local_project_step` records each locally selected step and missing ingredients; `job_progress` records actual effects and whole-project completion. Model advice remains available when local selection cannot start a step, and existing unfamiliar-obstacle recovery still applies. The movement neural predictor remains in shadow mode; this change does not fix the alpha.46 training imbalance or turn that predictor into a general project planner.
+
+The disposable alpha.47 project test found wood, harvested one log, crafted four planks and completed four ordered placements, ignoring an unrelated supplied cobblestone task until completion. It made zero teacher decisions even with routine advice enabled. This is physical execution of a defined four-step plan, not evidence of autonomous blueprint invention or arbitrary-project reliability.
+
+## Alpha.44: physical emergency progress and evidence
+
+Surface escape checks the villager's full collision box across each crossing, including fence and other floor shapes that extend above their block. Steering centers cardinal turns. A refreshed route does not reset the measured approach timer, and vertical bobbing does not count as horizontal progress. The existing proposal-adjustable `navigation.transition_ms` controls the deadline. Failed crossings are avoided for the current emergency while their surrounding block states are unchanged; changed terrain makes them eligible again.
+
+When no route executes, workers can clear visible natural soil or verified tree obstructions at the immediate shore. They face the block before changing it, retain actual drops, preserve their support and protected/recorded structures, and refuse overhead instability, submerged excavation and hazardous fluid exposure. Ordinary construction clearance keeps its existing dry-site checks. There is no teleportation, invented resource grant or model call needed for emergency steering.
+
+`emergency_route_failed`, `emergency_wait`, `emergency_clearance` and `emergency_escaped` distinguish attempted movement from physical results. Persistent waits are diagnosed after the transition deadline, rather than on the first tick. Unchanged wait evidence is saved once per observed state. With CoreAI adaptation active, emergency receipts also enter `CoreAI/data/agents.jsonl`, while failures produce durable diagnoses and repair proposals even without an active model trial. Receipts retain the original goal, position, local block states and collision shapes. Future prompts receive a compact explanation; the full map remains in the saved evidence. Route exclusions are local to the current emergency; saved diagnostic evidence survives restart. This does not train neural weights or credit an emergency escape as a learned skill or completed construction task.
+
 ## Alpha.41: responsive recipe planning and recoverable diagnostics
 
 Recipe scoring now shares ingredient-cost calculations within an immutable inventory snapshot. Cycle ancestry remains part of the distance key, preserving recipe choices when dependency branches differ. Completed next-step plans are cached by output, exact inventory quantities and both station states. A new inventory or station state receives a fresh answer. The bounded cache drops computed answers only; it does not remove available recipes or restrict proposed work. Region threads never hold its shared lock while calculating a plan. Reservation accounting uses fresh cost snapshots as ingredients are committed.
@@ -198,3 +214,5 @@ Repeated OBSERVE instructions for the same focus and unchanged measured context 
 An active recovery owns the worker through final navigation verification. Routine supply selection resumes afterward, while sleep, immediate danger, lost job ownership and observed job completion can still interrupt it. Cancellation reports now name the controller cause, and task checkpoints retain that reason. Recovery prompts remove archived navigation dumps and duplicate old plans before sacrificing answer space; current terrain, goal, inventory and current failure stay intact. Requests that still cannot fit fail explicitly and become diagnostic evidence.
 
 These changes improve the host feedback loop. They do not train model weights or establish that the live models can complete a whole village autonomously.
+
+Alpha.45 records accepted native/surface movement attempts for the small CoreAI neural predictor. /civ debug probe learn trains and evaluates it locally. Predictions remain observational; the model does not veto routes or replace the recovery controller. See ../CoreAI/MOVEMENT.md.

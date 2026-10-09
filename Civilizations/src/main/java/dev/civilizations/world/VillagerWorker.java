@@ -23,6 +23,9 @@ public final class VillagerWorker {
   private final Random random = new Random();
   private ScheduledTask scheduled;
   private Job job, supplyFor;
+  private final WorkerActivities activities = new WorkerActivities();
+  private final PrerequisiteWait prerequisiteWait = new PrerequisiteWait();
+  private WorkIssue.Action workAction = WorkIssue.Action.CONSTRUCTION;
   private final WorkerNavigation navigation;
   private final WorkMovementControl movementControl;
   private final WorkerEmergency emergency;
@@ -99,14 +102,27 @@ public final class VillagerWorker {
     nearby = new NearbyWork(plugin, entity, village);
     workPose = new WorkPose(plugin, entity);
     building = new BuildingActions(plugin, entity, this::fail, this::complete, this::placementWait);
-    navigation = new WorkerNavigation(plugin, entity, village, this::navigationFailed);
+    navigation =
+        new WorkerNavigation(plugin, entity, village, this::navigationFailed, () -> workAction);
     emergency = new WorkerEmergency(plugin, entity, village);
     deliveries = new DeliveryActions(plugin, entity, village, navigation);
     projectSupplies = new ProjectSupplies(plugin, entity, village, navigation);
     yielding = new YieldActions(plugin, entity, village, navigation);
     recovery = new RecoveryPolicy(System.currentTimeMillis(), plugin.reasoningCooldown());
-    gathering = new GatheringActions(plugin, entity, village, navigation, recovery, this::fail);
-    tools = new ToolActions(plugin, entity, village, navigation, this::fail);
+    gathering =
+        new GatheringActions(plugin, entity, village, navigation, recovery, this::gatheringFailed);
+    tools =
+        new ToolActions(
+            plugin,
+            entity,
+            village,
+            navigation,
+            (now, reason) -> {
+              if (!navigation.recoveryPrerequisiteFailed(reason)) fail(now, reason);
+            });
+    // One prerequisite executor retains station choices and pending furnace batches across
+    // normal work and temporary recovery. Recovery must not own a second smelting tracker.
+    navigation.shareRecoveryTools(tools);
     probe =
         new WorkerProbe(
             plugin,
@@ -247,6 +263,7 @@ public final class VillagerWorker {
             + (job == null
                 ? "none currently claimed"
                 : job.kind + " " + job.project + " at " + job.target.key()),
+        "Activity owner: " + activities.owner(),
         "Requested supplies: " + requests,
         "Navigation: "
             + navigation.status()
@@ -321,173 +338,22 @@ public final class VillagerWorker {
             "decision_expired",
             Map.of("result", "Continuing validated work; stale answer ignored"));
       }
-      if (village.paused()) {
-        excludeLearning("village paused");
-        deliveries.cancel();
-        navigation.stop("village_paused");
-        movementControl.working(false);
-        entity.getPathfinder().stopPathfinding();
-        recovery.pause(now);
-        display = "paused";
-        return;
-      }
-      if (emergency.needed()) {
-        excludeLearning("physical emergency");
-        if (!escaping) {
-          navigation.stop("physical_emergency");
-          deliveries.cancel();
-          escaping = true;
-        }
-        movementControl.working(true);
-        if (job != null) village.renew(job.id, id, now);
-        if (supplyFor != null) village.renew(supplyFor.id, id, now);
-        recovery.pause(now);
-        if (emergency.tick(now, job == null ? null : job.stand)) {
-          display = "escaping immediate physical danger; task retained";
-          return;
-        }
-        escaping = false;
-        nextWork = now;
-      }
-      if (threatened()) {
-        movementControl.working(false);
-        // Cancel our work once; repeatedly stopping the pathfinder would cancel vanilla fleeing.
-        if (!fleeing) reset("threat_cancelled_work");
-        fleeing = true;
-        village.needs().threat(now);
-        recovery.pause(now);
-        display = "fleeing danger";
-        return;
-      }
-      fleeing = false;
-      long time = entity.getWorld().getTime();
-      if (time >= 12500 && time < 23500) {
-        movementControl.working(false);
-        if (!night) {
-          reset("night_sleep_interruption");
-          night = true;
-        }
-        recovery.pause(now);
-        sleep(now, at);
-        return;
-      }
-      if (night) {
-        night = false;
-        if (entity.isSleeping()) entity.wakeup();
-        nextThink = 0;
-      }
-      if (now >= nextStock) {
-        nextStock = now + 5000;
-        for (Pos chest : village.chests())
-          if (at.distance2(chest) < 25
-              && owns(chest, 1)
-              && location(chest).getBlock().getState() instanceof Chest c)
-            village.stock(chest, InventoryOps.summary(c.getInventory()), now);
-      }
-      if (job != null && !village.renew(job.id, id, now)
-          || supplyFor != null && !village.renew(supplyFor.id, id, now)) reset("job_claim_lost");
-      // Observe completed work before publishing supplies, gathering, or accepting a courier.
-      if (completeIfSatisfied(now)) return;
-      // An active recovery owns movement through verification. Routine supply/yield selection
-      // resumes afterward; sleep, danger, ownership loss and observed completion still run above.
-      if (navigation.experimentActive()) {
-        recovery.pause(now);
-        movementControl.working(true);
-        navigation.gates();
-        if (navigation.experimentTick(now)) {
-          display = navigation.status();
-          return;
-        }
-      }
-      if (yielding.tick(now)) {
-        movementControl.working(true);
-        recovery.pause(now);
-        excludeLearning("yielding to another worker");
-        display = "moving aside for construction; own task retained";
-        return;
-      }
-      requests = currentRequests();
-      if (job != null && projectSupplies.obtain(job, requests, at, now)) {
-        movementControl.working(true);
-        recovery.pause(now);
-        excludeLearning("retrieving reserved project supplies");
-        display = "retrieving reserved project supplies";
-        return;
-      }
-      deliveries.publish(at, job, supplyFor, requests, now);
-      nearby.tick(requests, now);
-      if (!navigation.experimentActive() && deliveries.tick(now)) {
-        excludeLearning("cooperative delivery");
-        movementControl.working(true);
-        recovery.pause(now);
-        display = deliveries.status();
-        return;
-      }
-      var incoming = village.deliveries().incoming(id, now);
-      if (incoming != null && !navigation.experimentActive()) {
-        excludeLearning("awaiting courier");
-        navigation.stop();
-        movementControl.working(true);
-        recovery.pause(now);
-        display = "awaiting courier: " + incoming.material();
-        return;
-      }
-      var progress = village.knowledge().worker(id);
-      String step =
-          mode
-              + "|"
-              + (job == null ? "" : job.id)
-              + "|"
-              + (progress == null ? "" : progress.step());
-      if (!step.equals(lastStep)) {
-        lastStep = step;
-        debug(
-            "step",
-            Map.of(
-                "mode",
-                mode,
-                "job",
-                job == null ? "" : job.id,
-                "position",
-                at,
-                "inventory",
-                inventory(),
-                "requested",
-                requests,
-                "step",
-                progress == null ? "" : progress.step()));
-      }
-      navigation.gates();
-      if (navigation.experimentActive()) recovery.pause(now);
-      if (now - navigation.progressAt() < 1000) recovery.pause(now);
-      if (!awaiting && job != null && plugin.thinkingWhenStuck() && recovery.stalled(now)) {
-        fail(now, recovery.problem(now));
-        recovery.observedStall(now);
-        nextWork = now;
-        mode = "idle";
-      }
-      if (mode.equals("idle")) choose(now, at);
-      movementControl.working(Set.of("work", "gather", "deposit", "supplies").contains(mode));
-      if (navigation.experimentTick(now)) {
-        display = navigation.status();
-        return;
-      }
-      display =
-          (mode + (awaiting ? " (model considering next step)" : ""))
-              + (job == null ? "" : " " + job.project)
-              + (mode.equals("gather") ? " " + resource : "");
-      switch (mode) {
-        case "work" -> work(now, at);
-        case "gather" -> gather(now, at);
-        case "deposit" -> deposit(now, at);
-        case "supplies" -> {
-          if (!projectSupplies.surplus(at, now)) mode = "idle";
-        }
-        case "rest" -> {
-          if (now >= nextWork) mode = "idle";
-        }
-        default -> {}
-      }
+      activities.tick(
+          owner ->
+              switch (owner) {
+                case PAUSED -> activityPaused(now, at);
+                case EMERGENCY -> activityEmergency(now, at);
+                case THREAT -> activityThreat(now, at);
+                case SLEEP -> activitySleep(now, at);
+                case MAINTENANCE -> activityMaintenance(now, at);
+                case RECOVERY -> activityRecovery(now, at);
+                case YIELD -> activityYield(now, at);
+                case PROJECT_SUPPLIES -> activityProjectSupplies(now, at);
+                case DELIVERY -> activityDelivery(now, at);
+                case COURIER_WAIT -> activityCourier(now, at);
+                case PREREQUISITE_WAIT -> activityPrerequisiteWait(now, at);
+                case WORK -> activityWork(now, at);
+              });
     } catch (Exception e) {
       display = "recovering: " + e.getClass().getSimpleName();
       probe.failure(e.toString());
@@ -512,6 +378,232 @@ public final class VillagerWorker {
       nextWork = System.currentTimeMillis() + 5000;
       mode = "rest";
     }
+  }
+
+  private boolean activityPaused(long now, Pos at) {
+    if (village.paused()) {
+      excludeLearning("village paused");
+      deliveries.cancel();
+      navigation.stop("village_paused");
+      movementControl.working(false);
+      entity.getPathfinder().stopPathfinding();
+      recovery.pause(now);
+      display = "paused";
+      return true;
+    }
+    return false;
+  }
+
+  private boolean activityEmergency(long now, Pos at) {
+    if (emergency.needed()) {
+      excludeLearning("physical emergency");
+      if (!escaping) {
+        navigation.stop("physical_emergency");
+        deliveries.cancel();
+        escaping = true;
+      }
+      movementControl.working(true);
+      if (job != null) village.renew(job.id, id, now);
+      if (supplyFor != null) village.renew(supplyFor.id, id, now);
+      recovery.pause(now);
+      if (emergency.tick(now, job == null ? null : job.stand)) {
+        display = "escaping immediate physical danger; task retained";
+        return true;
+      }
+      escaping = false;
+      nextWork = now;
+    }
+    return false;
+  }
+
+  private boolean activityThreat(long now, Pos at) {
+    if (threatened()) {
+      movementControl.working(false);
+      // Cancel our work once; repeatedly stopping the pathfinder would cancel vanilla fleeing.
+      if (!fleeing) reset("threat_cancelled_work");
+      fleeing = true;
+      village.needs().threat(now);
+      recovery.pause(now);
+      display = "fleeing danger";
+      return true;
+    }
+    fleeing = false;
+    return false;
+  }
+
+  private boolean activitySleep(long now, Pos at) {
+    long time = entity.getWorld().getTime();
+    if (time >= 12500 && time < 23500) {
+      movementControl.working(false);
+      if (!night) {
+        reset("night_sleep_interruption");
+        night = true;
+      }
+      recovery.pause(now);
+      sleep(now, at);
+      return true;
+    }
+    if (night) {
+      night = false;
+      if (entity.isSleeping()) entity.wakeup();
+      nextThink = 0;
+    }
+    return false;
+  }
+
+  private boolean activityMaintenance(long now, Pos at) {
+    if (now >= nextStock) {
+      nextStock = now + 5000;
+      for (Pos chest : village.chests())
+        if (at.distance2(chest) < 25
+            && owns(chest, 1)
+            && location(chest).getBlock().getState() instanceof Chest c)
+          village.stock(chest, InventoryOps.summary(c.getInventory()), now);
+    }
+    if (job != null && !village.renew(job.id, id, now)
+        || supplyFor != null && !village.renew(supplyFor.id, id, now)) reset("job_claim_lost");
+    // Observe completed work before publishing supplies, gathering, or accepting a courier.
+    if (completeIfSatisfied(now)) return true;
+    return false;
+  }
+
+  private boolean activityRecovery(long now, Pos at) {
+    // An active recovery owns movement through verification. Routine supply/yield selection
+    // resumes afterward; sleep, danger, ownership loss and observed completion still run above.
+    if (navigation.experimentActive()) {
+      recovery.pause(now);
+      movementControl.working(true);
+      navigation.gates();
+      if (navigation.experimentTick(now)) {
+        display = navigation.status();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private boolean activityYield(long now, Pos at) {
+    if (yielding.tick(now)) {
+      movementControl.working(true);
+      recovery.pause(now);
+      excludeLearning("yielding to another worker");
+      display = "moving aside for construction; own task retained";
+      return true;
+    }
+    return false;
+  }
+
+  private boolean activityProjectSupplies(long now, Pos at) {
+    requests = currentRequests();
+    WorkIssue.Action previous = workAction;
+    workAction = WorkIssue.Action.SUPPLY;
+    if (job != null && projectSupplies.obtain(job, requests, at, now)) {
+      movementControl.working(true);
+      recovery.pause(now);
+      excludeLearning("retrieving reserved project supplies");
+      display = "retrieving reserved project supplies";
+      return true;
+    }
+    workAction = previous;
+    return false;
+  }
+
+  private boolean activityDelivery(long now, Pos at) {
+    deliveries.publish(at, job, supplyFor, requests, now);
+    nearby.tick(requests, now);
+    if (!navigation.experimentActive() && deliveries.tick(now)) {
+      excludeLearning("cooperative delivery");
+      movementControl.working(true);
+      recovery.pause(now);
+      display = deliveries.status();
+      return true;
+    }
+    return false;
+  }
+
+  private boolean activityCourier(long now, Pos at) {
+    var incoming = village.deliveries().incoming(id, now);
+    if (incoming != null && !navigation.experimentActive()) {
+      excludeLearning("awaiting courier");
+      navigation.stop();
+      movementControl.working(true);
+      recovery.pause(now);
+      display = "awaiting courier: " + incoming.material();
+      return true;
+    }
+    return false;
+  }
+
+  private boolean activityWork(long now, Pos at) {
+    var progress = village.knowledge().worker(id);
+    String step =
+        mode + "|" + (job == null ? "" : job.id) + "|" + (progress == null ? "" : progress.step());
+    if (!step.equals(lastStep)) {
+      lastStep = step;
+      debug(
+          "step",
+          Map.of(
+              "mode",
+              mode,
+              "job",
+              job == null ? "" : job.id,
+              "position",
+              at,
+              "inventory",
+              inventory(),
+              "requested",
+              requests,
+              "step",
+              progress == null ? "" : progress.step()));
+    }
+    navigation.gates();
+    if (now - navigation.progressAt() < 1000) recovery.pause(now);
+    if (!awaiting && job != null && plugin.thinkingWhenStuck() && recovery.stalled(now)) {
+      fail(now, recovery.problem(now));
+      if (prerequisiteWait.issue() != null) return true;
+      recovery.observedStall(now);
+      nextWork = now;
+      mode = "idle";
+    }
+    if (mode.equals("idle")) choose(now, at);
+    movementControl.working(Set.of("work", "gather", "deposit", "supplies").contains(mode));
+    display =
+        (mode + (awaiting ? " (model considering next step)" : ""))
+            + (job == null ? "" : " " + job.project)
+            + (mode.equals("gather") ? " " + resource : "");
+    switch (mode) {
+      case "work" -> work(now, at);
+      case "gather" -> gather(now, at);
+      case "deposit" -> deposit(now, at);
+      case "supplies" -> {
+        if (!projectSupplies.surplus(at, now)) mode = "idle";
+      }
+      case "rest" -> {
+        if (now >= nextWork) mode = "idle";
+      }
+      default -> {}
+    }
+    return true;
+  }
+
+  private String prerequisiteObservation() {
+    return new TreeMap<>(inventory()) + "|" + new TreeMap<>(village.stock());
+  }
+
+  private boolean activityPrerequisiteWait(long now, Pos at) {
+    if (prerequisiteWait.issue() == null) return false;
+    if (prerequisiteWait.waiting(job == null ? "" : job.id, prerequisiteObservation(), now)) {
+      recovery.pause(now);
+      movementControl.working(false);
+      display = "waiting for prerequisite; project retained: " + prerequisiteWait.issue().reason();
+      return true;
+    }
+    if (job != null) {
+      mode = "work";
+      mind.begin(supplyFor == null ? job : supplyFor, at, inventory(), now, () -> {});
+      debug("prerequisite_retry", Map.of("job", job.id, "project", job.project));
+    }
+    return false;
   }
 
   /** Recomputed on this entity's region before accepting a courier's inventory transfer. */
@@ -580,6 +672,8 @@ public final class VillagerWorker {
             j ->
                 cache.computeIfAbsent(
                     j.kind + ":" + j.material + ":" + j.expected, k -> needed(j)));
+    String prerequisiteState = prerequisiteObservation();
+    jobs = jobs.stream().filter(j -> prerequisiteWait.eligible(j.id, prerequisiteState)).toList();
     if (plugin.coreAi() == null) return jobs;
     policyChoice =
         plugin
@@ -603,6 +697,9 @@ public final class VillagerWorker {
   private void choose(long now, Pos at) {
     if (now < nextWork) return;
     if (probe.resume(now)) return;
+    // Local execution owns supported projects, including their gathering/crafting prerequisites.
+    // Ask a teacher only when no admitted local step can be started.
+    if (fallback(now, at)) return;
     if (nextAdvice != null) {
       Decision advice = nextAdvice.current(village.taskProject(id), now);
       nextAdvice = null;
@@ -818,6 +915,8 @@ public final class VillagerWorker {
   }
 
   private void beginWork(Job candidate) {
+    prerequisiteWait.clear();
+    workAction = WorkIssue.Action.CONSTRUCTION;
     workPose.reset();
     waitingReason = "";
     job = candidate;
@@ -911,12 +1010,12 @@ public final class VillagerWorker {
     village.suggestion(id, d.action() + ": " + d.reason());
   }
 
-  private void fallback(long now, Pos at) {
+  private boolean fallback(long now, Pos at) {
     if (projectSupplies.surplus(at, now)) {
       mode = "supplies";
       movementControl.working(true);
       recovery.pause(now);
-      return;
+      return true;
     }
     List<Job> candidates = offered(now, at);
     var continuation =
@@ -930,28 +1029,40 @@ public final class VillagerWorker {
       debug(
           "task_resumed",
           Map.of("job", continuation.job().id, "parent", supplyFor == null ? "" : supplyFor.id));
-      return;
+      return true;
     }
-    // Reuse carried building supplies before classifying them as surplus from the last project.
-    for (Job candidate : candidates)
-      if (needed(candidate).isEmpty() && village.claim(candidate.id, id, now)) {
+    for (Job candidate :
+        ProjectExecution.order(candidates, village.taskProject(id), j -> needed(j).isEmpty()))
+      if (village.claim(candidate.id, id, now)) {
+        String previousProject = village.taskProject(id);
         begin(candidate);
-        return;
+        debug(
+            "local_project_step",
+            Map.of(
+                "job",
+                candidate.id,
+                "project",
+                candidate.project,
+                "continuing_project",
+                candidate.project.equals(previousProject),
+                "missing",
+                needed(candidate),
+                "executor",
+                "local_controller",
+                "completion_requires",
+                "verified world/inventory outcome"));
+        return true;
       }
     if (village.mayShareSurplus(id)) {
       if (RecipeCatalog.surplus(inventory(), true).isEmpty()) village.finishTasks(id);
       else if (village.chest() != null) {
         mode = "deposit";
-        return;
+        return true;
       }
     }
-    for (Job candidate : candidates)
-      if (village.claim(candidate.id, id, now)) {
-        begin(candidate);
-        return;
-      }
     mode = "rest";
     nextWork = now + 5000;
+    return false;
   }
 
   private String workBlockBefore = "";
@@ -1109,12 +1220,14 @@ public final class VillagerWorker {
       return;
     }
     if (completeIfSatisfied(now)) return;
+    workAction = WorkIssue.Action.CRAFT;
     if (job.kind == Job.Kind.MINE
         && !prepareTools(Math.max(1, ToolRecipes.required(job.expected)), now, at)) return;
     if (!ingredients(now, at)) {
       workWait("preparing materials or fetching supplies");
       return;
     }
+    workAction = WorkIssue.Action.CONSTRUCTION;
     if (!WorkPose.withinConstructionReach(
         at, job.target, WorkerTuning.value(plugin, entity, "construction.reach_squared"))) {
       workPose.reset();
@@ -1252,6 +1365,7 @@ public final class VillagerWorker {
     }
     requests = needed(job);
     nearby.tick(requests, now);
+    workAction = WorkIssue.Action.GATHER;
     if (!gathering.gather(resource, now, at)) return;
     // Temporarily execute a supply step while retaining the parent task's lease and ingredients.
     Job mine =
@@ -1273,6 +1387,7 @@ public final class VillagerWorker {
   }
 
   private boolean prepareTools(int tier, long now, Pos at) {
+    workAction = WorkIssue.Action.CRAFT;
     ToolActions.Preparation preparation = tools.prepare(tier, now, at);
     if (preparation.ready()) return true;
     if (job != null && !preparation.gather().isEmpty()) {
@@ -1287,6 +1402,7 @@ public final class VillagerWorker {
   }
 
   private void missingSupply(String material, long now) {
+    workAction = WorkIssue.Action.RESOURCE_SEARCH;
     village.knowledge().need(material, village.taskProject(id), now);
     // A completed local scan is not evidence that every worker/neighborhood lacks this resource.
     fail(
@@ -1382,7 +1498,50 @@ public final class VillagerWorker {
   }
 
   private void navigationFailed(long now, String reason) {
-    if (!yielding.failed(now, reason) && !deliveries.failed(now, reason)) fail(now, reason);
+    if (!yielding.failed(now, reason) && !deliveries.failed(now, reason)) {
+      WorkIssue.Action action = navigation.actionKind();
+      // The callback belongs to the command that started navigation, even if worker mode changed.
+      fail(
+          now,
+          actionIssue(reason, action == null ? workAction : action, navigation.actionTarget()),
+          Map.of());
+    }
+  }
+
+  private void gatheringFailed(long now, String reason) {
+    workAction = WorkIssue.Action.GATHER;
+    fail(now, reason);
+  }
+
+  private WorkIssue actionIssue(String reason) {
+    return actionIssue(reason, workAction, null);
+  }
+
+  private WorkIssue actionIssue(String reason, WorkIssue.Action action, Pos commandedTarget) {
+    String wanted =
+        switch (action) {
+          case GATHER -> gathering.resource();
+          case CRAFT -> tools.requestedItem();
+          default -> resource;
+        };
+    Pos target =
+        switch (action) {
+          case RESOURCE_SEARCH -> here();
+          case GATHER -> gathering.target();
+          case CONSTRUCTION -> job == null ? navigation.actionTarget() : job.target;
+          default -> navigation.actionTarget();
+        };
+    if (target == null) target = here();
+    if (commandedTarget != null) target = commandedTarget;
+    WorkIssue.Retry retry =
+        action == WorkIssue.Action.CONSTRUCTION
+            ? WorkIssue.Retry.REPLAN_TASK
+            : action == WorkIssue.Action.GATHER
+                    && !HarvestCatalog.supported(wanted)
+                    && !wanted.equals("WHITE_WOOL")
+                ? WorkIssue.Retry.WAIT_FOR_CHANGE
+                : WorkIssue.Retry.REOBSERVE_ACTION;
+    return new WorkIssue(action, target, wanted, reason, retry);
   }
 
   private void fail(long now, String reason) {
@@ -1390,6 +1549,11 @@ public final class VillagerWorker {
   }
 
   private void fail(long now, String reason, Map<String, ?> selectionEvidence) {
+    fail(now, actionIssue(reason), selectionEvidence);
+  }
+
+  private void fail(long now, WorkIssue issue, Map<String, ?> selectionEvidence) {
+    String reason = issue.reason();
     if (WorkFailure.classify(reason) == WorkFailure.INVENTORY_CAPACITY
         && projectSupplies.makeRoom(job, reason)) {
       recovery.pause(now);
@@ -1397,10 +1561,16 @@ public final class VillagerWorker {
       workWait("reserved a project supply bundle; retrying the same task");
       return;
     }
-    lastFailure = FailureEvidence.inspect(plugin, entity, village, job, reason, needed(job), now);
+    lastFailure =
+        FailureEvidence.inspect(
+            plugin, entity, village, job, reason, needed(job), now, issue.target());
     var evidence = new java.util.LinkedHashMap<String, Object>(lastFailure);
     evidence.put("navigation", navigation.evidence());
     evidence.put("mode", mode);
+    evidence.put("failed_action", issue);
+    evidence.put("activity_owner", activities.owner());
+    evidence.put("root_job", supplyFor == null ? job == null ? "" : job.id : supplyFor.id);
+    evidence.put("parent_penalized", job != null && !issue.prerequisite());
     evidence.putAll(selectionEvidence);
     String failureId = java.util.UUID.randomUUID().toString();
     evidence.put("failure_id", failureId);
@@ -1411,14 +1581,16 @@ public final class VillagerWorker {
           .experiments()
           .diagnose(
               village.id(),
-              reason.startsWith("No implemented harvesting capability")
-                  ? reason
-                  : job == null ? "worker:" + id : "goal:" + job.target.key(),
+              issue.action() + ":" + issue.target().key() + ":" + issue.resource(),
               reason,
               lastFailure);
     probe.failure(reason, lastFailure);
+    navigation.mapFailure(failureId, issue.target(), now);
+    if (issue.prerequisite() && job != null) {
+      deferPrerequisite(issue, now);
+      return;
+    }
     mind.failed(reason, lastFailure);
-    navigation.mapFailure(failureId, job == null ? here() : job.target, now);
     if (plugin.coreAi() != null) {
       if (policyTicket != null) plugin.coreAi().outcome(policyTicket, false, lastFailure);
       else plugin.coreAi().roadblock(village.id(), id, lastFailure);
@@ -1436,11 +1608,42 @@ public final class VillagerWorker {
     nextThink = 0;
   }
 
+  private void deferPrerequisite(WorkIssue issue, long now) {
+    excludeLearning("prerequisite failed; construction feasibility not established");
+    mind.cancel("prerequisite_interruption: " + issue.reason());
+    if (plugin.coreAi() != null) plugin.coreAi().roadblock(village.id(), id, lastFailure);
+    village.checkpoint(
+        id, job, supplyFor, "Retained while resolving " + issue.action() + ": " + issue.reason());
+    village
+        .knowledge()
+        .progress(id, village.taskProject(id), "Waiting for prerequisite", issue.reason(), "", now);
+    // No failed(job), release, or reset: retain this task and its materials through the wait.
+    navigation.stop("prerequisite_wait");
+    gathering.reset();
+    workPose.reset();
+    recovery.pause(now);
+    awaiting = false;
+    nextAdvice = null;
+    generation++;
+    if (issue.retry() == WorkIssue.Retry.WAIT_FOR_CHANGE) {
+      prerequisiteWait.deferUntilChanged(job.id, prerequisiteObservation());
+      debug("prerequisite_deferred", lastFailure);
+      reset("unsupported_prerequisite_saved_for_changed_supplies");
+      nextWork = now;
+      return;
+    }
+    prerequisiteWait.defer(job.id, issue, prerequisiteObservation(), now + 5000);
+    mode = "work";
+    debug("prerequisite_deferred", lastFailure);
+  }
+
   private void reset() {
     reset("worker_reset");
   }
 
   private void reset(String reason) {
+    prerequisiteWait.clear();
+    workAction = WorkIssue.Action.CONSTRUCTION;
     village.checkpoint(id, job, supplyFor, reason + "; retained for resumption");
     deliveries.cancel();
     yielding.cancel();

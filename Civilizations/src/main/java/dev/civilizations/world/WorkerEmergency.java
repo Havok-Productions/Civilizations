@@ -15,9 +15,13 @@ final class WorkerEmergency {
   private final Settlement village;
   private final NavigationObservation observation;
   private final SurfaceSwimming swimming;
+  private final EmergencyClearance clearance;
+  private final Set<String> recordedWaits = new HashSet<>();
+  private final Set<String> persistedWaits = new HashSet<>();
   private org.bukkit.Location waterPosition;
   private long waterProgress;
   private String cause = "";
+  private Pos resumeGoal;
   private long started, nextAction, nextReport;
 
   WorkerEmergency(CivilizationsPlugin plugin, Villager actor, Settlement village) {
@@ -26,6 +30,7 @@ final class WorkerEmergency {
     this.village = village;
     observation = new NavigationObservation(actor);
     swimming = new SurfaceSwimming(plugin, actor);
+    clearance = new EmergencyClearance(plugin, actor, village);
   }
 
   boolean signal(String reason) {
@@ -64,6 +69,7 @@ final class WorkerEmergency {
   }
 
   boolean tick(long now, Pos resumeTarget) {
+    resumeGoal = resumeTarget;
     if (started == 0) {
       started = now;
       report("emergency_started", Map.of("cause", cause, "task_retained", true));
@@ -72,6 +78,7 @@ final class WorkerEmergency {
     boolean wet =
         actor.isInWater() || actor.getEyeLocation().getBlock().getType() == Material.WATER;
     if (collisions.isEmpty() && !wet && actor.isOnGround()) {
+      swimming.escaped(now);
       actor.getPathfinder().stopPathfinding();
       report(
           "emergency_escaped",
@@ -86,6 +93,9 @@ final class WorkerEmergency {
               true));
       cause = "";
       waterPosition = null;
+      swimming.reset();
+      recordedWaits.clear();
+      persistedWaits.clear();
       started = nextAction = 0;
       return false;
     }
@@ -99,7 +109,10 @@ final class WorkerEmergency {
         if (velocity.getY() < .16) actor.setVelocity(velocity.setY(.16));
       }
     }
-    if ((wet || swimming.active()) && swimming.tick(now, resumeTarget)) {
+    boolean steering = (wet || swimming.active()) && swimming.tick(now, resumeTarget);
+    var failure = swimming.takeFailure();
+    if (!failure.isEmpty()) report("emergency_route_failed", failure);
+    if (steering) {
       if (now >= nextReport) {
         nextReport = now + 5000;
         report("emergency_surface_route", swimming.evidence());
@@ -108,36 +121,28 @@ final class WorkerEmergency {
     }
     if (now < nextAction) return true;
     nextAction = now + 750;
-    for (Block block : collisions) {
-      if (!Bukkit.isOwnedByCurrentRegion(block.getLocation(), 2)) continue;
-      Pos p = pos(block.getLocation());
-      if (!SiteMaterials.clearable(block.getType().name()) || plugin.playerProtected(village, p))
-        continue;
-      Job clear =
-          new Job(
-              Job.Kind.CLEAR,
-              "emergency-escape",
-              p,
-              pos(actor.getLocation()),
-              "AIR",
-              block.getType().name(),
-              null);
-      if (!plugin.mayChange(actor, block, "CLEAR_SITE")) continue;
-      String problem = ClearingActions.work(plugin, actor, clear, block);
-      if (problem == null) {
-        report(
-            "emergency_clearance",
-            Map.of(
-                "position",
-                p,
-                "before",
-                clear.expected,
-                "after",
-                block.getType().name(),
-                "inventory",
-                InventoryOps.summary(actor.getInventory())));
-        return true;
-      }
+    List<Block> obstacles = new ArrayList<>(collisions);
+    obstacles.addAll(swimming.blockers());
+    var cleared = clearance.tick(obstacles, now);
+    if (!cleared.isEmpty()) {
+      if (!cleared.containsKey("pending_pose")) report("emergency_clearance", cleared);
+      return true;
+    }
+    // Report before the native fallback: accepting a native path is not proof of movement either.
+    if (now >= nextReport) {
+      nextReport = now + 5000;
+      Pos feet = pos(actor.getLocation());
+      var passage = new SurfacePassage(actor);
+      var detail = new LinkedHashMap<String, Object>();
+      detail.put("cause", cause);
+      detail.put("reason", "no_executed_surface_exit");
+      detail.put("surface_escape", swimming.evidence());
+      detail.put("terrain_signature", passage.signature(feet, feet));
+      detail.put("observed_terrain", passage.observed(feet, feet));
+      detail.put("clearance_refusals", clearance.refusals());
+      detail.put(
+          "next_action", "reobserve changed terrain, alternate exit or feasible natural clearance");
+      report("emergency_wait", detail);
     }
     if (observation.readyForPath()) {
       List<Pos> candidates = new ArrayList<>();
@@ -171,25 +176,6 @@ final class WorkerEmergency {
         if (actor.getPathfinder().moveTo(path, plugin.speed())) return true;
       }
     }
-    if (now >= nextReport) {
-      nextReport = now + 5000;
-      report(
-          "emergency_wait",
-          Map.of(
-              "cause",
-              cause,
-              "surface_escape",
-              swimming.evidence(),
-              "colliding_blocks",
-              collisions.stream()
-                  .map(
-                      b -> Map.of("position", pos(b.getLocation()), "material", b.getType().name()))
-                  .toList(),
-              "next_action",
-              wet
-                  ? "surface and find a dry exit"
-                  : "find physical escape or removable obstruction"));
-    }
     return true;
   }
 
@@ -213,6 +199,23 @@ final class WorkerEmergency {
     var at = actor.getLocation();
     detail.put("actor_location", Map.of("x", at.getX(), "y", at.getY(), "z", at.getZ()));
     detail.put("velocity", actor.getVelocity().toString());
+    detail.put("cause", cause);
+    if (resumeGoal != null) detail.put("original_goal", resumeGoal);
+    detail.put("elapsed_ms", System.currentTimeMillis() - started);
+    String state = Objects.toString(detail.get("terrain_signature"), "") + pos(at).key();
+    boolean changed = !type.equals("emergency_wait") || recordedWaits.add(state);
+    boolean persist =
+        !type.equals("emergency_wait")
+            || System.currentTimeMillis() - started
+                    >= WorkerTuning.value(plugin, actor, "navigation.transition_ms")
+                && persistedWaits.add(state);
+    if (plugin.experiments() != null && !type.equals("emergency_surface_route") && persist)
+      plugin.experiments().emergency(village.id(), actor.getUniqueId().toString(), type, detail);
+    if (!changed) {
+      detail.remove("observed_terrain");
+      detail.remove("clearance_refusals");
+      detail.put("unchanged_observation", true);
+    }
     plugin.debug(village.id(), actor.getUniqueId().toString(), type, detail);
   }
 

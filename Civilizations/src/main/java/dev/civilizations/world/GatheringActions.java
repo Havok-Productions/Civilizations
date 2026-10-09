@@ -40,6 +40,14 @@ public final class GatheringActions {
     return selectionUnavailable;
   }
 
+  public Pos target() {
+    return target;
+  }
+
+  public String resource() {
+    return resource;
+  }
+
   public GatheringActions(
       CivilizationsPlugin plugin,
       Villager entity,

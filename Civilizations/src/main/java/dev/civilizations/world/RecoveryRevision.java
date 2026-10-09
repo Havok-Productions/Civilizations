@@ -46,6 +46,20 @@ final class RecoveryRevision {
       String reason,
       boolean site,
       Pos focus) {
+    this(plugin, actor, village, trial, previous, index, reason, site, focus, null);
+  }
+
+  RecoveryRevision(
+      CivilizationsPlugin plugin,
+      Villager actor,
+      Settlement village,
+      RecoveryExperiments.Trial trial,
+      SkillProgram previous,
+      int index,
+      String reason,
+      boolean site,
+      Pos focus,
+      Map<String, Object> executingNavigation) {
     this.focus = focus;
     this.plugin = plugin;
     this.actor = actor;
@@ -70,6 +84,7 @@ final class RecoveryRevision {
       var worker = plugin.worker(actor.getUniqueId().toString());
       if (worker != null) failure.put("navigation_evidence", worker.navigationEvidence());
     }
+    if (executingNavigation != null) failure.put("navigation_evidence", executingNavigation);
     survey =
         plugin
             .navigation()

@@ -16,6 +16,24 @@ public final class WorkerNavigation {
   private final Settlement village;
   private final BiConsumer<Long, String> failed;
   private Pos lastDestination;
+  private Pos actionTarget;
+  private java.util.function.Supplier<WorkIssue.Action> actionScope =
+      () -> WorkIssue.Action.CONSTRUCTION;
+  private WorkIssue.Action actionKind;
+
+  public Pos actionTarget() {
+    return actionTarget;
+  }
+
+  public WorkIssue.Action actionKind() {
+    return actionKind;
+  }
+
+  private void actionTarget(Pos target) {
+    actionTarget = target;
+    actionKind = actionScope.get();
+  }
+
   private long nextMove;
   private long progressAt;
 
@@ -25,6 +43,14 @@ public final class WorkerNavigation {
 
   private String reportState = "no route requested";
   private CoreAiCoordinator.Ticket policyTicket;
+  private dev.coreai.movement.MovementLearning.Attempt movementAttempt;
+
+  private void finishMovement(Boolean success, String reason, long now) {
+    if (movementAttempt != null && plugin.coreAi() != null)
+      plugin.coreAi().movement().finish(movementAttempt, success, reason, now);
+    movementAttempt = null;
+  }
+
   private final WorkerSkillTrial skillTrial;
   private final String requestPurpose;
   private long physicalWaitSince;
@@ -95,6 +121,16 @@ public final class WorkerNavigation {
     return skillTrial != null && skillTrial.active();
   }
 
+  void shareRecoveryTools(ToolActions tools) {
+    if (skillTrial != null) skillTrial.shareTools(tools);
+  }
+
+  boolean recoveryPrerequisiteFailed(String reason) {
+    if (!experimentActive()) return false;
+    skillTrial.failedVerification("prerequisite_failed: " + reason);
+    return true;
+  }
+
   public String status() {
     return experimentActive()
         ? skillTrial.status()
@@ -107,6 +143,16 @@ public final class WorkerNavigation {
       Settlement village,
       BiConsumer<Long, String> failed) {
     this(plugin, actor, village, failed, true);
+  }
+
+  public WorkerNavigation(
+      CivilizationsPlugin plugin,
+      Villager actor,
+      Settlement village,
+      BiConsumer<Long, String> failed,
+      java.util.function.Supplier<WorkIssue.Action> actionScope) {
+    this(plugin, actor, village, failed, true);
+    this.actionScope = java.util.Objects.requireNonNull(actionScope);
   }
 
   WorkerNavigation(
@@ -164,6 +210,7 @@ public final class WorkerNavigation {
   }
 
   private void stopRoute(String reason, boolean retainRecovery) {
+    finishMovement(null, reason, System.currentTimeMillis());
     if (skillTrial != null && !retainRecovery) skillTrial.cancel(reason);
     generation++;
     plugin.navigation().cancel(actor.getUniqueId().toString(), requestPurpose);
@@ -174,6 +221,8 @@ public final class WorkerNavigation {
     policyTicket = null;
     actor.getPathfinder().stopPathfinding();
     lastDestination = null;
+    actionTarget = null;
+    actionKind = null;
     requestStarted = 0;
     clearanceStarted = 0;
     recoveryAttempts = 0;
@@ -181,10 +230,18 @@ public final class WorkerNavigation {
   }
 
   public void walk(Pos destination, long now) {
+    actionTarget(destination);
+    if (experimentActive()) {
+      // Shared tool/chest/station work needs a temporary destination. Keep the original
+      // recovery goal and route owner; VERIFY still uses this controller's walkExact.
+      skillTrial.walkPrerequisite(destination, now);
+      return;
+    }
     walk(destination, destination, 12, now);
   }
 
   public void walkExact(Pos target, int reach, long now) {
+    actionTarget(target);
     walk(target, target, reach, now);
   }
 
@@ -202,6 +259,7 @@ public final class WorkerNavigation {
   }
 
   private void walkWork(Pos stand, Pos target, int reach, long now, boolean construction) {
+    actionTarget(target);
     java.util.function.Predicate<Pos> usableHeight =
         p -> !construction || WorkPose.withinConstructionReach(p, target, reach);
     if (!target.equals(workTarget)) {
@@ -423,6 +481,10 @@ public final class WorkerNavigation {
                       "executor_result",
                       "reached planned terrain-route step"));
         policyTicket = null;
+        finishMovement(
+            Math.abs(actor.getLocation().getY() - selected.y()) <= .5 ? Boolean.TRUE : null,
+            "controller_reached_waypoint",
+            now);
         index = selectedIndex + 1;
         progressAt = now;
         selected = null;
@@ -689,6 +751,10 @@ public final class WorkerNavigation {
                 pathFailure));
         continue;
       }
+      var movementObservation =
+          plugin.coreAi() != null && (movementAttempt == null || !candidate.equals(selected))
+              ? MovementObservation.capture(actor, path.getPoints(), "native_walk")
+              : null;
       if (!actor.getPathfinder().moveTo(path, plugin.speed())) {
         event(
             "native_move_rejected",
@@ -719,6 +785,19 @@ public final class WorkerNavigation {
                         plan.id(),
                         "native_attempts",
                         nativeAttempts)));
+      }
+      if (!candidate.equals(selected)) finishMovement(null, "native_waypoint_replaced", now);
+      if (movementAttempt == null && movementObservation != null) {
+        movementAttempt =
+            plugin
+                .coreAi()
+                .movement()
+                .begin(
+                    movementObservation.sample(),
+                    actor.getUniqueId().toString(),
+                    now,
+                    movementObservation.context());
+        event("movement_prediction", movementAttempt.estimate(), false);
       }
       if (selected == null) selectedAt = now;
       selected = candidate;
@@ -754,6 +833,7 @@ public final class WorkerNavigation {
   }
 
   private void refresh(long now, String reason, java.util.Map<String, ?> details) {
+    finishMovement(null, "terrain_or_route_changed: " + reason, now);
     var value = new java.util.LinkedHashMap<String, Object>(details);
     value.put("next_action", "fresh terrain map; detour or prepare observed natural obstruction");
     value.put("remembered_as_blocked", false);
@@ -770,6 +850,7 @@ public final class WorkerNavigation {
   }
 
   private void rejectStep(long now, String reason, java.util.Map<String, ?> details) {
+    finishMovement(reason.equals("native_movement_stalled") ? Boolean.FALSE : null, reason, now);
     var value = new java.util.LinkedHashMap<String, Object>(details);
     value.put("remembered_as_blocked", false);
     if (plan != null && index < plan.route().steps().size()) {

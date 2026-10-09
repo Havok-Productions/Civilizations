@@ -8,6 +8,8 @@ public record SkillProgram(String explanation, List<Step> steps) {
   public enum Op {
     WALK,
     CLEAR,
+    MINE,
+    ACQUIRE,
     PLACE_SUPPORT,
     CLASSIFY,
     OBSERVE,
@@ -57,8 +59,13 @@ public record SkillProgram(String explanation, List<Step> steps) {
       } else if (op == Op.PLACE_SUPPORT) {
         if (!SUPPORTS.contains(material))
           throw new IllegalArgumentException("Unsupported building material");
+      } else if (op == Op.MINE || op == Op.ACQUIRE) {
+        if (!material.matches("[A-Z][A-Z0-9_]{0,63}") || material.equals("AIR"))
+          throw new IllegalArgumentException("MINE and ACQUIRE require a material name");
+        if (op == Op.ACQUIRE && (x != 0 || y != 0 || z != 0))
+          throw new IllegalArgumentException("ACQUIRE uses x=y=z=0 and ensures one held item");
       } else if (!material.isEmpty())
-        throw new IllegalArgumentException("Only placement specifies material");
+        throw new IllegalArgumentException("Instruction does not accept a material");
       if (op == Op.VERIFY && (x != 0 || y != 0 || z != 0 || steps.size() != values.size() - 1))
         throw new IllegalArgumentException("VERIFY must be last and uses the host goal");
       steps.add(new Step(op, x, y, z, material));
@@ -102,18 +109,28 @@ public record SkillProgram(String explanation, List<Step> steps) {
       }
       Map<String, Object> fields = new LinkedHashMap<>();
       fields.put("op", Map.of("const", op.name()));
-      fields.put("x", op == Op.VERIFY ? Map.of("const", 0) : Map.of("type", "integer"));
       fields.put(
-          "y", op == Op.VERIFY || op == Op.SEARCH ? Map.of("const", 0) : Map.of("type", "integer"));
+          "x",
+          op == Op.VERIFY || op == Op.ACQUIRE ? Map.of("const", 0) : Map.of("type", "integer"));
       fields.put(
-          "z", op == Op.VERIFY || op == Op.SEARCH ? Map.of("const", 0) : Map.of("type", "integer"));
+          "y",
+          op == Op.VERIFY || op == Op.SEARCH || op == Op.ACQUIRE
+              ? Map.of("const", 0)
+              : Map.of("type", "integer"));
+      fields.put(
+          "z",
+          op == Op.VERIFY || op == Op.SEARCH || op == Op.ACQUIRE
+              ? Map.of("const", 0)
+              : Map.of("type", "integer"));
       fields.put(
           "material",
           op == Op.PLACE_SUPPORT
               ? Map.of("enum", SUPPORTS.stream().sorted().toList())
               : op == Op.CLASSIFY
                   ? Map.of("enum", List.of("PASSABLE", "CLEARABLE", "OBSTACLE"))
-                  : Map.of("const", ""));
+                  : op == Op.MINE || op == Op.ACQUIRE
+                      ? Map.of("type", "string", "pattern", "^[A-Z][A-Z0-9_]{0,63}$")
+                      : Map.of("const", ""));
       choices.add(
           Map.of(
               "type",

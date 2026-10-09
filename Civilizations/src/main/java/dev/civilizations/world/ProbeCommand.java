@@ -13,6 +13,50 @@ public final class ProbeCommand {
 
   public static void execute(CivilizationsPlugin plugin, CommandSender sender, String[] args) {
     String action = args.length > 1 ? args[1].toLowerCase(Locale.ROOT) : "start";
+    if (action.equals("learn")) {
+      if (plugin.coreAi() == null) {
+        sender.sendMessage("CoreAI is disabled.");
+        return;
+      }
+      if (args.length > 2) {
+        sender.sendMessage("Usage: /civ debug probe learn");
+        return;
+      }
+      sender.sendMessage(
+          "Training movement model in background from virtual courses and recorded physical"
+              + " attempts. Results remain in shadow mode.");
+      plugin
+          .coreAi()
+          .movement()
+          .train()
+          .whenComplete(
+              (snapshot, error) -> {
+                Runnable reply =
+                    () -> {
+                      if (error != null) {
+                        sender.sendMessage("Movement probe failed: " + error.getMessage());
+                        return;
+                      }
+                      var metrics = snapshot.report().metrics();
+                        sender.sendMessage(plugin.coreAi().movement().status());
+                      sender.sendMessage(
+                          "Movement model "
+                              + snapshot.version()
+                              + ": virtual held-out "
+                              + metrics.get("virtual/test")
+                              + "; physical held-out "
+                              + metrics.get("physical/test"));
+                      sender.sendMessage(
+                          "Full per-family results:"
+                              + " plugins/Civilizations/CoreAI/movement/report.json. Zero physical"
+                              + " cases means unproven in Minecraft; no automatic route veto.");
+                    };
+                if (sender instanceof Player player)
+                  player.getScheduler().run(plugin, t -> reply.run(), () -> {});
+                else org.bukkit.Bukkit.getGlobalRegionScheduler().run(plugin, t -> reply.run());
+              });
+      return;
+    }
     if (!Set.of("start", "trial", "proposals", "status", "cancel", "jobs").contains(action)
         || args.length > 5) {
       usage(sender);
@@ -141,6 +185,9 @@ public final class ProbeCommand {
   }
 
   private static void usage(CommandSender sender) {
+    sender.sendMessage(
+        "/civ debug probe learn: train/evaluate movement from virtual courses and measured"
+            + " attempts; does not move villagers.");
     sender.sendMessage(
         "/civ debug probe [start|trial|proposals|status|cancel|jobs] [nearest|worker-uuid]"
             + " [job-or-proposal-id|auto] [seconds]");

@@ -45,7 +45,8 @@ public final class NavigationMap {
     this.radius = radius;
     this.vertical = vertical;
     // Dense coordinate hashes cluster badly in MapN's linear probing during Map.copyOf.
-    // HashMap keeps bucket collision handling while the wrapper preserves snapshot immutability.
+    // HashMap keeps bucket collision handling while the wrapper preserves snapshot
+    // immutability.
     this.cells = Collections.unmodifiableMap(new HashMap<>(cells));
     // Stable geometry fingerprint, independent of insertion order and map acquisition timing.
     long hash = 0;
@@ -65,6 +66,11 @@ public final class NavigationMap {
 
   public Cell cell(Pos p) {
     return cells.getOrDefault(p, new Cell("UNKNOWN", Kind.UNKNOWN));
+  }
+
+  /** Captured cells only; the immutable view preserves unknown/missing coverage for skill matching. */
+  public Map<Pos, Cell> cells() {
+    return cells;
   }
 
   public List<Pos> positions(String material) {
