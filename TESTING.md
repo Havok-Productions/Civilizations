@@ -4,6 +4,14 @@ Run the smallest relevant set once. Tests of a planner, inventory calculation or
 
 ## Routine changes
 
+Alpha.53 uses `playerai navigation settlements` for the independent mannequin NPC
+brain, exact material receipts, generated identities, saved-state restoration,
+pause/retry behavior, campsite geometry and loaded-chunk attachment wiring. After
+the initial run, construction sightline changes require only `playerai`. No Folia
+server or model is started by these checks. See `Civilizations/PLAYER_AI.md` for
+the bounded opt-in physical scenario; passing JVM tests does not establish actual
+mannequin movement or construction.
+
 Alpha.52 uses `tasks navigation crafting storage coreai inference diagnostics` for the worker activity arbiter and structured prerequisite failures. The existing `autonomy -Dcivilizations.test.local-project=true -Dcivilizations.test.surface-search=true -Dcivilizations.test.handoff=true` fixture injects one supply-navigation failure while a worker needs wood. Its construction job must remain claimed without a failure count or retry penalty, and diagnostics must separate the resource target from the construction target. After the first physical placement, the fixture advances the world into night, observes the worker's sleep interruption, restores daytime and requires completion of all remaining placements with exact materials and zero teacher decisions. The injected failure tests attribution/resumption, not detection of a real obstruction. Existing emergency, courier, recovery and claim contracts remain in the focused sections. This check uses a disposable world and does not imply full live-village reliability.
 
 Alpha.51 uses `navigation crafting` for resource observations above an underground worker. The existing `autonomy -Dcivilizations.test.local-project=true -Dcivilizations.test.surface-search=true` fixture starts the worker sixteen blocks below a natural tree, with no wood and a walkable ramp. Require observation, actual ascent/harvest, crafting, four ordered placements, exact materials and zero teacher calls; the supplied unrelated job must stay untouched. Compare alpha.50 against alpha.51 using the same fixture. Surface resource observation uses loaded chunk snapshots and observed per-column heights; it does not authorize harvesting, assume sea level, force chunk loads or assert a route is reachable. Mineral searches retain their local depth-aware map. This is a resource-acquisition-to-construction regression, not proof of a complete live village wall or a trained neural controller.

@@ -1,5 +1,11 @@
 # Civilizations 2: a separate replacement for Hearth 1.x.
 # Latest verified Folia: 26.2 build 7 BETA, Java 25 (2026-09-14).
+player-ai:
+  enabled: true
+  # Manually spawned human-looking NPCs; no automatic population generation yet.
+  max-active: 8
+  # Loaded terrain only. First milestone: logs -> planks -> canopy + workbench.
+  search-radius: 16
 villagers:
   # This is an enrollment limit, not a boundary that creates another village.
   per-village: 20

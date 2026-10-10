@@ -1,5 +1,6 @@
 {
   "sections": {
+    "playerai": "Independent player NPC progression, inventory receipts, persistence and starter camps",
     "navigation": "Terrain search, obstacle safety, route memory and route-policy integration",
     "crafting": "Current recipes, ingredient conservation, mining tiers and stored prerequisites",
     "storage": "Chest selection, transfers, donations and whole-task surplus rules",
@@ -12,6 +13,7 @@
     "diagnostics": "Failure classification, journal persistence and outcome evidence"
   },
   "source_rules": [
+    {"patterns": ["*/playerai/*"], "sections": ["playerai"]},
     {"patterns": ["*/WorkerActivities.java", "*/WorkIssue.java", "*/PrerequisiteWait.java"], "sections": ["tasks", "navigation", "crafting", "diagnostics"]},
     {"patterns": ["*/SurfaceResources.java", "*/ResourceSurvey.java"], "sections": ["navigation", "crafting"]},
     {"patterns": ["*/RecoverySpatialFacts.java", "*/VoxelRecoveryPlanner.java", "*/RecoveryReplay.java", "*/RecoveryController.java", "CoreAI/src/main/java/dev/coreai/recovery/*"], "sections": ["coreai", "navigation", "inference", "diagnostics"]},

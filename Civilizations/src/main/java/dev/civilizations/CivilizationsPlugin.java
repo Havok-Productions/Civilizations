@@ -50,6 +50,7 @@ public final class CivilizationsPlugin extends JavaPlugin
           });
   private final AtomicBoolean loaded = new AtomicBoolean();
   private volatile boolean closing;
+  private dev.civilizations.playerai.PlayerAiCoordinator playerAi;
   private StateStore store;
   private DebugJournal journal;
   private DebugJournal failures;
@@ -243,6 +244,7 @@ public final class CivilizationsPlugin extends JavaPlugin
     getServer().getPluginManager().registerEvents(this, this);
     Objects.requireNonNull(getCommand("civilizations")).setExecutor(this);
     getCommand("civilizations").setTabCompleter(this);
+    playerAi = new dev.civilizations.playerai.PlayerAiCoordinator(this);
     persistence.execute(
         () -> {
           try {
@@ -265,7 +267,8 @@ public final class CivilizationsPlugin extends JavaPlugin
         new LoadedVillagerDiscovery(
             this,
             Math.clamp(getConfig().getInt("villagers.discovery-chunks-per-tick", 16), 1, 128),
-            this::discover);
+            this::discover,
+            body -> playerAi.attach(body));
     discovery.start();
     Bukkit.getGlobalRegionScheduler()
         .runAtFixedRate(
@@ -305,6 +308,7 @@ public final class CivilizationsPlugin extends JavaPlugin
   @Override
   public void onDisable() {
     closing = true;
+    if (playerAi != null) playerAi.close();
     if (discovery != null) discovery.close();
     workers.values().forEach(VillagerWorker::stop);
     workers.clear();
@@ -416,6 +420,14 @@ public final class CivilizationsPlugin extends JavaPlugin
 
   public boolean playerProtected(Settlement v, Pos p) {
     return v.playerProtected(p);
+  }
+
+  /** Player NPCs must also respect recorded human placements and settlement construction. */
+  public boolean playerAiProtected(World world, Pos p) {
+    String id = world.getUID().toString();
+    return settlements.values().stream()
+        .anyMatch(
+            v -> v.world().equals(id) && (v.playerProtected(p) || v.layoutOccupancy().contains(p)));
   }
 
   public boolean mayChange(Villager actor, Block block, String action) {

@@ -9,6 +9,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.World;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Mannequin;
 import org.bukkit.entity.Villager;
 import org.bukkit.plugin.Plugin;
 
@@ -18,15 +19,25 @@ public final class LoadedVillagerDiscovery implements AutoCloseable {
 
   private final Plugin plugin;
   private final Consumer<Villager> discovered;
+  private final Consumer<Mannequin> playerAiDiscovered;
   private final ConcurrentLinkedQueue<ChunkKey> queue = new ConcurrentLinkedQueue<>();
   private final Set<ChunkKey> pending = ConcurrentHashMap.newKeySet();
   private final int chunksPerTick;
   private volatile boolean closed;
 
   public LoadedVillagerDiscovery(Plugin plugin, int chunksPerTick, Consumer<Villager> discovered) {
+    this(plugin, chunksPerTick, discovered, body -> {});
+  }
+
+  public LoadedVillagerDiscovery(
+      Plugin plugin,
+      int chunksPerTick,
+      Consumer<Villager> discovered,
+      Consumer<Mannequin> playerAiDiscovered) {
     this.plugin = plugin;
     this.chunksPerTick = chunksPerTick;
     this.discovered = discovered;
+    this.playerAiDiscovered = playerAiDiscovered;
   }
 
   public void start() {
@@ -76,6 +87,14 @@ public final class LoadedVillagerDiscovery implements AutoCloseable {
                                 plugin,
                                 task -> {
                                   if (!closed) discovered.accept(villager);
+                                },
+                                () -> {});
+                      } else if (entity instanceof Mannequin body) {
+                        body.getScheduler()
+                            .run(
+                                plugin,
+                                task -> {
+                                  if (!closed) playerAiDiscovered.accept(body);
                                 },
                                 () -> {});
                       }

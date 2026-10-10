@@ -1,5 +1,10 @@
 # Hearth
 
+The current **Civilizations 2** module now includes an initial human-looking player
+NPC feature: use `/playerai` to spawn an AI pioneer that gathers wood, crafts, and
+builds a small starter camp. See [Player AI setup, architecture and roadmap](Civilizations/PLAYER_AI.md).
+The historical Hearth documentation below describes the earlier villager system.
+
 **AI-assisted villager collective for Minecraft (Folia / Paper, Java 25 — built against the latest stable Folia API 26.1.2, loads on 26.1 *and* 26.2 servers).**
 
 Hearth turns a group of villagers into a small self-sufficient collective:
